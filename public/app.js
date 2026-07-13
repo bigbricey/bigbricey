@@ -43,6 +43,12 @@ const DEFAULT_GOALS = {
 let dayGoals = { ...DEFAULT_GOALS };
 let pendingDeleteId = null;
 let sending = false;
+let conversationId = null;
+try {
+  conversationId = localStorage.getItem("bigbricey-conversation-id") || null;
+} catch {
+  conversationId = null;
+}
 
 init();
 
@@ -151,9 +157,11 @@ async function init() {
   if (window.BBTheme) window.BBTheme.init();
   if (window.BBLayout) window.BBLayout.init();
   if (window.BBBoxes) window.BBBoxes.init();
+  wireChatHistoryUi();
   await loadFromCloud(selectedDay);
   render();
   if (window.BBBoxes) window.BBBoxes.loadValuesForDay(selectedDay);
+  await restoreConversation();
   loadWatches();
   loadAlerts();
   loadCharts();
@@ -1009,6 +1017,129 @@ async function checkApi() {
   }
 }
 
+function setConversationId(id) {
+  conversationId = id || null;
+  try {
+    if (conversationId) localStorage.setItem("bigbricey-conversation-id", conversationId);
+    else localStorage.removeItem("bigbricey-conversation-id");
+  } catch {
+    /* */
+  }
+}
+
+function clearChatUi(welcomeText) {
+  if (!chatLog) return;
+  chatLog.innerHTML = "";
+  const bubble = document.createElement("div");
+  bubble.className = "chat-bubble bot welcome";
+  bubble.innerHTML = `<div class="chat-who">BigBricey</div><div class="chat-text"></div>`;
+  bubble.querySelector(".chat-text").textContent =
+    welcomeText ||
+    "New chat. I still know your saved foods, theme, and permanent notes — this thread is fresh.";
+  chatLog.appendChild(bubble);
+}
+
+function renderMessagesFromServer(messages) {
+  if (!chatLog) return;
+  chatLog.innerHTML = "";
+  if (!messages || !messages.length) {
+    clearChatUi();
+    return;
+  }
+  for (const m of messages) {
+    const role = m.role === "user" ? "user" : "bot";
+    appendChat(role === "user" ? "user" : "bot", m.content);
+  }
+}
+
+async function restoreConversation() {
+  if (!conversationId) return;
+  try {
+    const r = await fetch("/api/chat?id=" + encodeURIComponent(conversationId));
+    if (!r.ok) {
+      setConversationId(null);
+      return;
+    }
+    const d = await r.json();
+    if (Array.isArray(d.messages) && d.messages.length) {
+      renderMessagesFromServer(d.messages);
+    }
+  } catch {
+    /* offline */
+  }
+}
+
+async function loadConversationList() {
+  const list = document.getElementById("chatHistoryList");
+  if (!list) return;
+  list.innerHTML = `<div class="alert-empty">Loading…</div>`;
+  try {
+    const r = await fetch("/api/chat");
+    if (!r.ok) throw new Error("fail");
+    const d = await r.json();
+    const items = d.conversations || [];
+    if (!items.length) {
+      list.innerHTML = `<div class="alert-empty">No past chats yet.</div>`;
+      return;
+    }
+    list.innerHTML = items
+      .map((c) => {
+        const when = (c.updated_at || c.created_at || "").slice(0, 16).replace("T", " ");
+        const on = c.id === conversationId ? " on" : "";
+        return `<button type="button" class="chat-history-item${on}" data-conv="${escapeHtml(c.id)}">
+          ${escapeHtml(c.title || "Chat")}
+          <span class="meta">${escapeHtml(when)}</span>
+        </button>`;
+      })
+      .join("");
+    list.querySelectorAll("[data-conv]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = btn.getAttribute("data-conv");
+        setConversationId(id);
+        const r2 = await fetch("/api/chat?id=" + encodeURIComponent(id));
+        if (r2.ok) {
+          const d2 = await r2.json();
+          renderMessagesFromServer(d2.messages || []);
+        }
+        const panel = document.getElementById("chatHistoryPanel");
+        if (panel) panel.hidden = true;
+      });
+    });
+  } catch {
+    list.innerHTML = `<div class="alert-empty">Couldn’t load history (need chat tables in Supabase).</div>`;
+  }
+}
+
+function wireChatHistoryUi() {
+  document.getElementById("btnChatHistory")?.addEventListener("click", async () => {
+    const panel = document.getElementById("chatHistoryPanel");
+    if (!panel) return;
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) await loadConversationList();
+  });
+  document.getElementById("btnChatHistoryClose")?.addEventListener("click", () => {
+    const panel = document.getElementById("chatHistoryPanel");
+    if (panel) panel.hidden = true;
+  });
+  document.getElementById("btnChatNew")?.addEventListener("click", async () => {
+    try {
+      const r = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ op: "new_conversation" }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d.conversation?.id) setConversationId(d.conversation.id);
+      else setConversationId(null);
+    } catch {
+      setConversationId(null);
+    }
+    clearChatUi();
+    const panel = document.getElementById("chatHistoryPanel");
+    if (panel) panel.hidden = true;
+  });
+}
+
 async function onSend() {
   const text = foodInput.value.trim();
   if (!text || sending) return;
@@ -1026,13 +1157,14 @@ async function onSend() {
     const data = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, rows }),
+      body: JSON.stringify({ text, rows, conversation_id: conversationId }),
     }).then(async (r) => {
       const j = await r.json().catch(() => ({}));
       if (!r.ok && j.error) throw new Error(j.error);
       return j;
     });
     setThinking(false);
+    if (data.conversation_id) setConversationId(data.conversation_id);
     if (Array.isArray(data.rows)) {
       rows = ensureUniqueIds(data.rows);
       save();

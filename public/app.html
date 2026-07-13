@@ -72,11 +72,22 @@
             <div class="coach-title">BigBricey</div>
             <div class="coach-tagline">Talk first. The log follows.</div>
           </div>
+          <div class="chat-head-actions">
+            <button type="button" class="pill" id="btnChatHistory" title="Past chats">History</button>
+            <button type="button" class="pill" id="btnChatNew" title="Start new chat">New</button>
+          </div>
+        </div>
+        <div id="chatHistoryPanel" class="chat-history-panel" hidden>
+          <div class="chat-history-head">
+            <strong>Conversations</strong>
+            <button type="button" class="text-btn" id="btnChatHistoryClose">Close</button>
+          </div>
+          <div id="chatHistoryList" class="chat-history-list"></div>
         </div>
         <div id="chatLog" class="chat-log" aria-live="polite">
           <div class="chat-bubble bot welcome">
             <div class="chat-who">BigBricey</div>
-            <div class="chat-text">I’m here to build your day. Tell me what you ate, a workout, steps, or a goal — e.g. “1 lb bacon”, “50 push-ups”, “watch potassium under 3500”.</div>
+            <div class="chat-text">I’m here to build your day. Tell me what you ate, a workout, steps, or a goal — e.g. “1 lb bacon”, “50 push-ups”, “watch potassium under 3500”. I remember this chat. Say “remember that I like …” for permanent notes. App ideas → product backlog.</div>
           </div>
         </div>
         <div class="composer">

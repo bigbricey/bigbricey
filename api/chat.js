@@ -26,6 +26,16 @@ import {
   saveUserLayout,
   saveUserTheme,
   saveUserBoxes,
+  listConversations,
+  getConversation,
+  createConversation,
+  touchConversation,
+  listMessages,
+  appendMessage,
+  buildChatContextForModel,
+  getMemoryNotes,
+  addMemoryNote,
+  removeMemoryNote,
 } from "./_supabase.js";
 import { submitFeedback, summarizeFeedback, isAdmin } from "./_members.js";
 import { llmChat, llmConfig, DOMAIN_CONTRACT } from "./_llm.js";
@@ -44,18 +54,54 @@ export default async function handler(req, res) {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     return res.status(204).end();
   }
-  if (req.method !== "POST") return sendJson(res, 405, { error: "POST only" });
-
   const session = await requireUser(req, res);
   if (!session) return;
 
+  // ——— GET: list / load conversations ———
+  if (req.method === "GET") {
+    try {
+      const url = new URL(req.url, `https://${req.headers.host}`);
+      const id = url.searchParams.get("id") || url.searchParams.get("conversation_id");
+      if (id) {
+        const conv = await getConversation(session.email, id);
+        if (!conv) return sendJson(res, 404, { error: "not_found" });
+        const messages = await listMessages(session.email, id, { limit: 800 });
+        return sendJson(res, 200, { conversation: conv, messages });
+      }
+      const conversations = await listConversations(session.email);
+      return sendJson(res, 200, { conversations });
+    } catch (e) {
+      return sendJson(res, 500, { error: String(e.message || e) });
+    }
+  }
+
+  if (req.method !== "POST") return sendJson(res, 405, { error: "POST only" });
+
   try {
     const body = await readBody(req);
+
+    // Create empty conversation
+    if (body?.op === "new_conversation" || body?.op === "new_chat") {
+      try {
+        const conv = await createConversation(session.email, {
+          title: body.title || "New chat",
+        });
+        return sendJson(res, 200, { conversation: conv, messages: [] });
+      } catch (e) {
+        return sendJson(res, 500, {
+          error: String(e.message || e),
+          hint: "Run migration_007_chat_history.sql in Supabase if tables missing.",
+        });
+      }
+    }
+
     const text = String(body?.text || "").trim();
     const rows = Array.isArray(body?.rows) ? body.rows : [];
     if (!text) return sendJson(res, 400, { error: "text required" });
 
     let personCtx = null;
+    let themeSnap = null;
+    let memoryNotes = [];
     if (supabaseConfig().ok) {
       try {
         await ensureProfile(session.email, {
@@ -64,6 +110,10 @@ export default async function handler(req, res) {
         });
         const profile = await getProfile(session.email);
         personCtx = onboardingFromPrefs(profile?.prefs);
+        if (profile?.prefs?.theme && typeof profile.prefs.theme === "object") {
+          themeSnap = profile.prefs.theme;
+        }
+        memoryNotes = await getMemoryNotes(session.email);
       } catch {
         personCtx = null;
       }
@@ -78,13 +128,64 @@ export default async function handler(req, res) {
       }
     }
 
+    // Conversation + history
+    let conversationId = body.conversation_id || body.conversationId || null;
+    let historyMessages = [];
+    let chatSummary = null;
+    let convMeta = null;
+    if (supabaseConfig().ok) {
+      try {
+        if (conversationId) {
+          convMeta = await getConversation(session.email, conversationId);
+          if (!convMeta) conversationId = null;
+        }
+        if (!conversationId) {
+          const title =
+            text.length > 48 ? text.slice(0, 45) + "…" : text.slice(0, 48) || "Chat";
+          convMeta = await createConversation(session.email, { title });
+          conversationId = convMeta?.id || null;
+        }
+        if (conversationId) {
+          await appendMessage(session.email, conversationId, "user", text);
+          const ctx = await buildChatContextForModel(session.email, conversationId, {
+            maxMessages: 120,
+          });
+          // exclude the message we just added from history for the model? include all recent
+          historyMessages = (ctx.messages || []).filter(
+            (m) => !(m.role === "user" && m.content === text && m === ctx.messages[ctx.messages.length - 1])
+          );
+          // Actually include all but last user is the current - better: all except last
+          const msgs = ctx.messages || [];
+          if (msgs.length && msgs[msgs.length - 1]?.role === "user") {
+            historyMessages = msgs.slice(0, -1);
+          } else {
+            historyMessages = msgs;
+          }
+          chatSummary = ctx.summary;
+          convMeta = ctx.conversation || convMeta;
+        }
+      } catch (err) {
+        // Tables may not exist yet — continue without history
+        conversationId = conversationId || null;
+      }
+    }
+
     // Fast path: "what can you do?" — never treat as food
     if (isAbilitiesQuestion(text)) {
+      const reply = ABILITIES_REPLY;
+      if (conversationId) {
+        try {
+          await appendMessage(session.email, conversationId, "assistant", reply);
+        } catch {
+          /* */
+        }
+      }
       return sendJson(res, 200, {
-        reply: ABILITIES_REPLY,
+        reply,
         rows,
         changed: false,
         actions: [],
+        conversation_id: conversationId,
       });
     }
 
@@ -93,6 +194,10 @@ export default async function handler(req, res) {
       name: session.name,
       person: personCtx,
       savedFoods: savedList,
+      history: historyMessages,
+      chatSummary,
+      theme: themeSnap,
+      memoryNotes,
     });
 
     if (intent?.error === "model_failed") {
@@ -156,24 +261,61 @@ export default async function handler(req, res) {
     }
 
     if (!actions.length && intent?.reply) {
+      const reply = intent.reply;
+      if (conversationId) {
+        try {
+          await appendMessage(session.email, conversationId, "assistant", reply);
+        } catch {
+          /* */
+        }
+      }
       return sendJson(res, 200, {
-        reply: intent.reply,
+        reply,
         rows,
         changed: false,
+        conversation_id: conversationId,
       });
     }
 
     // If model just said add with food phrase, or returned empty — try add
     if (!actions.length) {
-      return await doAdd(text, rows, res, session.email);
+      return await doAdd(text, rows, res, session.email, null, conversationId);
     }
 
     let next = rows.map((r) => ({ ...r }));
     const notes = [];
     const sideEvents = [];
+    let memoryOut = null;
 
     for (const action of actions) {
       const type = (action.type || action.action || "").toLowerCase();
+
+      if (
+        type === "remember" ||
+        type === "save_memory" ||
+        type === "memory_note" ||
+        type === "add_memory"
+      ) {
+        const note = action.note || action.message || action.text || action.fact;
+        try {
+          memoryOut = await addMemoryNote(session.email, note);
+          notes.push(`Saved permanent note: “${String(note).slice(0, 80)}”.`);
+        } catch (err) {
+          notes.push(`Couldn't save memory note: ${err.message}`);
+        }
+        continue;
+      }
+
+      if (type === "forget" || type === "remove_memory" || type === "delete_memory") {
+        const match = action.note || action.match || action.message || action.text;
+        try {
+          memoryOut = await removeMemoryNote(session.email, match);
+          notes.push(`Removed matching permanent note(s) for “${match}”.`);
+        } catch (err) {
+          notes.push(`Couldn't remove note: ${err.message}`);
+        }
+        continue;
+      }
 
       if (type === "feedback" || type === "suggestion" || type === "product_feedback") {
         const msg = action.message || action.text || text;
@@ -1373,7 +1515,7 @@ export default async function handler(req, res) {
 
     // If nothing worked and looks like a food, try plain add
     if (!notes.length || (notes.every((n) => /couldn't|no /i.test(n)) && looksLikeFood(text))) {
-      return await doAdd(text, rows, res, session.email, notes.join(" "));
+      return await doAdd(text, rows, res, session.email, notes.join(" "), conversationId);
     }
 
     let watchStatuses = null;
@@ -1395,8 +1537,22 @@ export default async function handler(req, res) {
       }
     }
 
+    const reply = intent.reply || notes.join(" ");
+    if (conversationId && reply) {
+      try {
+        await appendMessage(session.email, conversationId, "assistant", reply);
+        // Title from first user line if still default
+        if (convMeta && (!convMeta.title || convMeta.title === "Chat" || convMeta.title === "New chat")) {
+          const t = text.length > 48 ? text.slice(0, 45) + "…" : text;
+          await touchConversation(session.email, conversationId, { title: t });
+        }
+      } catch {
+        /* */
+      }
+    }
+
     return sendJson(res, 200, {
-      reply: intent.reply || notes.join(" "),
+      reply,
       rows: next,
       changed: JSON.stringify(next) !== JSON.stringify(rows),
       notes,
@@ -1408,6 +1564,8 @@ export default async function handler(req, res) {
       theme: themeOut,
       boxes: boxesOut,
       suggestions: suggestionsOut,
+      conversation_id: conversationId,
+      memory_notes: memoryOut,
     });
   } catch (e) {
     return sendJson(res, 500, {
@@ -1417,17 +1575,26 @@ export default async function handler(req, res) {
   }
 }
 
-async function doAdd(text, rows, res, email, prefix) {
+async function doAdd(text, rows, res, email, prefix, conversationId) {
   // Direct hit on personal library by whole phrase (e.g. "log my shake")
   if (email && supabaseConfig().ok) {
     try {
       const saved = await findSavedFood(email, text);
       if (saved) {
         const next = [...rows, rowFromSavedFood(saved, 1)];
+        const reply = (prefix ? prefix + " " : "") + `Added saved: ${saved.name}`;
+        if (conversationId) {
+          try {
+            await appendMessage(email, conversationId, "assistant", reply);
+          } catch {
+            /* */
+          }
+        }
         return sendJson(res, 200, {
-          reply: (prefix ? prefix + " " : "") + `Added saved: ${saved.name}`,
+          reply,
           rows: next,
           changed: true,
+          conversation_id: conversationId,
         });
       }
     } catch {
@@ -1440,26 +1607,55 @@ async function doAdd(text, rows, res, email, prefix) {
     rowFromSavedFood,
   });
   if (resolved.error === "off_topic") {
+    const reply =
+      (prefix ? prefix + " " : "") +
+      "I can add foods, save shakes/favorites, change amounts, remove items, or clear the day. What do you want to do?";
+    if (conversationId) {
+      try {
+        await appendMessage(email, conversationId, "assistant", reply);
+      } catch {
+        /* */
+      }
+    }
     return sendJson(res, 200, {
-      reply:
-        (prefix ? prefix + " " : "") +
-        "I can add foods, save shakes/favorites, change amounts, remove items, or clear the day. What do you want to do?",
+      reply,
       rows,
       changed: false,
+      conversation_id: conversationId,
     });
   }
   if (!resolved.row || !rowHasMacros(resolved.row)) {
+    const reply =
+      resolved.note ||
+      "Couldn't find solid nutrition data for that — try a more specific food name.";
+    if (conversationId) {
+      try {
+        await appendMessage(email, conversationId, "assistant", reply);
+      } catch {
+        /* */
+      }
+    }
     return sendJson(res, 200, {
-      reply: resolved.note || "Couldn't find solid nutrition data for that — try a more specific food name.",
+      reply,
       rows,
       changed: false,
+      conversation_id: conversationId,
     });
   }
   const next = [...rows, resolved.row];
+  const reply = (prefix ? prefix + " " : "") + `Added: ${resolved.row.label}`;
+  if (conversationId) {
+    try {
+      await appendMessage(email, conversationId, "assistant", reply);
+    } catch {
+      /* */
+    }
+  }
   return sendJson(res, 200, {
-    reply: (prefix ? prefix + " " : "") + `Added: ${resolved.row.label}`,
+    reply,
     rows: next,
     changed: true,
+    conversation_id: conversationId,
   });
 }
 
@@ -1573,11 +1769,42 @@ async function interpretIntent(text, rows, ctx = {}) {
         .join("\n")}`
     : `USER SAVED FOODS: (none yet)`;
 
+  const theme = ctx.theme && typeof ctx.theme === "object" ? ctx.theme : null;
+  const themeBlock = theme
+    ? `CURRENT THEME (live UI — use for “change it back” / undo):\n${JSON.stringify({
+        preset: theme.preset,
+        accent: theme.accent,
+        bg0: theme.bg0,
+        ring_left: theme.ring_left,
+        ring_eaten: theme.ring_eaten,
+        ring_goal: theme.ring_goal,
+        ring_over: theme.ring_over,
+        font_scale: theme.font_scale,
+        radius: theme.radius,
+        density: theme.density,
+      })}`
+    : `CURRENT THEME: default midnight (eaten ring #38bdf8)`;
+
+  const memNotes = Array.isArray(ctx.memoryNotes) ? ctx.memoryNotes : [];
+  const memoryBlock = memNotes.length
+    ? `PERMANENT USER NOTES (across all chats):\n${memNotes.map((n) => `- ${n}`).join("\n")}`
+    : `PERMANENT USER NOTES: (none)`;
+
+  const summaryBlock = ctx.chatSummary
+    ? `EARLIER IN THIS CONVERSATION (compacted summary):\n${String(ctx.chatSummary).slice(0, 12000)}`
+    : "";
+
   const system = `${DOMAIN_CONTRACT}
 
 ${personBlock}
 
 ${savedBlock}
+
+${themeBlock}
+
+${memoryBlock}
+
+${summaryBlock}
 
 ${knowledgeForSystemPrompt()}
 
@@ -1589,6 +1816,7 @@ You manage:
 5) Watch targets — "watch my potassium, warn if under 3500mg / 7 days"
 6) Product backlog — app ideas/bugs via feedback action with message + category + theme_key + theme_label. Categories: layout, charts, themes, boxes, food, goals, chat, bugs, mobile, export, other. theme_key = short snake_case cluster id (same idea → same key). NEVER say you are messaging Brice/Bryce. Say product backlog for the owner to review. NEVER auto-promise builds. NEVER private food diary.
 11) ADMIN ONLY: if the logged-in user asks “what are people asking for / suggestion digest / backlog summary” → list_suggestions (owner reviews; nothing auto-builds).
+12) PERMANENT NOTES — remember facts across conversations with remember/save_memory (short notes). forget/remove_memory to drop. Use for preferences like “likes black eaten rings” only when user asks to remember. Max short facts, not a diary dump.
 7) Export packs — "print my stats" / "export for my doctor" / "pack for ChatGPT"
 8) TODAY LAYOUT — reorder/resize boxes on the Today screen. Use set_layout. Panels: chat, kcal, pro, fat, carb, net, minerals, summary, food. Sizes: full, half, third.
 9) LOOK / THEME — set_theme. Presets: midnight, light, neon, forest, pink, terminal, pastel, sunset. Vibes: mlp/my_little_pony/cute→pastel, matrix/hacker→terminal, barbie→pink. Fields: accent, bg0/background, ring_left, ring_eaten (eaten circle), ring_goal, ring_over, font_scale (0.85–1.3), radius (0–32) or shape square|round, density cozy|compact.
@@ -1641,11 +1869,15 @@ Respond with ONLY valid JSON:
     {"type":"set_watch","measure_id":"potassium","label":"Potassium","mode":"floor","target_min":3500,"unit":"mg","window_days":7,"severity":"yellow"},
     {"type":"export_report","days":30},
     {"type":"feedback","message":"Show total carbs and net carbs in the daily view","category":"food","theme_key":"net_carbs_display","theme_label":"Show net carbs in daily view"},
-    {"type":"list_suggestions"}
+    {"type":"list_suggestions"},
+    {"type":"remember","note":"Prefers black eaten rings"},
+    {"type":"forget","match":"black eaten"}
   ]
 }
 
 Rules:
+- You HAVE conversation history in prior messages. “Change it back” / undo → use CURRENT THEME + recent turns. Default eaten ring is #38bdf8 if they want original blue.
+- “Remember that I like X” → remember action. Do not remember medical diagnoses.
 - "save my shake / remember this food / store this recipe" → save_food. User MUST supply numbers — NEVER invent macros/micros. When they give a FULL label/breakdown, store ALL of it: kcal, macros, fiber, sugars, net_carbs, potassium, magnesium, sodium, iron, calcium, vitamins, and ingredients_list. Put extra vitamins/minerals in nutrients:{}. One saved food can hold many ingredients + many micros (not one number only).
 - "I had my morning shake" / "log the HLTH shake" when name matches SAVED FOODS → log_saved (not USDA guess)
 - "list my saved foods" → list_saved
@@ -1670,12 +1902,24 @@ Rules:
 - Off-topic → empty actions + friendly redirect (DOMAIN CONTRACT)
 - You are BigBricey (the product). The logged-in user’s name is for addressing them only — never treat them as a third-party product owner.`;
 
+  const history = Array.isArray(ctx.history) ? ctx.history : [];
+  const prior = [];
+  for (const m of history) {
+    const role = m.role === "assistant" || m.role === "bot" ? "assistant" : "user";
+    const content = String(m.content || "").trim();
+    if (!content) continue;
+    prior.push({ role, content: content.slice(0, 8000) });
+  }
+  // Cap prior messages for safety while still using a large window
+  const priorCapped = prior.length > 100 ? prior.slice(-100) : prior;
+
   try {
     const out = await llmChat({
       temperature: 0,
       title: "BigBricey-Chat",
       messages: [
         { role: "system", content: system },
+        ...priorCapped,
         { role: "user", content: text },
       ],
     });

@@ -1766,3 +1766,221 @@ export function rowFromSavedFood(saved, amount = 1) {
     },
   };
 }
+
+/* ——— Chat conversations + permanent memory notes ——— */
+
+const MEMORY_NOTES_MAX = 40;
+const CHAT_LIST_LIMIT = 50;
+
+export async function listConversations(email, { limit = CHAT_LIST_LIMIT } = {}) {
+  const e = String(email || "").toLowerCase();
+  if (!e) return [];
+  try {
+    return (
+      (await sb("chat_conversations", {
+        query: {
+          select: "id,title,summary,created_at,updated_at",
+          user_email: `eq.${e}`,
+          order: "updated_at.desc",
+          limit: String(limit),
+        },
+      })) || []
+    );
+  } catch {
+    return [];
+  }
+}
+
+export async function getConversation(email, conversationId) {
+  const e = String(email || "").toLowerCase();
+  const id = String(conversationId || "").trim();
+  if (!e || !id) return null;
+  try {
+    const rows = await sb("chat_conversations", {
+      query: {
+        select: "id,title,summary,created_at,updated_at,user_email",
+        id: `eq.${id}`,
+        user_email: `eq.${e}`,
+        limit: "1",
+      },
+    });
+    return rows?.[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function createConversation(email, { title = "Chat" } = {}) {
+  const e = String(email || "").toLowerCase();
+  if (!e) throw new Error("email required");
+  const now = new Date().toISOString();
+  const created = await sb("chat_conversations", {
+    method: "POST",
+    body: {
+      user_email: e,
+      title: String(title || "Chat").slice(0, 80),
+      summary: null,
+      created_at: now,
+      updated_at: now,
+    },
+    headers: { Prefer: "return=representation" },
+  });
+  return created?.[0] || null;
+}
+
+export async function touchConversation(email, conversationId, { title, summary } = {}) {
+  const e = String(email || "").toLowerCase();
+  const id = String(conversationId || "").trim();
+  if (!e || !id) return;
+  const body = { updated_at: new Date().toISOString() };
+  if (title != null) body.title = String(title).slice(0, 80);
+  if (summary !== undefined) body.summary = summary;
+  try {
+    await sb("chat_conversations", {
+      method: "PATCH",
+      query: { id: `eq.${id}`, user_email: `eq.${e}` },
+      body,
+      headers: { Prefer: "return=minimal" },
+    });
+  } catch {
+    /* */
+  }
+}
+
+export async function listMessages(email, conversationId, { limit = 500 } = {}) {
+  const e = String(email || "").toLowerCase();
+  const id = String(conversationId || "").trim();
+  if (!e || !id) return [];
+  try {
+    const rows =
+      (await sb("chat_messages", {
+        query: {
+          select: "id,role,content,created_at",
+          conversation_id: `eq.${id}`,
+          user_email: `eq.${e}`,
+          order: "created_at.asc",
+          limit: String(limit),
+        },
+      })) || [];
+    return Array.isArray(rows) ? rows : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function appendMessage(email, conversationId, role, content) {
+  const e = String(email || "").toLowerCase();
+  const id = String(conversationId || "").trim();
+  const text = String(content || "").trim();
+  const r = String(role || "").toLowerCase();
+  if (!e || !id || !text) return null;
+  if (!["user", "assistant", "system"].includes(r)) return null;
+  try {
+    const created = await sb("chat_messages", {
+      method: "POST",
+      body: {
+        conversation_id: id,
+        user_email: e,
+        role: r,
+        content: text.slice(0, 20000),
+      },
+      headers: { Prefer: "return=representation" },
+    });
+    await touchConversation(e, id);
+    return created?.[0] || null;
+  } catch (err) {
+    throw err;
+  }
+}
+
+/**
+ * Build messages for the LLM: optional summary + recent turns.
+ * Keeps a large window for GLM; auto-compacts older turns into conversation.summary.
+ */
+export async function buildChatContextForModel(email, conversationId, { maxMessages = 120 } = {}) {
+  const conv = await getConversation(email, conversationId);
+  const all = await listMessages(email, conversationId, { limit: 800 });
+  let summary = conv?.summary || null;
+
+  // Auto-compact if too many messages: summarize older half into summary field
+  if (all.length > maxMessages + 40) {
+    const cut = all.length - maxMessages;
+    const older = all.slice(0, cut);
+    const recent = all.slice(cut);
+    const blob = older
+      .map((m) => `${m.role}: ${String(m.content || "").slice(0, 400)}`)
+      .join("\n")
+      .slice(0, 12000);
+    const newSummary = [summary, "Earlier conversation:", blob]
+      .filter(Boolean)
+      .join("\n")
+      .slice(0, 14000);
+    summary = newSummary;
+    await touchConversation(email, conversationId, { summary });
+    return { conversation: conv, summary, messages: recent, compacted: true, total: all.length };
+  }
+
+  const messages = all.length > maxMessages ? all.slice(-maxMessages) : all;
+  return {
+    conversation: conv,
+    summary,
+    messages,
+    compacted: false,
+    total: all.length,
+  };
+}
+
+export async function getMemoryNotes(email) {
+  const e = String(email || "").toLowerCase();
+  if (!e) return [];
+  try {
+    const profile = await getProfile(e);
+    const prefs =
+      profile?.prefs && typeof profile.prefs === "object" ? profile.prefs : {};
+    const notes = Array.isArray(prefs.memory_notes) ? prefs.memory_notes : [];
+    return notes
+      .map((n) => String(n || "").trim())
+      .filter(Boolean)
+      .slice(0, MEMORY_NOTES_MAX);
+  } catch {
+    return [];
+  }
+}
+
+export async function saveMemoryNotes(email, notes) {
+  const e = String(email || "").toLowerCase();
+  if (!e) throw new Error("email required");
+  const list = (Array.isArray(notes) ? notes : [])
+    .map((n) => String(n || "").trim().slice(0, 400))
+    .filter(Boolean)
+    .slice(0, MEMORY_NOTES_MAX);
+  const profile = await getProfile(e);
+  const prefs =
+    profile?.prefs && typeof profile.prefs === "object" ? { ...profile.prefs } : {};
+  prefs.memory_notes = list;
+  await sb("profiles", {
+    method: "PATCH",
+    query: { email: `eq.${e}` },
+    body: { prefs, updated_at: new Date().toISOString() },
+    headers: { Prefer: "return=minimal" },
+  });
+  return list;
+}
+
+export async function addMemoryNote(email, note) {
+  const text = String(note || "").trim();
+  if (!text) return getMemoryNotes(email);
+  const cur = await getMemoryNotes(email);
+  const next = [...cur.filter((n) => n.toLowerCase() !== text.toLowerCase()), text].slice(
+    -MEMORY_NOTES_MAX
+  );
+  return saveMemoryNotes(email, next);
+}
+
+export async function removeMemoryNote(email, match) {
+  const m = String(match || "").toLowerCase().trim();
+  if (!m) return getMemoryNotes(email);
+  const cur = await getMemoryNotes(email);
+  const next = cur.filter((n) => !n.toLowerCase().includes(m));
+  return saveMemoryNotes(email, next);
+}
