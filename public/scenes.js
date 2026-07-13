@@ -215,7 +215,7 @@
       return { type, x, y: Math.random() * h, r: 0.8 + Math.random() * 2, vx: 0.4 + Math.random() * 1.2, vy: (Math.random() - 0.5) * 0.4 };
     }
     if (type === "bubbles") {
-      return { type, x, y: h + Math.random() * 40, r: 2 + Math.random() * 6, vy: -(0.5 + Math.random() * 1.5), vx: Math.sin(i) * 0.3 };
+      return { type, x, y: h + Math.random() * 40, r: 2 + Math.random() * 6, vy: -(0.5 + Math.random() * 1.5), vx: (Math.random() - 0.5) * 0.6 };
     }
     if (type === "matrix") {
       return { type, x: Math.floor(Math.random() * 40) * (w / 40), y, vy: 2 + Math.random() * 6, ch: String.fromCharCode(0x30a0 + Math.random() * 96) };
