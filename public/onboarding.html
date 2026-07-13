@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#06080f" />
+  <title>Set up your coach — BigBricey</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(900px 500px at 15% -10%, rgba(56,189,248,.14), transparent 55%),
+        radial-gradient(700px 400px at 100% 0%, rgba(167,139,250,.10), transparent 50%),
+        #06080f;
+    }
+    .ob {
+      max-width: 460px; margin: 0 auto; min-height: 100vh;
+      padding: 20px 20px calc(28px + env(safe-area-inset-bottom));
+      display: flex; flex-direction: column;
+    }
+    .ob-top { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; min-height: 40px; }
+    .ob-back {
+      width: 40px; height: 40px; border-radius: 12px;
+      border: 1px solid var(--line); background: var(--card);
+      color: var(--text); font-size: 1.2rem; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .ob-back[hidden] { visibility: hidden; pointer-events: none; }
+    .ob-prog { flex: 1; height: 6px; border-radius: 999px; background: rgba(148,163,184,.12); overflow: hidden; }
+    .ob-prog > i {
+      display: block; height: 100%; width: 0%;
+      background: linear-gradient(90deg, #38bdf8, #a78bfa);
+      border-radius: 999px; transition: width .25s ease;
+    }
+    .ob-body { flex: 1; display: flex; flex-direction: column; padding-top: 12px; }
+    .ob-step { display: none; flex: 1; flex-direction: column; animation: fade .22s ease; }
+    .ob-step.on { display: flex; }
+    @keyframes fade {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: none; }
+    }
+    .ob-kicker {
+      font-size: 12px; font-weight: 700; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--accent); margin: 0 0 10px;
+    }
+    .ob-title {
+      margin: 0 0 10px; font-size: clamp(1.5rem, 5.5vw, 1.9rem);
+      letter-spacing: -0.03em; line-height: 1.15; font-weight: 800;
+    }
+    .ob-sub { margin: 0 0 22px; color: var(--muted); line-height: 1.5; font-size: .96rem; }
+    .ob-hero {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; text-align: center; padding: 24px 8px 40px;
+    }
+    .ob-mark {
+      width: 88px; height: 88px; border-radius: 28px; margin-bottom: 28px;
+      background: conic-gradient(from 200deg, #38bdf8, #a78bfa, #34d399, #38bdf8);
+      box-shadow: 0 0 48px rgba(56,189,248,.35); position: relative;
+    }
+    .ob-mark::after {
+      content: ""; position: absolute; inset: 3px; border-radius: 25px; background: #0a0e18;
+    }
+    .ob-field {
+      width: 100%; box-sizing: border-box;
+      font: 600 1.25rem var(--font); color: var(--text);
+      background: rgba(14,18,28,.85); border: 1px solid var(--line-strong);
+      border-radius: 16px; padding: 16px 18px; outline: none;
+    }
+    .ob-field:focus { border-color: rgba(56,189,248,.55); box-shadow: 0 0 0 3px rgba(56,189,248,.12); }
+    .ob-choices { display: flex; flex-direction: column; gap: 10px; }
+    .ob-choice {
+      display: flex; align-items: flex-start; gap: 14px;
+      width: 100%; text-align: left; cursor: pointer;
+      background: rgba(14,18,28,.85); border: 1.5px solid var(--line);
+      border-radius: 16px; padding: 14px 16px;
+      color: var(--text); font: 600 1.02rem var(--font);
+      transition: border-color .15s, background .15s;
+    }
+    .ob-choice:hover { border-color: rgba(56,189,248,.35); }
+    .ob-choice.on { border-color: rgba(56,189,248,.7); background: rgba(56,189,248,.08); }
+    .ob-choice .dot {
+      width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0; margin-top: 2px;
+      border: 2px solid #5b6578;
+    }
+    .ob-choice.on .dot {
+      border-color: #38bdf8;
+      background: radial-gradient(circle at center, #38bdf8 45%, transparent 50%);
+    }
+    .ob-choice.multi .dot { border-radius: 6px; }
+    .ob-choice.multi.on .dot {
+      background: #38bdf8; border-color: #38bdf8; box-shadow: inset 0 0 0 2px #0a0e18;
+    }
+    .ob-choice .lab { flex: 1; min-width: 0; }
+    .ob-choice .sub {
+      display: block; font-weight: 500; font-size: .86rem; color: var(--muted); margin-top: 4px; line-height: 1.4;
+    }
+    .ob-row { display: flex; gap: 12px; align-items: flex-end; }
+    .ob-col { flex: 1; }
+    .ob-col label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
+    .ob-unit { font-size: .95rem; color: var(--muted); font-weight: 600; padding-bottom: 18px; min-width: 2rem; }
+    .ob-foot { margin-top: auto; padding-top: 24px; display: flex; flex-direction: column; gap: 10px; }
+    .ob-cta {
+      width: 100%; border: 0; border-radius: 16px; padding: 16px;
+      font: 800 1.05rem var(--font); cursor: pointer;
+      background: linear-gradient(135deg, #38bdf8, #818cf8);
+      color: #041018; box-shadow: 0 12px 32px rgba(56,189,248,.25);
+    }
+    .ob-cta:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+    .ob-err {
+      display: none; background: #3a1a1a; border: 1px solid #833;
+      color: #f8b; border-radius: 12px; padding: 12px; font-size: .95rem; margin-bottom: 8px;
+    }
+    .ob-err.show { display: block; }
+    .ob-warn {
+      background: rgba(251,191,36,.1); border: 1px solid rgba(251,191,36,.35);
+      color: #fde68a; border-radius: 14px; padding: 12px 14px; font-size: .9rem; line-height: 1.45; margin: 12px 0;
+    }
+    .ob-stat {
+      background: rgba(14,18,28,.9); border: 1px solid var(--line);
+      border-radius: 16px; padding: 14px 16px; margin-bottom: 14px;
+    }
+    .ob-stat strong { font-family: var(--mono); font-size: 1.6rem; color: #38bdf8; }
+    .ob-stat span { display: block; color: var(--muted); font-size: .88rem; margin-top: 4px; }
+    .ob-consent { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
+    .ob-check {
+      display: flex; gap: 14px; align-items: flex-start;
+      background: rgba(14,18,28,.85); border: 1.5px solid var(--line);
+      border-radius: 16px; padding: 16px; cursor: pointer; color: var(--text);
+    }
+    .ob-check.on { border-color: rgba(56,189,248,.65); background: rgba(56,189,248,.07); }
+    .ob-check input { margin-top: 3px; width: 20px; height: 20px; flex-shrink: 0; accent-color: #38bdf8; }
+    .ob-check .ck-title { font-weight: 700; font-size: 1.02rem; margin: 0 0 4px; }
+    .ob-check .ck-body { margin: 0; font-size: .9rem; color: var(--muted); line-height: 1.45; font-weight: 500; }
+    .ob-check .ck-body a { color: #38bdf8; }
+    .ob-req {
+      display: inline-block; font-size: 11px; font-weight: 800; letter-spacing: .04em;
+      text-transform: uppercase; color: #fbbf24; margin-left: 6px;
+    }
+    .ob-lock {
+      width: 56px; height: 56px; border-radius: 18px; margin-bottom: 18px;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(56,189,248,.12); border: 1px solid rgba(56,189,248,.25); font-size: 1.6rem;
+    }
+    .ob-signed { font-size: 12px; color: #5b6578; margin: 0 0 8px; }
+  </style>
+</head>
+<body>
+  <div class="ob">
+    <div class="ob-top">
+      <button type="button" class="ob-back" id="backBtn" aria-label="Back" hidden>←</button>
+      <div class="ob-prog" aria-hidden="true"><i id="progBar"></i></div>
+    </div>
+    <p class="ob-signed" id="signedAs"></p>
+    <div id="err" class="ob-err"></div>
+    <div class="ob-body" id="steps"></div>
+  </div>
+  <script>
+(function () {
+  const ACTIVITY_OPTS = [
+    { id: "sedentary", label: "Mostly sitting", sub: "Desk work, driving, little walking. Evenings on the couch." },
+    { id: "light", label: "Lightly active", sub: "Some walking or standing. Light chores. Not a physical job." },
+    { id: "moderate", label: "On your feet a lot", sub: "Retail, teaching, parenting on the move, or regular gym most weeks." },
+    { id: "high", label: "Physically demanding days", sub: "Lots of movement at work or high daily step counts." },
+    { id: "extreme", label: "Very high daily burn", sub: "Heavy physical days plus frequent hard training." },
+  ];
+  const TRAIN_OPTS = [
+    { id: "none", label: "Little or no training", sub: "No structured workouts right now." },
+    { id: "few", label: "1–2 days / week", sub: "Some lifting, sports, or classes." },
+    { id: "most", label: "Most days", sub: "Train 4–6 days a week." },
+    { id: "twice", label: "Twice a day / very high", sub: "Two sessions daily or extreme training load." },
+  ];
+  const GOAL_OPTS = [
+    { id: "lose", label: "Lose fat", sub: "Get leaner. Not a crash diet." },
+    { id: "maintain", label: "Maintain", sub: "Hold weight, improve habits and data." },
+    { id: "muscle", label: "Build muscle", sub: "Lean gain / recomp — not “get fat.”" },
+  ];
+  const LOSE_RATE_OPTS = [
+    { id: "0.5", label: "0.5 lb / week", sub: "Steady. Easiest to stick with." },
+    { id: "1", label: "1 lb / week", sub: "Common sustainable pace." },
+    { id: "1.5", label: "1.5 lb / week", sub: "Faster — needs consistency." },
+    { id: "2", label: "2 lb / week", sub: "Aggressive. Not for long stretches." },
+  ];
+  const EAT_OPTS = [
+    { id: "no_pref", label: "No special style", sub: "I just eat food — no diet name (pizza is fine)." },
+    { id: "flexible", label: "Flexible / mixed", sub: "Meat, plants, whatever fits the day." },
+    { id: "low_carb", label: "Lower carb", sub: "Prefer fewer starches and sugars." },
+    { id: "higher_protein", label: "High protein focus", sub: "Protein-first (meat, eggs, dairy, etc.)." },
+    { id: "plant_forward", label: "Plant-forward", sub: "More plants; not necessarily strict vegan." },
+    { id: "vegan", label: "Vegan", sub: "No animal products. Coach stays plant-only." },
+    { id: "carnivore", label: "Carnivore / animal-based", sub: "Mostly or only animal foods." },
+    { id: "other", label: "I’ll describe later", sub: "Tell the coach in chat when you’re ready." },
+  ];
+  const OBSTACLE_OPTS = [
+    { id: "lack_of_time", label: "Lack of time" },
+    { id: "lack_of_motivation", label: "Lack of motivation" },
+    { id: "not_sure_what_to_eat", label: "Not sure what to eat" },
+    { id: "hard_to_stay_consistent", label: "Hard to stay consistent" },
+    { id: "social_pressure", label: "Social pressure" },
+    { id: "cravings", label: "Cravings / emotional eating" },
+  ];
+  const CONF_OPTS = [
+    { id: "very", label: "Very confident" },
+    { id: "somewhat", label: "Somewhat confident" },
+    { id: "not_very", label: "Not very confident" },
+    { id: "not_sure", label: "Not sure" },
+  ];
+  const SEX_OPTS = [
+    { id: "male", label: "Male", sub: "Biological sex at birth — needed for energy estimates." },
+    { id: "female", label: "Female", sub: "Biological sex at birth — needed for energy estimates." },
+  ];
+
+  const state = {
+    consent_health: false,
+    consent_marketing: false,
+    first_name: "",
+    sex: "",
+    birthday: "",
+    height_ft: 5,
+    height_in: 10,
+    current_weight_lb: "",
+    primary_goal: "",
+    lose_rate_lb_week: "0.5",
+    activity_level: "",
+    training_level: "",
+    eating_style: "",
+    goal_weight_lb: "",
+    kcal_confirmed: "",
+    estimate: null,
+    obstacles: [],
+    confidence: "",
+  };
+
+  let step = 0;
+  const stepsEl = document.getElementById("steps");
+  const backBtn = document.getElementById("backBtn");
+  const progBar = document.getElementById("progBar");
+  const errEl = document.getElementById("err");
+
+  function getSteps() {
+    const s = [
+      "welcome", "consent", "name", "sex", "birthday", "height", "current_weight",
+      "goal",
+    ];
+    if (state.primary_goal === "lose") s.push("lose_rate");
+    s.push("activity", "training", "eating");
+    if (state.primary_goal === "lose" || state.primary_goal === "muscle") s.push("goal_weight");
+    s.push("kcal_confirm", "obstacles", "confidence");
+    return s;
+  }
+
+  function showErr(msg) {
+    if (!msg) { errEl.classList.remove("show"); errEl.textContent = ""; return; }
+    errEl.textContent = msg;
+    errEl.classList.add("show");
+  }
+
+  function canNext() {
+    const id = getSteps()[step];
+    switch (id) {
+      case "welcome": return true;
+      case "consent": return Boolean(state.consent_health);
+      case "name": return state.first_name.trim().length >= 1;
+      case "sex": return state.sex === "male" || state.sex === "female";
+      case "birthday": return Boolean(state.birthday);
+      case "height": return state.height_ft >= 3 && state.height_in >= 0 && state.height_in <= 11;
+      case "current_weight": {
+        const w = Number(state.current_weight_lb);
+        return w >= 50 && w <= 800;
+      }
+      case "goal": return Boolean(state.primary_goal);
+      case "lose_rate": return Boolean(state.lose_rate_lb_week);
+      case "activity": return Boolean(state.activity_level);
+      case "training": return Boolean(state.training_level);
+      case "eating": return Boolean(state.eating_style);
+      case "goal_weight": {
+        const w = Number(state.goal_weight_lb);
+        const cur = Number(state.current_weight_lb) || 0;
+        if (!(w >= 50 && w <= 800)) return false;
+        if (state.primary_goal === "lose" && cur && w >= cur) return false;
+        return true;
+      }
+      case "kcal_confirm": {
+        const k = Number(state.kcal_confirmed);
+        return k >= 1200 && k <= 12000;
+      }
+      case "obstacles": return state.obstacles.length >= 1;
+      case "confidence": return Boolean(state.confidence);
+      default: return false;
+    }
+  }
+
+  function renderChoice(opts, selected, multi) {
+    return opts.map((o) => {
+      const on = multi ? selected.includes(o.id) : selected === o.id;
+      const sub = o.sub ? `<span class="sub">${o.sub}</span>` : "";
+      return `<button type="button" class="ob-choice ${multi ? "multi" : ""} ${on ? "on" : ""}" data-id="${o.id}">
+        <span class="dot"></span>
+        <span class="lab">${o.label}${sub}</span>
+      </button>`;
+    }).join("");
+  }
+
+  function payloadDraft() {
+    return {
+      first_name: state.first_name.trim(),
+      sex: state.sex,
+      birthday: state.birthday,
+      height_in: Number(state.height_ft) * 12 + Number(state.height_in),
+      current_weight_lb: Number(state.current_weight_lb),
+      goal_weight_lb: Number(state.goal_weight_lb) || Number(state.current_weight_lb),
+      primary_goal: state.primary_goal,
+      lose_rate_lb_week: state.primary_goal === "lose" ? Number(state.lose_rate_lb_week) : null,
+      activity_level: state.activity_level,
+      training_level: state.training_level,
+      eating_style: state.eating_style,
+      kcal_confirmed: state.kcal_confirmed ? Number(state.kcal_confirmed) : undefined,
+    };
+  }
+
+  async function loadEstimate() {
+    try {
+      const r = await fetch("/api/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ op: "onboarding_preview", ...payloadDraft() }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.message || d.error || "Estimate failed");
+      state.estimate = d.goals;
+      if (!state.kcal_confirmed && d.goals?.kcal) {
+        state.kcal_confirmed = String(d.goals.kcal);
+      }
+      return d.goals;
+    } catch (e) {
+      showErr(e.message || String(e));
+      return null;
+    }
+  }
+
+  function render() {
+    showErr("");
+    const steps = getSteps();
+    if (step >= steps.length) step = steps.length - 1;
+    backBtn.hidden = step === 0;
+    progBar.style.width = Math.round((step / Math.max(1, steps.length - 1)) * 100) + "%";
+    const id = steps[step];
+    const isLast = step === steps.length - 1;
+    const cta = isLast ? "Finish & open coach" : "Continue";
+    let html = "";
+
+    if (id === "welcome") {
+      html = `<div class="ob-step on"><div class="ob-hero">
+        <div class="ob-mark"></div>
+        <p class="ob-kicker">Your living health ledger</p>
+        <h1 class="ob-title">A few questions to set up your log</h1>
+        <p class="ob-sub" style="max-width:36ch">
+          Body stats, goals, and how active your days usually are.
+          We’ll suggest a starting calorie target — you confirm it before anything is saved.
+        </p>
+      </div><div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn">Get started</button></div></div>`;
+    } else if (id === "consent") {
+      html = `<div class="ob-step on">
+        <div class="ob-lock">🔒</div>
+        <h1 class="ob-title">Your health &amp; your data</h1>
+        <p class="ob-sub">Private to your account. Used to run your ledger and coach tools — not sold, not shown to other members.</p>
+        <div class="ob-consent">
+          <label class="ob-check ${state.consent_health ? "on" : ""}" id="ckHealth">
+            <input type="checkbox" id="consentHealth" ${state.consent_health ? "checked" : ""} />
+            <span><p class="ck-title">I agree</p>
+            <p class="ck-body">Process my health data (food, weight, activity, goals) to run my ledger.
+            I agree to the <a href="/privacy.html" target="_blank" rel="noopener">Privacy Policy</a> and
+            <a href="/terms.html" target="_blank" rel="noopener">Terms</a>.</p></span>
+          </label>
+        </div>
+        <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
+      </div>`;
+    } else if (id === "name") {
+      html = `<div class="ob-step on">
+        <h1 class="ob-title">What's your first name?</h1>
+        <p class="ob-sub">So the coach can talk to you like a person.</p>
+        <input class="ob-field" id="nameIn" autocomplete="given-name" placeholder="First name" value="${esc(state.first_name)}" />
+        <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
+      </div>`;
+    } else if (id === "sex") {
+      html = `<div class="ob-step on">
+        <h1 class="ob-title">Sex (male or female)</h1>
+        <p class="ob-sub">Biological sex at birth — male or female. Used for energy estimates.</p>
+        <div class="ob-choices" id="sexChoices">${renderChoice(SEX_OPTS, state.sex, false)}</div>
+        <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
+      </div>`;
+    } else if (id === "birthday") {
+      html = `<div class="ob-step on">
+        <h1 class="ob-title">When's your birthday?</h1>
+        <p class="ob-sub">Age changes metabolism estimates.</p>
+        <input class="ob-field" id="bdayIn" type="date" max="${todayISO()}" value="${esc(state.birthday)}" />
+        <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
+      </div>`;
+    } else if (id === "height") {
+      html = `<div class="ob-step on">
+        <h1 class="ob-title">What's your height?</h1>
+        <p class="ob-sub">Used with weight and age for a baseline energy estimate.</p>
+        <div class="ob-row">
+          <div class="ob-col"><label>Feet</label><input class="ob-field" id="ftIn" type="number" min="3" max="8" value="${state.height_ft}" /></div>
+          <div class="ob-col"><label>Inches</label><input class="ob-field" id="inIn" type="number" min="0" max="11" value="${state.height_in}" /></div>
+        </div>
+        <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
+      </div>`;
+    } else if (id === "current_weight") {
+      html = `<div class="ob-step on">
+        <h1 class="ob-title">Current weight?</h1>
+        <p class="ob-sub">Starting point for your forever log.</p>
+        <div class="ob-row">
+          <div class="ob-col"><input class="ob-field" id="cwIn" type="number" min="50" max="800" step="0.1" value="${esc(state.current_weight_lb)}" placeholder="220" /></div>
+          <div class="ob-unit">lbs</div>
+        </div>
+        <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
+      </div>`;
+    } else if (id === "goal") {
+      html = `<div class="ob-step on">
+        <h1 class="ob-title">Primary goal?</h1>
+        <p class="ob-sub">Lose fat, hold steady, or build muscle — not “eat more junk to gain weight.”</p>
+        <div class="ob-choices" id="goalChoices">${renderChoice(GOAL_OPTS, state.primary_goal, false)}</div>
+        <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
+      </div>`;
+    } else if (id === "lose_rate") {
+      html = `<div class="ob-step on">
+        <h1 class="ob-title">How fast do you want to lose?</h1>
+        <p class="ob-sub">Faster = bigger deficit. We still block absurdly low calorie targets.</p>
+        <div class="ob-choices" id="rateChoices">${renderChoice(LOSE_RATE_OPTS, state.lose_rate_lb_week, false)}</div>
+        ${state.lose_rate_lb_week === "2" ? `<div class="ob-warn">2 lb/week is aggressive. Long-term very low intake can hurt hormones and recovery.</div>` : ""}
+        <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
+      </div>`;
+    } else if (id === "activity") {
+      html = `<div class="ob-step on">
+        <h1 class="ob-title">How active is your normal day?</h1>
+        <p class="ob-sub">Pick the level that best matches most of your days. This shapes the energy estimate.</p>
+        <div class="ob-choices" id="actChoices">${renderChoice(ACTIVITY_OPTS, state.activity_level, false)}</div>
+        <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
+      </div>`;
+    } else if (id === "training") {
+      html = `<div class="ob-step on">
+        <h1 class="ob-title">How much do you train?</h1>
+        <p class="ob-sub">On top of your job/day. Lifting, cardio, sports — structured sessions.</p>
+        <div class="ob-choices" id="trainChoices">${renderChoice(TRAIN_OPTS, state.training_level, false)}</div>
+        <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
+      </div>`;
+    } else if (id === "eating") {
+      html = `<div class="ob-step on">
+        <h1 class="ob-title">Any eating style preference?</h1>
+        <p class="ob-sub">We don’t push vegan, carnivore, or anything else. This just helps the coach talk your language. You can change later.</p>
+        <div class="ob-choices" id="eatChoices">${renderChoice(EAT_OPTS, state.eating_style, false)}</div>
+        <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
+      </div>`;
+    } else if (id === "goal_weight") {
+      html = `<div class="ob-step on">
+        <h1 class="ob-title">Goal weight?</h1>
+        <p class="ob-sub">${state.primary_goal === "muscle" ? "Optional scale target while building." : "Where you want the scale to head."}</p>
+        <div class="ob-row">
+          <div class="ob-col"><input class="ob-field" id="gwIn" type="number" min="50" max="800" step="0.1" value="${esc(state.goal_weight_lb)}" /></div>
+          <div class="ob-unit">lbs</div>
+        </div>
+        <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
+      </div>`;
+    } else if (id === "kcal_confirm") {
+      const g = state.estimate || {};
+      const warns = (g.warnings || []).map((w) => `<div class="ob-warn">${w}</div>`).join("");
+      html = `<div class="ob-step on">
+        <h1 class="ob-title">Confirm your daily calorie target</h1>
+        <p class="ob-sub">This is a <b>starting estimate</b> from body stats + activity + training — not medical advice, not a prescription. You can raise it. We refuse absurd crash targets as “the plan.”</p>
+        <div class="ob-stat">
+          <strong>${g.tdee != null ? Math.round(g.tdee) : "—"}</strong>
+          <span>Rough maintenance estimate (TDEE) before goal adjust</span>
+        </div>
+        <div class="ob-stat">
+          <strong>${g.formula_kcal != null ? Math.round(g.formula_kcal) : "—"}</strong>
+          <span>Raw formula after goal (before safety floor)</span>
+        </div>
+        ${warns}
+        <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:600">Your target (edit freely)</label>
+        <div class="ob-row">
+          <div class="ob-col"><input class="ob-field" id="kcalIn" type="number" min="1200" max="12000" step="10" value="${esc(state.kcal_confirmed)}" /></div>
+          <div class="ob-unit">kcal</div>
+        </div>
+        <p class="ob-sub" style="margin-top:12px;margin-bottom:0">
+          Floor: ~${g.floor_kcal || 1500}+ kcal. Under that is more like fasting than a normal diet — discuss extremes with a professional.
+          Food quality matters too (beef vs donuts) — this number is only energy, not “all that matters.”
+        </p>
+        <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
+      </div>`;
+    } else if (id === "obstacles") {
+      html = `<div class="ob-step on">
+        <h1 class="ob-title">What gets in the way?</h1>
+        <p class="ob-sub">Select all that apply. Stored for context — not judgment.</p>
+        <div class="ob-choices" id="obsChoices">${renderChoice(OBSTACLE_OPTS, state.obstacles, true)}</div>
+        <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
+      </div>`;
+    } else if (id === "confidence") {
+      html = `<div class="ob-step on">
+        <h1 class="ob-title">How confident are you you’ll stick with it?</h1>
+        <p class="ob-sub">Honest answer helps the coach’s tone. Still just data.</p>
+        <div class="ob-choices" id="confChoices">${renderChoice(CONF_OPTS, state.confidence, false)}</div>
+        <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
+      </div>`;
+    }
+
+    stepsEl.innerHTML = html;
+    wire();
+  }
+
+  function wire() {
+    document.getElementById("nextBtn")?.addEventListener("click", onNext);
+
+    const nameIn = document.getElementById("nameIn");
+    if (nameIn) {
+      nameIn.focus();
+      nameIn.oninput = () => { state.first_name = nameIn.value; refreshCta(); };
+      nameIn.onkeydown = (e) => { if (e.key === "Enter" && canNext()) onNext(); };
+    }
+    const bdayIn = document.getElementById("bdayIn");
+    if (bdayIn) bdayIn.onchange = () => { state.birthday = bdayIn.value; refreshCta(); };
+    const ftIn = document.getElementById("ftIn");
+    const inIn = document.getElementById("inIn");
+    if (ftIn) ftIn.oninput = () => { state.height_ft = Number(ftIn.value) || 0; refreshCta(); };
+    if (inIn) inIn.oninput = () => { state.height_in = Number(inIn.value) || 0; refreshCta(); };
+    const cwIn = document.getElementById("cwIn");
+    if (cwIn) {
+      cwIn.focus();
+      cwIn.oninput = () => { state.current_weight_lb = cwIn.value; refreshCta(); };
+    }
+    const gwIn = document.getElementById("gwIn");
+    if (gwIn) {
+      gwIn.focus();
+      gwIn.oninput = () => { state.goal_weight_lb = gwIn.value; refreshCta(); };
+    }
+    const kcalIn = document.getElementById("kcalIn");
+    if (kcalIn) {
+      kcalIn.focus();
+      kcalIn.oninput = () => { state.kcal_confirmed = kcalIn.value; refreshCta(); };
+    }
+
+    const consentHealth = document.getElementById("consentHealth");
+    if (consentHealth) {
+      consentHealth.onchange = () => {
+        state.consent_health = consentHealth.checked;
+        document.getElementById("ckHealth")?.classList.toggle("on", state.consent_health);
+        refreshCta();
+      };
+    }
+    document.querySelectorAll(".ob-check a").forEach((a) => a.addEventListener("click", (e) => e.stopPropagation()));
+
+    bindPick("#sexChoices", (id) => { state.sex = id; });
+    bindPick("#goalChoices", (id) => { state.primary_goal = id; if (id !== "lose") state.lose_rate_lb_week = "0.5"; });
+    bindPick("#rateChoices", (id) => { state.lose_rate_lb_week = id; });
+    bindPick("#actChoices", (id) => { state.activity_level = id; });
+    bindPick("#trainChoices", (id) => { state.training_level = id; });
+    bindPick("#eatChoices", (id) => { state.eating_style = id; });
+    bindPick("#confChoices", (id) => { state.confidence = id; });
+    document.querySelectorAll("#obsChoices .ob-choice").forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.dataset.id;
+        const i = state.obstacles.indexOf(id);
+        if (i >= 0) state.obstacles.splice(i, 1);
+        else state.obstacles.push(id);
+        render();
+      };
+    });
+  }
+
+  function bindPick(sel, fn) {
+    document.querySelectorAll(sel + " .ob-choice").forEach((btn) => {
+      btn.onclick = () => { fn(btn.dataset.id); render(); };
+    });
+  }
+
+  function refreshCta() {
+    const next = document.getElementById("nextBtn");
+    if (next) next.disabled = !canNext();
+  }
+
+  async function onNext() {
+    if (!canNext()) return;
+    const steps = getSteps();
+    if (step < steps.length - 1) {
+      step += 1;
+      const nextId = getSteps()[step];
+      if (nextId === "goal_weight" && !state.goal_weight_lb && state.current_weight_lb) {
+        const cur = Number(state.current_weight_lb);
+        if (state.primary_goal === "lose") {
+          const rate = Number(state.lose_rate_lb_week) || 0.5;
+          state.goal_weight_lb = String(Math.max(100, Math.round(cur - rate * 10)));
+        } else {
+          state.goal_weight_lb = String(cur);
+        }
+      }
+      if (nextId === "kcal_confirm") {
+        stepsEl.innerHTML = `<div class="ob-step on"><p class="ob-sub">Calculating estimate…</p></div>`;
+        await loadEstimate();
+      }
+      render();
+      return;
+    }
+    await finish();
+  }
+
+  backBtn.onclick = () => {
+    if (step > 0) {
+      step -= 1;
+      const steps = getSteps();
+      if (step >= steps.length) step = steps.length - 1;
+      render();
+    }
+  };
+
+  async function finish() {
+    const next = document.getElementById("nextBtn");
+    if (next) { next.disabled = true; next.textContent = "Saving…"; }
+    showErr("");
+    if (!state.consent_health) {
+      showErr("Health data consent is required.");
+      if (next) { next.disabled = false; next.textContent = "Finish & open coach"; }
+      return;
+    }
+    const cur = Number(state.current_weight_lb);
+    let goalW = Number(state.goal_weight_lb);
+    if (state.primary_goal === "maintain" || !goalW) goalW = cur;
+    const payload = {
+      op: "onboarding",
+      consent_health: true,
+      consent_marketing: false,
+      consented_at: new Date().toISOString(),
+      first_name: state.first_name.trim(),
+      sex: state.sex,
+      birthday: state.birthday,
+      height_in: Number(state.height_ft) * 12 + Number(state.height_in),
+      current_weight_lb: cur,
+      goal_weight_lb: goalW,
+      primary_goal: state.primary_goal,
+      lose_rate_lb_week: state.primary_goal === "lose" ? Number(state.lose_rate_lb_week) : null,
+      activity_level: state.activity_level,
+      training_level: state.training_level,
+      eating_style: state.eating_style,
+      kcal_confirmed: Number(state.kcal_confirmed),
+      obstacles: state.obstacles,
+      confidence: state.confidence,
+      complete: true,
+    };
+    try {
+      const r = await fetch("/api/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.message || d.error || "Couldn't save");
+      location.replace("/app.html?welcome=1");
+    } catch (e) {
+      showErr(e.message || String(e));
+      if (next) { next.disabled = false; next.textContent = "Finish & open coach"; }
+    }
+  }
+
+  function todayISO() { return new Date().toISOString().slice(0, 10); }
+  function esc(s) {
+    return String(s ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  }
+
+  (async function boot() {
+    try {
+      const me = await fetch("/api/auth/me").then((r) => r.json());
+      if (!me.authenticated) {
+        location.replace("/?error=" + encodeURIComponent("Sign in with Google first."));
+        return;
+      }
+      if (!me.member) {
+        location.replace("/join.html");
+        return;
+      }
+      const signed = document.getElementById("signedAs");
+      if (signed) signed.textContent = "Signed in as " + (me.email || "you") + (me.admin ? " · admin" : "");
+      // Force re-onboard if ?reset=1 or incomplete
+      const force = new URLSearchParams(location.search).has("edit") || new URLSearchParams(location.search).has("reset");
+      if (me.onboarding_complete && !force) {
+        location.replace("/app.html");
+        return;
+      }
+      if (me.name) {
+        const first = String(me.name).split(/\s+/)[0];
+        if (first) state.first_name = first;
+      }
+      render();
+    } catch {
+      showErr("Couldn't load account. Refresh and try again.");
+    }
+  })();
+})();
+  </script>
+</body>
+</html>

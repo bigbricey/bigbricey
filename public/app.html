@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#06080f" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
+  <title>BigBricey</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="tab-today">
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div>
+          <div class="brand-name">BigBricey</div>
+          <div class="brand-sub" id="dayLabel">Today</div>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <div class="day-nav">
+          <button type="button" class="icon-btn" id="dayPrev" aria-label="Previous day">‹</button>
+          <input type="date" id="dayPicker" class="day-input" />
+          <button type="button" class="icon-btn" id="dayNext" aria-label="Next day">›</button>
+          <button type="button" class="pill" id="dayToday">Today</button>
+        </div>
+        <div class="menu-wrap">
+          <button type="button" class="icon-btn" id="menuBtn" aria-label="Menu">⋯</button>
+          <div class="menu" id="menu" hidden>
+            <div class="menu-user" id="userChip">Signed in</div>
+            <div class="menu-item muted" id="apiStatus">…</div>
+            <button type="button" class="menu-item danger" id="clearDay">Clear this day…</button>
+            <a class="menu-item" href="/api/auth/logout">Log out</a>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div id="alertBanner" class="alert-banner" hidden></div>
+
+    <!-- TODAY: Coach first; then Calories LEFT | Macros RIGHT (side by side, not stacked) -->
+    <main class="panel panel-today" id="panelToday">
+      <section class="coach coach-hero">
+        <div class="coach-head">
+          <div>
+            <div class="coach-title">Your coach</div>
+            <div class="coach-tagline">Talk first. The dashboard follows.</div>
+          </div>
+        </div>
+        <div id="chatLog" class="chat-log" aria-live="polite">
+          <div class="chat-bubble bot welcome">
+            <div class="chat-who">BigBricey</div>
+            <div class="chat-text">I’m here to build your day. Tell me what you ate, a workout, steps, or a goal — e.g. “1 lb bacon”, “50 push-ups”, “watch potassium under 3500”.</div>
+          </div>
+        </div>
+        <div class="composer">
+          <input id="foodInput" type="text" enterkeyhint="go" autocomplete="off"
+            placeholder="What did you do or eat?" autofocus />
+          <button id="addBtn" type="button">Send</button>
+        </div>
+        <p id="addMsg" class="msg" hidden></p>
+      </section>
+
+      <!-- Calories LEFT · Macros RIGHT — always next to each other, under the coach -->
+      <section class="dash-primary" id="totals" aria-label="Today's calories and macros">
+        <article class="dash-card dash-cal">
+          <div class="dash-card-head compact">
+            <h2>Calories</h2>
+            <span class="dash-sub">Remaining</span>
+          </div>
+          <div class="dash-cal-body compact">
+            <div class="ring-wrap sm-ring">
+              <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
+                <circle class="ring-bg" cx="60" cy="60" r="52" />
+                <circle class="ring-fg" id="ringKcal" cx="60" cy="60" r="52" />
+              </svg>
+              <div class="ring-center">
+                <div class="ring-num" id="tKcalRemain">0</div>
+                <div class="ring-cap">left</div>
+              </div>
+            </div>
+            <ul class="dash-list">
+              <li><span>Goal</span><strong id="tKcalGoal">2000</strong></li>
+              <li><span>Food</span><strong id="tKcal">0</strong></li>
+              <li><span>Items</span><strong id="tFoodCount">0</strong></li>
+            </ul>
+          </div>
+        </article>
+
+        <article class="dash-card dash-macros">
+          <div class="dash-card-head compact">
+            <h2>Macros</h2>
+            <span class="dash-sub">P · F · C</span>
+          </div>
+          <div class="macro-rings">
+            <div class="macro-ring">
+              <svg class="ring sm" viewBox="0 0 100 100">
+                <circle class="ring-bg" cx="50" cy="50" r="40" />
+                <circle class="ring-fg protein" id="ringPro" cx="50" cy="50" r="40" />
+              </svg>
+              <div class="macro-lab">
+                <strong id="tPro">0</strong>
+                <span>Protein</span>
+                <em id="tProGoal">/ 150g</em>
+              </div>
+            </div>
+            <div class="macro-ring">
+              <svg class="ring sm" viewBox="0 0 100 100">
+                <circle class="ring-bg" cx="50" cy="50" r="40" />
+                <circle class="ring-fg fat" id="ringFat" cx="50" cy="50" r="40" />
+              </svg>
+              <div class="macro-lab">
+                <strong id="tFat">0</strong>
+                <span>Fat</span>
+                <em id="tFatGoal">/ 100g</em>
+              </div>
+            </div>
+            <div class="macro-ring">
+              <svg class="ring sm" viewBox="0 0 100 100">
+                <circle class="ring-bg" cx="50" cy="50" r="40" />
+                <circle class="ring-fg carbs" id="ringCarb" cx="50" cy="50" r="40" />
+              </svg>
+              <div class="macro-lab">
+                <strong id="tCarb">0</strong>
+                <span>Carbs</span>
+                <em id="tCarbGoal">/ 50g</em>
+              </div>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="block dash-grid dash-secondary">
+        <article class="dash-card">
+          <div class="dash-card-head">
+            <h2>Minerals</h2>
+            <span class="dash-sub">Always visible — not paywalled</span>
+          </div>
+          <ul class="dash-list tall">
+            <li><span>Potassium</span><strong><span id="tK">0</span> <em id="tKGoal">/ 3500 mg</em></strong></li>
+            <li><span>Magnesium</span><strong><span id="tMg">0</span> <em id="tMgGoal">/ 350 mg</em></strong></li>
+            <li><span>Sodium</span><strong><span id="tNa">0</span> mg</strong></li>
+            <li><span>Fiber</span><strong><span id="tFib">0</span> g</strong></li>
+          </ul>
+        </article>
+
+        <article class="dash-card">
+          <div class="dash-card-head">
+            <h2>Day summary</h2>
+            <span class="dash-sub">Quick read</span>
+          </div>
+          <ul class="dash-list tall">
+            <li><span>Foods logged</span><strong id="tFoodCount2">0</strong></li>
+            <li><span>Calories eaten</span><strong id="tKcal2">0</strong></li>
+            <li><span>Protein</span><strong id="tPro2">0 g</strong></li>
+            <li><span>Fat</span><strong id="tFat2">0 g</strong></li>
+          </ul>
+        </article>
+      </section>
+
+      <section class="block">
+        <div class="block-head">
+          <h2>Food diary</h2>
+          <button type="button" class="text-btn" id="btnManualAdd">+ Manual item</button>
+        </div>
+        <div id="foodCards" class="food-cards"></div>
+        <div id="foodEmpty" class="empty-state">
+          Nothing logged yet — tell the coach above, or add manually.
+        </div>
+      </section>
+    </main>
+
+    <!-- confirm delete modal -->
+    <div class="modal" id="confirmModal" hidden>
+      <div class="modal-card">
+        <h3 id="confirmTitle">Remove this item?</h3>
+        <p id="confirmBody">This cannot be undone.</p>
+        <div class="modal-actions">
+          <button type="button" class="pill" id="confirmCancel">Cancel</button>
+          <button type="button" class="btn-danger" id="confirmOk">Yes, remove</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- manual add modal -->
+    <div class="modal" id="manualModal" hidden>
+      <div class="modal-card">
+        <h3>Add food manually</h3>
+        <p class="dash-sub">Or just type in the coach — this is optional.</p>
+        <div class="form-grid manual-form">
+          <label>Name<input id="mName" placeholder="e.g. eggs" /></label>
+          <label>kcal<input id="mKcal" type="number" placeholder="0" /></label>
+          <label>Protein g<input id="mPro" type="number" placeholder="0" /></label>
+          <label>Fat g<input id="mFat" type="number" placeholder="0" /></label>
+          <label>Carbs g<input id="mCarb" type="number" placeholder="0" /></label>
+          <label>K mg<input id="mK" type="number" placeholder="0" /></label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="pill" id="manualCancel">Cancel</button>
+          <button type="button" class="btn-primary" id="manualOk">Add to day</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- TRENDS -->
+    <main class="panel panel-trends" id="panelTrends" hidden>
+      <div class="block">
+        <div class="block-head">
+          <h2>Trends</h2>
+        </div>
+        <div class="chart-controls">
+          <div class="seg" id="chartRangeSeg">
+            <button type="button" data-r="7">7d</button>
+            <button type="button" data-r="30" class="on">30d</button>
+            <button type="button" data-r="90">90d</button>
+          </div>
+          <button type="button" class="pill" id="refreshCharts">Refresh</button>
+        </div>
+        <div class="chart-toggles" id="chartToggles">
+          <label class="chip"><input type="checkbox" data-m="kcal" checked /> kcal</label>
+          <label class="chip"><input type="checkbox" data-m="protein" checked /> protein</label>
+          <label class="chip"><input type="checkbox" data-m="fat" /> fat</label>
+          <label class="chip"><input type="checkbox" data-m="carbs" /> carbs</label>
+          <label class="chip"><input type="checkbox" data-m="potassium" checked /> K</label>
+          <label class="chip"><input type="checkbox" data-m="magnesium" checked /> Mg</label>
+          <label class="chip"><input type="checkbox" data-m="sodium" /> Na</label>
+          <label class="chip"><input type="checkbox" data-m="steps" /> steps</label>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="trendCanvas" width="1000" height="320"></canvas>
+        </div>
+        <div id="chartLegend" class="chart-legend"></div>
+      </div>
+
+      <div class="block">
+        <div class="block-head"><h2>Watch status</h2></div>
+        <div id="watchStatuses" class="watch-grid"></div>
+      </div>
+    </main>
+
+    <!-- GOALS -->
+    <main class="panel panel-goals" id="panelGoals" hidden>
+      <div class="block">
+        <div class="block-head"><h2>Goals</h2></div>
+        <p class="panel-lead">Set floors. Rolling daily averages. Chat can set these too.</p>
+        <div id="watchStatusesGoals" class="watch-grid"></div>
+        <div class="form-card">
+          <div class="form-grid">
+            <label>What<input id="wMeasure" placeholder="potassium" list="measureList" /></label>
+            <label>Min / day<input id="wMin" type="number" placeholder="3500" /></label>
+            <label>Unit<input id="wUnit" placeholder="mg" /></label>
+            <label>Days<input id="wDays" type="number" value="7" min="1" max="90" /></label>
+          </div>
+          <button type="button" class="btn-primary" id="wSave">Save watch</button>
+          <datalist id="measureList">
+            <option value="potassium"></option>
+            <option value="magnesium"></option>
+            <option value="protein"></option>
+            <option value="fat"></option>
+            <option value="carbs"></option>
+            <option value="kcal"></option>
+            <option value="fiber"></option>
+            <option value="sodium"></option>
+            <option value="steps"></option>
+          </datalist>
+        </div>
+      </div>
+    </main>
+
+    <!-- YOU -->
+    <main class="panel panel-you" id="panelYou" hidden>
+      <div class="block">
+        <div class="block-head"><h2>You</h2></div>
+        <div class="you-row"><span>Account</span><strong id="youEmail">—</strong></div>
+        <div class="you-row"><span>Role</span><strong id="youRole">member</strong></div>
+        <div class="you-row"><span>Coach profile</span><strong id="youProfileSummary">—</strong></div>
+        <div class="you-row"><span>Daily targets</span><strong id="youGoalsSummary">—</strong></div>
+        <p style="margin:12px 0 0;display:flex;flex-wrap:wrap;gap:8px">
+          <a class="pill" href="/onboarding.html?edit=1" style="display:inline-block;text-decoration:none">Update setup</a>
+          <button type="button" class="pill" id="btnExport30">Export 30-day pack</button>
+          <button type="button" class="pill" id="btnExport7">Export 7-day pack</button>
+        </p>
+        <p class="dash-sub" style="margin:10px 0 0">Copy/paste for your doctor or another AI (Grok, ChatGPT, Claude). Data only — not medical advice.</p>
+        <textarea id="exportBox" hidden readonly rows="12" style="width:100%;margin-top:12px;box-sizing:border-box;border-radius:12px;border:1px solid var(--line);background:#0a0e18;color:var(--text);padding:12px;font:12px var(--mono)"></textarea>
+      </div>
+      <div class="block" id="feedbackBox" hidden>
+        <div class="block-head"><h2>Friend suggestions</h2></div>
+        <div id="feedbackList" class="alert-list"></div>
+        <button type="button" class="pill" id="refreshFeedback">Refresh</button>
+      </div>
+      <div class="block">
+        <div class="block-head"><h2>Full table</h2></div>
+        <div id="sortStatus" class="sort-status">Tap a column to sort</div>
+        <div class="table-wrap">
+          <table id="nutriTable">
+            <thead>
+              <tr>
+                <th class="sortable" data-key="label" data-type="text">Food</th>
+                <th class="sortable num" data-key="kcal" data-type="num">kcal</th>
+                <th class="sortable num" data-key="protein" data-type="num">P</th>
+                <th class="sortable num" data-key="fat" data-type="num">F</th>
+                <th class="sortable num" data-key="carbs" data-type="num">C</th>
+                <th class="sortable num" data-key="potassium" data-type="num">K</th>
+                <th class="sortable num" data-key="magnesium" data-type="num">Mg</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="block danger-zone">
+        <button type="button" class="btn-danger" id="clearDay2">Clear this day…</button>
+        <a class="btn-ghost" href="/api/auth/logout">Log out</a>
+      </div>
+    </main>
+
+    <div id="calStrip" hidden></div>
+    <div id="alertList" hidden></div>
+
+    <nav class="tabbar" aria-label="Main">
+      <button type="button" class="tab on" data-tab="today"><span class="tab-ico">◉</span><span>Today</span></button>
+      <button type="button" class="tab" data-tab="trends"><span class="tab-ico">◷</span><span>Trends</span></button>
+      <button type="button" class="tab" data-tab="goals"><span class="tab-ico">◎</span><span>Goals</span></button>
+      <button type="button" class="tab" data-tab="you"><span class="tab-ico">☺</span><span>You</span></button>
+    </nav>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

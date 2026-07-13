@@ -1,0 +1,24 @@
+{
+  "framework": null,
+  "buildCommand": "",
+  "installCommand": "echo skip",
+  "outputDirectory": "public",
+  "rewrites": [
+    {
+      "source": "/api/log/day",
+      "destination": "/api/log"
+    },
+    {
+      "source": "/api/log/event",
+      "destination": "/api/log"
+    },
+    {
+      "source": "/api/log/history",
+      "destination": "/api/log"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/$1"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "bigbricey-ledger",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "test": "node scripts/test-coach-context.mjs",
+    "vercel-build": "echo 'static+api no build'"
+  },
+  "dependencies": {}
+}
