@@ -37,9 +37,15 @@ import {
   addMemoryNote,
   removeMemoryNote,
   logLlmUsage,
+  sb,
 } from "./_supabase.js";
 import { submitFeedback, summarizeFeedback, isAdmin } from "./_members.js";
 import { llmChat, llmConfig, DOMAIN_CONTRACT } from "./_llm.js";
+import {
+  capabilitiesForSystemPrompt,
+  abilitiesReplyText,
+  SCENE_IDS,
+} from "./_capabilities.js";
 import { buildStatsReport } from "./_report.js";
 import { formatPersonBlock } from "./_coach_context.js";
 import { knowledgeForSystemPrompt } from "./_knowledge.js";
@@ -228,6 +234,7 @@ export default async function handler(req, res) {
     let themeOut = null;
     let boxesOut = null;
     let suggestionsOut = null;
+    let sceneOut = null;
 
     // Export / print stats for doctor or other AI agents
     for (const action of actions) {
@@ -914,6 +921,65 @@ export default async function handler(req, res) {
       }
 
       if (
+        type === "set_scene" ||
+        type === "scene" ||
+        type === "set_effect" ||
+        type === "weather" ||
+        type === "ambiance"
+      ) {
+        try {
+          let scene = String(
+            action.scene || action.effect || action.name || action.id || "none"
+          )
+            .toLowerCase()
+            .replace(/\s+/g, "_");
+          const aliases = {
+            raining: "rain",
+            rainy: "rain",
+            cats_and_dogs: "rain",
+            dust: "desert",
+            sandy: "desert",
+            beach: "ocean",
+            sea: "ocean",
+            space: "stars",
+            party: "confetti",
+            clear: "none",
+            off: "none",
+            stop: "none",
+          };
+          if (aliases[scene]) scene = aliases[scene];
+          if (!SCENE_IDS.includes(scene)) {
+            notes.push(
+              `Unknown scene “${scene}”. Try: ${SCENE_IDS.join(", ")}.`
+            );
+            continue;
+          }
+          // persist on prefs.scene
+          const profile = await getProfile(session.email);
+          const prefs =
+            profile?.prefs && typeof profile.prefs === "object"
+              ? { ...profile.prefs }
+              : {};
+          prefs.scene = scene;
+          await sb("profiles", {
+            method: "PATCH",
+            query: { email: `eq.${String(session.email).toLowerCase()}` },
+            body: { prefs, updated_at: new Date().toISOString() },
+            headers: { Prefer: "return=minimal" },
+          });
+          sceneOut = scene;
+          notes.push(
+            scene === "none"
+              ? "Scene cleared."
+              : `Scene set to “${scene}”. Look up — ambient effect on.`
+          );
+        } catch (err) {
+          notes.push(`Couldn't set scene: ${err.message}`);
+        }
+        continue;
+      }
+
+      if (
         type === "set_theme" ||
         type === "update_theme" ||
         type === "set_look" ||
@@ -1566,6 +1632,7 @@ export default async function handler(req, res) {
       theme: themeOut,
       boxes: boxesOut,
       suggestions: suggestionsOut,
+      scene: sceneOut,
       conversation_id: conversationId,
       memory_notes: memoryOut,
     });
@@ -1661,39 +1728,7 @@ async function doAdd(text, rows, res, email, prefix, conversationId) {
   });
 }
 
-const ABILITIES_REPLY = `I'm your private BigBricey fitness data ledger — not a general assistant. Everything stays on your account for you (doctor / other AI export when you want).
-
-Here's what I can do when you talk to me:
-
-FOOD & DATA
-• Log food (real nutrition lookup — I don't invent macros)
-• Save shakes/favorites, re-log by name, fix amounts, remove, clear day
-• Log workouts, steps, body weight, custom metrics (water, push-ups…)
-• Daily goals / diet style any day (“low carb”, “2200 kcal”, “100g carbs / 50g net”)
-• Watches (e.g. potassium floor) and export packs for doctor/other AI
-
-CUSTOMIZE YOUR SPACE (your private “room”)
-• Themes: midnight, light, neon, forest, pink, terminal, pastel, sunset
-• Vibe words: “pastel / cute / My Little Pony vibe”, “matrix”, “sunset”
-• Colors: accent, background, Left / Eaten / Goal / Over rings (any hex or color word)
-• Text size, corner roundness (square ↔ round), cozy vs compact density
-• Also: You tab → Look & theme (sliders + pickers)
-
-LAYOUT
-• Drag ⠿ boxes like a playlist, or tell me “put chat at the bottom / protein half width”
-• Sizes: full, half, 1/3 · Reset layout
-
-CUSTOM BOXES & CHARTS
-• Counters: “add push-up box goal 100”
-• Charts: “graph magnesium last 6 months”, “pie of macros this week” (line/bar/pie)
-• Drag them, resize, remove with ×
-
-PRODUCT IDEAS
-• “I wish the app had X” → goes on the owner backlog (not auto-built)
-
-I cannot (yet): upload photos as wallpaper, generate images, browse the live web, or act as a doctor/therapist.
-
-Try: “make it pastel”, “eaten rings hot pink”, “bigger text”, “square corners”, “add water box 100oz”, “chart protein 30 days”.`;
+const ABILITIES_REPLY = abilitiesReplyText();
 
 function isAbilitiesQuestion(text) {
   const t = String(text || "").toLowerCase();
@@ -1810,6 +1845,8 @@ ${summaryBlock}
 
 ${knowledgeForSystemPrompt()}
 
+${capabilitiesForSystemPrompt()}
+
 You manage:
 1) TODAY's food table (add/fix/remove/clear) — server looks up real nutrition; NEVER invent macros
 2) Personal SAVED FOODS library — shakes/recipes/favorites the user teaches once, then logs by name
@@ -1873,13 +1910,18 @@ Respond with ONLY valid JSON:
     {"type":"feedback","message":"Show total carbs and net carbs in the daily view","category":"food","theme_key":"net_carbs_display","theme_label":"Show net carbs in daily view"},
     {"type":"list_suggestions"},
     {"type":"remember","note":"Prefers black eaten rings"},
-    {"type":"forget","match":"black eaten"}
+    {"type":"forget","match":"black eaten"},
+    {"type":"set_scene","scene":"rain"},
+    {"type":"set_scene","scene":"desert"},
+    {"type":"set_scene","scene":"matrix"},
+    {"type":"set_scene","scene":"none"}
   ]
 }
 
 Rules:
 - You HAVE conversation history in prior messages. “Change it back” / undo → use CURRENT THEME + recent turns. Default eaten ring is #38bdf8 if they want original blue.
 - “Remember that I like X” → remember action. Do not remember medical diagnoses.
+- Ambient vibes: “make it rain”, “desert”, “snow”, “matrix”, “stars”, “clear the effects” → set_scene with scene id from CAPABILITIES list. Optionally also set_theme to match.
 - "save my shake / remember this food / store this recipe" → save_food. User MUST supply numbers — NEVER invent macros/micros. When they give a FULL label/breakdown, store ALL of it: kcal, macros, fiber, sugars, net_carbs, potassium, magnesium, sodium, iron, calcium, vitamins, and ingredients_list. Put extra vitamins/minerals in nutrients:{}. One saved food can hold many ingredients + many micros (not one number only).
 - "I had my morning shake" / "log the HLTH shake" when name matches SAVED FOODS → log_saved (not USDA guess)
 - "list my saved foods" → list_saved

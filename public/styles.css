@@ -1351,3 +1351,21 @@ body.layout-editing .layout-panel-chrome {
   font-size: 14px;
   margin-bottom: 2px;
 }
+
+#sceneFx {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.85;
+}
+.app-shell {
+  position: relative;
+  z-index: 1;
+}
+.tabbar {
+  z-index: 60;
+}
+body[data-scene="none"] #sceneFx {
+  display: none;
+}

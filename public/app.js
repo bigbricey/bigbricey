@@ -156,6 +156,16 @@ async function init() {
   updateDayLabel();
   personalizeWelcome();
   if (window.BBTheme) window.BBTheme.init();
+  if (window.BBScenes) {
+    if (window.__ntUser?.scene) {
+      try {
+        localStorage.setItem("bigbricey-scene-v1", window.__ntUser.scene);
+      } catch {
+        /* */
+      }
+    }
+    window.BBScenes.init();
+  }
   if (window.BBLayout) window.BBLayout.init();
   if (window.BBBoxes) window.BBBoxes.init();
   wireChatHistoryUi();
@@ -1268,6 +1278,11 @@ async function onSend() {
       window.BBTheme.apply(data.theme, { persist: true });
       window.__ntUser = window.__ntUser || {};
       window.__ntUser.theme = data.theme;
+    }
+    if (data.scene != null && window.BBScenes) {
+      window.BBScenes.apply(data.scene, { persist: true, theme: !data.theme });
+      window.__ntUser = window.__ntUser || {};
+      window.__ntUser.scene = data.scene;
     }
     // Chat can add/update custom goal boxes
     if (Array.isArray(data.boxes) && window.BBBoxes) {

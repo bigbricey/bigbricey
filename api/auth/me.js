@@ -70,6 +70,7 @@ export default async function handler(req, res) {
   const theme =
     prefs.theme && typeof prefs.theme === "object" ? prefs.theme : null;
   const boxes = Array.isArray(prefs.boxes) ? prefs.boxes : [];
+  const scene = prefs.scene || null;
 
   return sendJson(res, 200, {
     authenticated: true,
@@ -86,5 +87,6 @@ export default async function handler(req, res) {
     layout,
     theme,
     boxes,
+    scene,
   });
 }
