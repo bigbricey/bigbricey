@@ -35,6 +35,7 @@ const DEFAULT_GOALS = {
   protein: 150,
   fat: 100,
   carbs: 50,
+  net_carbs: 50,
   potassium: 3500,
   magnesium: 350,
 };
@@ -54,8 +55,25 @@ async function init() {
   });
   addBtn?.addEventListener("click", onSend);
   foodInput?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") onSend();
+    // Enter = send; Shift+Enter = new line (normal chat box)
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      onSend();
+    }
   });
+  // Auto-grow textarea up to max-height, then scrollbar
+  window.__growFoodInput = () => {
+    if (!foodInput) return;
+    foodInput.style.height = "auto";
+    if (!foodInput.value.trim()) {
+      foodInput.style.height = "52px"; // collapsed empty size
+      return;
+    }
+    const max = 220;
+    foodInput.style.height = Math.min(foodInput.scrollHeight, max) + "px";
+  };
+  foodInput?.addEventListener("input", window.__growFoodInput);
+  window.__growFoodInput();
 
   const clear = async () => {
     if (!confirm(`Clear all food for ${selectedDay}? This cannot be undone.`)) return;
@@ -130,8 +148,12 @@ async function init() {
   checkApi();
   updateDayLabel();
   personalizeWelcome();
+  if (window.BBTheme) window.BBTheme.init();
+  if (window.BBLayout) window.BBLayout.init();
+  if (window.BBBoxes) window.BBBoxes.init();
   await loadFromCloud(selectedDay);
   render();
+  if (window.BBBoxes) window.BBBoxes.loadValuesForDay(selectedDay);
   loadWatches();
   loadAlerts();
   loadCharts();
@@ -170,7 +192,7 @@ function personalizeWelcome() {
     );
     welcome.textContent = bits.join(" ");
     const who = document.querySelector("#chatLog .welcome .chat-who");
-    if (who) who.textContent = "Coach";
+    if (who) who.textContent = "BigBricey";
   } else if (name) {
     welcome.textContent = `Hey ${name} — tell me what you ate, a workout, steps, or a goal. I’ll log real numbers and keep your forever ledger.`;
   }
@@ -236,6 +258,7 @@ async function selectDay(day) {
   updateDayLabel();
   await loadFromCloud(selectedDay);
   render();
+  if (window.BBBoxes) window.BBBoxes.loadValuesForDay(selectedDay);
 }
 
 async function loadFromCloud(day) {
@@ -248,14 +271,22 @@ async function loadFromCloud(day) {
     if (!r.ok) return;
     const d = await r.json();
     cloudReady = true;
-    if (Array.isArray(d.rows)) {
-      if (d.rows.length || day !== todayKey() || !rows.length) {
-        rows = ensureUniqueIds(d.rows);
-        saveLocal(selectedDay);
-      } else if (rows.length) {
-        rows = ensureUniqueIds(rows);
-        await syncCloud(true);
-      }
+    if (!Array.isArray(d.rows)) return;
+
+    // Cloud is source of truth when it has rows. Never merge local + cloud
+    // (that doubled items on every refresh).
+    if (d.rows.length > 0) {
+      rows = ensureUniqueIds(d.rows);
+      saveLocal(selectedDay);
+      return;
+    }
+    // Cloud empty, local has food for today → push local up once
+    if (rows.length) {
+      rows = ensureUniqueIds(rows);
+      await syncCloud(true);
+    } else {
+      rows = [];
+      saveLocal(selectedDay);
     }
   } catch {
     cloudReady = false;
@@ -263,13 +294,18 @@ async function loadFromCloud(day) {
 }
 
 function ensureUniqueIds(list) {
+  // Only collapse the *same row id* (refresh/sync glitch).
+  // Same meal twice (e.g. two shakes) = two different ids — KEEP both.
   const seen = new Set();
-  return (list || []).map((r, i) => {
-    let id = r.id || newId();
-    if (seen.has(id)) id = newId();
+  const out = [];
+  for (const r of list || []) {
+    let id = r.id || r.client_id || newId();
+    id = String(id);
+    if (seen.has(id)) continue;
     seen.add(id);
-    return { ...r, id };
-  });
+    out.push({ ...r, id });
+  }
+  return out;
 }
 
 function newId() {
@@ -337,17 +373,117 @@ function addManualFood() {
   appendChat("bot", `Added manually: ${name}`);
 }
 
-function setRing(id, eaten, goal) {
+/**
+ * Drive a ring fill (0–1).
+ * overMode: "auto" | true | false — only Left/calorie use red over; Goal never.
+ */
+function setRing(id, value, max, { r, overMode = "auto" } = {}) {
   const el = document.getElementById(id);
   if (!el) return;
-  const r = id === "ringKcal" ? 52 : 40;
-  const c = 2 * Math.PI * r;
-  const g = Math.max(1, Number(goal) || 1);
-  const e = Math.max(0, Number(eaten) || 0);
-  // fill = how much of goal eaten (cap 100%)
-  const pct = Math.min(1, e / g);
+  const radius = r != null ? r : id === "ringKcal" ? 52 : 42;
+  const c = 2 * Math.PI * radius;
+  const m = Math.max(0.0001, Number(max) || 1);
+  const v = Math.max(0, Number(value) || 0);
+  const pct = Math.min(1, v / m);
   el.style.strokeDasharray = String(c);
   el.style.strokeDashoffset = String(c * (1 - pct));
+  const isOver =
+    overMode === true ? true : overMode === false ? false : v > m + 0.05;
+  el.classList.toggle("over", isOver);
+}
+
+/**
+ * Three circles: Left · Eaten · Goal
+ * unit: "g" for macros, "" for calories
+ */
+function setMacroStat(prefix, eaten, goal, { unit = "g", ringBase, wrapId } = {}) {
+  const e = Math.max(0, Number(eaten) || 0);
+  const g = Math.max(0, Number(goal) || 0);
+  const over = g > 0 && e > g + 0.05;
+  const left = Math.max(0, g - e);
+  const overBy = Math.max(0, e - g);
+  const gSafe = Math.max(1, g);
+  const u = unit || "";
+  const show = (n, forceInt) =>
+    (forceInt || unit === "" ? String(Math.round(n)) : fmt(n)) + u;
+
+  setText("t" + prefix, show(e, unit === ""));
+  setText("t" + prefix + "Goal", show(g, true));
+  setText(
+    "t" + prefix + "Left",
+    over ? "+" + show(overBy, unit === "") : show(left, unit === "")
+  );
+
+  const leftLab = document.getElementById("t" + prefix + "LeftLab");
+  if (leftLab) leftLab.textContent = over ? "Over" : "Left";
+
+  const base =
+    ringBase ||
+    (prefix === "Pro"
+      ? "ringPro"
+      : prefix === "Fat"
+        ? "ringFat"
+        : prefix === "Net"
+          ? "ringNet"
+          : prefix === "Kcal"
+            ? "ringKcal"
+            : "ringCarb");
+  // Goal: always yellow · Eaten: always blue · Left: green under, red over
+  setRing(base + "Goal", Math.min(e, gSafe), gSafe, { r: 42, overMode: false });
+  setRing(base, Math.min(e, gSafe), gSafe, { r: 42, overMode: false });
+  const eatenEl = document.getElementById(base);
+  if (eatenEl) eatenEl.classList.remove("hit-goal", "over");
+  setRing(base + "Left", over ? gSafe : left, gSafe, {
+    r: 42,
+    overMode: over,
+  });
+  setOverArc(base + "Over", over ? overBy : 0, gSafe, Math.min(e, gSafe) / gSafe);
+
+  const wrap =
+    document.getElementById(
+      wrapId ||
+        (prefix === "Pro"
+          ? "macroProWrap"
+          : prefix === "Fat"
+            ? "macroFatWrap"
+            : prefix === "Net"
+              ? "macroNetWrap"
+              : prefix === "Kcal"
+                ? "macroKcalWrap"
+                : "macroCarbWrap")
+    );
+  if (wrap) {
+    wrap.classList.toggle("is-over", over);
+    wrap.classList.remove("is-almost"); // no amber “almost” — columns stay uniform
+  }
+}
+
+/**
+ * Red arc on Eaten circle: starts after the yellow “hit goal” arc and
+ * shows how far over you are (another fraction of a full goal loop).
+ * startFrac = portion already drawn by the main ring (0–1), usually 1 when over.
+ */
+function setOverArc(id, overAmount, goal, startFrac = 1) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const r = 42;
+  const c = 2 * Math.PI * r;
+  const g = Math.max(0.0001, Number(goal) || 1);
+  const o = Math.max(0, Number(overAmount) || 0);
+  const start = Math.min(1, Math.max(0, Number(startFrac) || 0));
+  if (o <= 0.05) {
+    el.classList.remove("is-on");
+    el.style.strokeDasharray = String(c);
+    el.style.strokeDashoffset = String(c);
+    return;
+  }
+  // Length of red segment (cap at one full extra loop)
+  const redLen = Math.min(1, o / g) * c;
+  // Gap after red so only that segment shows; offset so it starts after yellow
+  el.style.strokeDasharray = `${redLen} ${c}`;
+  // Negative dashoffset advances start past the completed yellow portion
+  el.style.strokeDashoffset = String(-start * c);
+  el.classList.add("is-on");
 }
 
 function applyGoalsFromWatches(statuses) {
@@ -374,9 +510,7 @@ function applyGoalsFromWatches(statuses) {
     }
   }
   setText("tKcalGoal", String(Math.round(dayGoals.kcal)));
-  setText("tProGoal", "/ " + Math.round(dayGoals.protein) + "g");
-  setText("tFatGoal", "/ " + Math.round(dayGoals.fat) + "g");
-  setText("tCarbGoal", "/ " + Math.round(dayGoals.carbs) + "g");
+  // Goal labels on macro board are set in setMacroStat during render()
   setText("tKGoal", "/ " + Math.round(dayGoals.potassium) + " mg");
   setText("tMgGoal", "/ " + Math.round(dayGoals.magnesium) + " mg");
 }
@@ -645,7 +779,7 @@ function appendChat(role, text, isError) {
     (text === "Working…" ? " thinking" : "");
   const who = document.createElement("div");
   who.className = "chat-who";
-  who.textContent = role === "user" ? "You" : isError ? "Error" : "Coach";
+  who.textContent = role === "user" ? "You" : isError ? "Error" : "BigBricey";
   const body = document.createElement("div");
   body.className = "chat-text";
   body.textContent = text;
@@ -759,15 +893,64 @@ async function exportStatsPack(days) {
 
 async function loadFeedbackInbox() {
   const list = document.getElementById("feedbackList");
+  const themesEl = document.getElementById("feedbackThemes");
   if (!list) return;
   try {
     const r = await fetch("/api/log?feedback=1");
     if (!r.ok) {
       list.innerHTML = `<div class="alert-empty">Couldn't load feedback.</div>`;
+      if (themesEl) themesEl.innerHTML = "";
       return;
     }
     const d = await r.json();
     const items = d.feedback || [];
+    const themes = d.summary?.themes || [];
+
+    if (themesEl) {
+      if (!themes.length) {
+        themesEl.innerHTML = `<div class="alert-empty">No clustered themes yet.</div>`;
+      } else {
+        themesEl.innerHTML = themes
+          .slice(0, 25)
+          .map((t) => {
+            const imp = t.importance || "low";
+            const ex = (t.examples || [])
+              .map((e) => escapeHtml((e.message || "").slice(0, 100)))
+              .join(" · ");
+            return `<div class="theme-rank-card imp-${escapeHtml(imp)}">
+              <div class="theme-rank-top">
+                <strong>${escapeHtml(t.theme_label || t.theme_key)}</strong>
+                <span class="theme-rank-badge">${escapeHtml(imp)}</span>
+              </div>
+              <div class="theme-rank-meta">
+                ${t.unique_users || 0} people · ${t.count || 0} notes · ${escapeHtml(t.category || "other")}
+                ${t.new_count ? ` · ${t.new_count} new` : ""}
+              </div>
+              ${ex ? `<div class="theme-rank-ex">${ex}</div>` : ""}
+              <div class="theme-rank-actions">
+                <button type="button" class="pill" data-theme-status="${escapeHtml(t.theme_key)}" data-st="read">Mark reviewed</button>
+                <button type="button" class="pill" data-theme-status="${escapeHtml(t.theme_key)}" data-st="done">Mark done</button>
+              </div>
+            </div>`;
+          })
+          .join("");
+        themesEl.querySelectorAll("[data-theme-status]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            await fetch("/api/log", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                op: "feedback_theme_status",
+                theme_key: btn.getAttribute("data-theme-status"),
+                status: btn.getAttribute("data-st") || "read",
+              }),
+            });
+            loadFeedbackInbox();
+          });
+        });
+      }
+    }
+
     if (!items.length) {
       list.innerHTML = `<div class="alert-empty">No suggestions yet.</div>`;
       return;
@@ -775,11 +958,14 @@ async function loadFeedbackInbox() {
     list.innerHTML = items
       .map((f) => {
         const when = (f.created_at || "").slice(0, 16).replace("T", " ");
+        const tag = [f.category, f.theme_key].filter(Boolean).join(" · ");
         return `<div class="alert-item ${f.status === "new" ? "yellow" : ""}">
           <div>
-            <div class="atitle">${escapeHtml(f.user_name || f.user_email)}</div>
+            <div class="atitle">${escapeHtml(f.user_name || f.user_email)}${
+              tag ? ` <span class="theme-rank-tag">${escapeHtml(tag)}</span>` : ""
+            }</div>
             <div class="abody">${escapeHtml(f.message)}</div>
-            <div class="abody" style="margin-top:4px">${escapeHtml(when)}</div>
+            <div class="abody" style="margin-top:4px">${escapeHtml(when)} · ${escapeHtml(f.status || "")}</div>
           </div>
           ${
             f.status === "new"
@@ -829,6 +1015,10 @@ async function onSend() {
   sending = true;
   addBtn.disabled = true;
   foodInput.value = "";
+  if (typeof window.__growFoodInput === "function") window.__growFoodInput();
+  else {
+    foodInput.style.height = "52px";
+  }
   if (activeTab !== "today") setTab("today");
   appendChat("user", text);
   setThinking(true);
@@ -849,8 +1039,49 @@ async function onSend() {
       render();
       await syncCloud(true);
     }
+    // Chat can change daily targets (diet/macros) — refresh rings
+    if (data.goals && typeof data.goals === "object") {
+      window.__ntUser = window.__ntUser || {};
+      window.__ntUser.goals = { ...(window.__ntUser.goals || {}), ...data.goals };
+      if (window.__ntUser.onboarding) {
+        window.__ntUser.onboarding.goals = window.__ntUser.goals;
+        if (data.eating_style) window.__ntUser.onboarding.eating_style = data.eating_style;
+      }
+      applyGoalsFromWatches([]);
+      render();
+      const gs = document.getElementById("youProfileSummary");
+      // refresh You tab goal line if present
+      const g = window.__ntUser.goals;
+      const youGoals = document.getElementById("youGoalsLine");
+      if (youGoals && g) {
+        youGoals.textContent = `${g.kcal || "—"} kcal · P ${g.protein || "—"}g · F ${g.fat || "—"}g · C ${g.carbs || "—"}g`;
+      }
+    }
+    // Chat can rearrange Today layout
+    if (data.layout && window.BBLayout) {
+      window.BBLayout.apply(data.layout, { persist: true });
+      window.__ntUser = window.__ntUser || {};
+      window.__ntUser.layout = data.layout;
+    }
+    // Chat can restyle the whole look
+    if (data.theme && window.BBTheme) {
+      window.BBTheme.apply(data.theme, { persist: true });
+      window.__ntUser = window.__ntUser || {};
+      window.__ntUser.theme = data.theme;
+    }
+    // Chat can add/update custom goal boxes
+    if (Array.isArray(data.boxes) && window.BBBoxes) {
+      window.BBBoxes.setBoxes(data.boxes, { persist: true });
+      window.__ntUser = window.__ntUser || {};
+      window.__ntUser.boxes = data.boxes;
+      window.BBBoxes.loadValuesForDay(selectedDay);
+    }
     if (Array.isArray(data.watchStatuses)) renderWatches(data.watchStatuses);
     else loadWatches();
+    // Refresh custom box totals after logging
+    if (window.BBBoxes && (data.changed || data.sideEvents?.length || data.boxes)) {
+      window.BBBoxes.loadValuesForDay(selectedDay);
+    }
     appendChat("bot", data.reply || data.notes?.join(" ") || "Done.");
   } catch (e) {
     setThinking(false);
@@ -894,25 +1125,23 @@ function render() {
   renderFoodCards();
   renderTableOnly();
   const t = totals();
-  const remain = Math.max(0, Math.round(dayGoals.kcal - t.kcal));
-  setText("tKcalRemain", String(remain));
-  setText("tKcal", fmt(t.kcal, 0));
+  // Uniform: Calories + macros all use Left · Eaten · Goal circles
+  setMacroStat("Kcal", t.kcal, dayGoals.kcal, { unit: "" });
+  setMacroStat("Pro", t.protein, dayGoals.protein);
+  setMacroStat("Fat", t.fat, dayGoals.fat);
+  setMacroStat("Carb", t.carbs, dayGoals.carbs);
+  const netGoal =
+    dayGoals.net_carbs != null ? Number(dayGoals.net_carbs) : dayGoals.carbs;
+  setMacroStat("Net", t.netCarbs, netGoal);
   setText("tKcal2", fmt(t.kcal, 0));
-  setText("tPro", fmt(t.protein));
   setText("tPro2", fmt(t.protein) + " g");
-  setText("tFat", fmt(t.fat));
   setText("tFat2", fmt(t.fat) + " g");
-  setText("tCarb", fmt(t.carbs));
   setText("tFib", fmt(t.fiber));
   setText("tK", fmt(t.potassium, 0));
   setText("tMg", fmt(t.magnesium, 0));
   setText("tNa", fmt(t.sodium, 0));
   setText("tFoodCount", String(rows.length));
   setText("tFoodCount2", String(rows.length));
-  setRing("ringKcal", t.kcal, dayGoals.kcal);
-  setRing("ringPro", t.protein, dayGoals.protein);
-  setRing("ringFat", t.fat, dayGoals.fat);
-  setRing("ringCarb", t.carbs, dayGoals.carbs);
 }
 
 function setText(id, v) {
@@ -979,6 +1208,20 @@ function renderTableOnly() {
   });
 }
 
+/** Net carbs for one food row: explicit net if saved, else carbs − fiber */
+function rowNetCarbs(r) {
+  const extras = r?.extras && typeof r.extras === "object" ? r.extras : {};
+  if (extras.net_carbs != null && Number.isFinite(Number(extras.net_carbs))) {
+    return Math.max(0, Number(extras.net_carbs));
+  }
+  if (r?.net_carbs != null && Number.isFinite(Number(r.net_carbs))) {
+    return Math.max(0, Number(r.net_carbs));
+  }
+  const carbs = Number(r?.carbs) || 0;
+  const fiber = Number(r?.fiber) || 0;
+  return Math.max(0, carbs - fiber);
+}
+
 function totals() {
   const t = {
     kcal: 0,
@@ -986,12 +1229,21 @@ function totals() {
     fat: 0,
     carbs: 0,
     fiber: 0,
+    netCarbs: 0,
     potassium: 0,
     magnesium: 0,
     sodium: 0,
   };
   for (const r of rows) {
-    for (const k of Object.keys(t)) t[k] += Number(r[k]) || 0;
+    t.kcal += Number(r.kcal) || 0;
+    t.protein += Number(r.protein) || 0;
+    t.fat += Number(r.fat) || 0;
+    t.carbs += Number(r.carbs) || 0;
+    t.fiber += Number(r.fiber) || 0;
+    t.netCarbs += rowNetCarbs(r);
+    t.potassium += Number(r.potassium) || 0;
+    t.magnesium += Number(r.magnesium) || 0;
+    t.sodium += Number(r.sodium) || 0;
   }
   return t;
 }

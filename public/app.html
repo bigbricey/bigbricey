@@ -45,13 +45,29 @@
 
     <div id="alertBanner" class="alert-banner" hidden></div>
 
-    <!-- TODAY: Coach first; then Calories LEFT | Macros RIGHT (side by side, not stacked) -->
+    <!-- TODAY: movable layout board -->
     <main class="panel panel-today" id="panelToday">
+      <div class="layout-toolbar" id="layoutToolbar">
+        <button type="button" class="pill" id="btnEditLayout">Edit layout</button>
+        <button type="button" class="pill" id="btnDoneLayout" hidden>Done</button>
+        <button type="button" class="text-btn" id="btnResetLayout" hidden>Reset layout</button>
+        <span class="layout-hint" id="layoutHint">Grab the ⠿ bar (hand cursor) · drop outline shows where it lands</span>
+        <span class="layout-hint muted" id="tFoodCountWrap">· <span id="tFoodCount">0</span> items</span>
+      </div>
+
+      <div class="layout-board" id="layoutBoard">
+      <!-- CHAT panel -->
+      <div class="layout-panel" data-panel="chat" data-size="full" id="panelChat">
+        <div class="layout-panel-chrome">
+          <span class="layout-drag" title="Drag">⠿</span>
+          <span class="layout-panel-title">Chat</span>
+          <button type="button" class="layout-size-btn" data-size-cycle aria-label="Cycle size">Full</button>
+        </div>
       <section class="coach coach-hero">
         <div class="coach-head">
           <div>
-            <div class="coach-title">Your coach</div>
-            <div class="coach-tagline">Talk first. The dashboard follows.</div>
+            <div class="coach-title">BigBricey</div>
+            <div class="coach-tagline">Talk first. The log follows.</div>
           </div>
         </div>
         <div id="chatLog" class="chat-log" aria-live="polite">
@@ -61,83 +77,277 @@
           </div>
         </div>
         <div class="composer">
-          <input id="foodInput" type="text" enterkeyhint="go" autocomplete="off"
-            placeholder="What did you do or eat?" autofocus />
+          <textarea id="foodInput" rows="2" enterkeyhint="send" autocomplete="off"
+            placeholder="What did you do or eat?"
+            autofocus></textarea>
           <button id="addBtn" type="button">Send</button>
         </div>
         <p id="addMsg" class="msg" hidden></p>
       </section>
+      </div>
 
-      <!-- Calories LEFT · Macros RIGHT — always next to each other, under the coach -->
-      <section class="dash-primary" id="totals" aria-label="Today's calories and macros">
-        <article class="dash-card dash-cal">
-          <div class="dash-card-head compact">
-            <h2>Calories</h2>
-            <span class="dash-sub">Remaining</span>
-          </div>
-          <div class="dash-cal-body compact">
-            <div class="ring-wrap sm-ring">
-              <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
-                <circle class="ring-bg" cx="60" cy="60" r="52" />
-                <circle class="ring-fg" id="ringKcal" cx="60" cy="60" r="52" />
-              </svg>
-              <div class="ring-center">
-                <div class="ring-num" id="tKcalRemain">0</div>
-                <div class="ring-cap">left</div>
+      <!-- CALORIES panel -->
+      <div class="layout-panel" data-panel="kcal" data-size="full" id="panelKcal">
+        <div class="layout-panel-chrome">
+          <span class="layout-drag" title="Drag">⠿</span>
+          <span class="layout-panel-title">Calories</span>
+          <button type="button" class="layout-size-btn" data-size-cycle>Full</button>
+        </div>
+            <div class="macro-row macro-row-kcal" id="macroKcalWrap">
+              <div class="macro-row-name">Calories</div>
+              <div class="macro-tri">
+                <div class="mt-circle tone-left">
+                  <div class="mt-ring-wrap mt-ring-lg">
+                    <svg class="mt-ring" viewBox="0 0 100 100" aria-hidden="true">
+                      <circle class="mt-track" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill" id="ringKcalLeft" cx="50" cy="50" r="42" />
+                    </svg>
+                    <div class="mt-center">
+                      <strong id="tKcalLeft">0</strong>
+                    </div>
+                  </div>
+                  <span class="mt-lab" id="tKcalLeftLab">Left</span>
+                </div>
+                <div class="mt-circle tone-eaten">
+                  <div class="mt-ring-wrap mt-ring-lg">
+                    <svg class="mt-ring" viewBox="0 0 100 100" aria-hidden="true">
+                      <circle class="mt-track" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill" id="ringKcal" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill-over" id="ringKcalOver" cx="50" cy="50" r="42" />
+                    </svg>
+                    <div class="mt-center">
+                      <strong id="tKcal">0</strong>
+                    </div>
+                  </div>
+                  <span class="mt-lab">Eaten</span>
+                </div>
+                <div class="mt-circle tone-goal">
+                  <div class="mt-ring-wrap mt-ring-lg">
+                    <svg class="mt-ring" viewBox="0 0 100 100" aria-hidden="true">
+                      <circle class="mt-track" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill" id="ringKcalGoal" cx="50" cy="50" r="42" />
+                    </svg>
+                    <div class="mt-center">
+                      <strong id="tKcalGoal">0</strong>
+                    </div>
+                  </div>
+                  <span class="mt-lab">Goal</span>
+                </div>
               </div>
             </div>
-            <ul class="dash-list">
-              <li><span>Goal</span><strong id="tKcalGoal">2000</strong></li>
-              <li><span>Food</span><strong id="tKcal">0</strong></li>
-              <li><span>Items</span><strong id="tFoodCount">0</strong></li>
-            </ul>
-          </div>
-        </article>
+      </div>
 
-        <article class="dash-card dash-macros">
-          <div class="dash-card-head compact">
-            <h2>Macros</h2>
-            <span class="dash-sub">P · F · C</span>
-          </div>
-          <div class="macro-rings">
-            <div class="macro-ring">
-              <svg class="ring sm" viewBox="0 0 100 100">
-                <circle class="ring-bg" cx="50" cy="50" r="40" />
-                <circle class="ring-fg protein" id="ringPro" cx="50" cy="50" r="40" />
-              </svg>
-              <div class="macro-lab">
-                <strong id="tPro">0</strong>
-                <span>Protein</span>
-                <em id="tProGoal">/ 150g</em>
+      <!-- PROTEIN panel -->
+      <div class="layout-panel" data-panel="pro" data-size="full" id="panelPro">
+        <div class="layout-panel-chrome">
+          <span class="layout-drag" title="Drag">⠿</span>
+          <span class="layout-panel-title">Protein</span>
+          <button type="button" class="layout-size-btn" data-size-cycle>Full</button>
+        </div>
+            <div class="macro-row" id="macroProWrap">
+              <div class="macro-row-name">Protein</div>
+              <div class="macro-tri">
+                <div class="mt-circle tone-left">
+                  <div class="mt-ring-wrap">
+                    <svg class="mt-ring" viewBox="0 0 100 100" aria-hidden="true">
+                      <circle class="mt-track" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill" id="ringProLeft" cx="50" cy="50" r="42" />
+                    </svg>
+                    <div class="mt-center">
+                      <strong id="tProLeft">0g</strong>
+                    </div>
+                  </div>
+                  <span class="mt-lab" id="tProLeftLab">Left</span>
+                </div>
+                <div class="mt-circle tone-eaten">
+                  <div class="mt-ring-wrap">
+                    <svg class="mt-ring" viewBox="0 0 100 100" aria-hidden="true">
+                      <circle class="mt-track" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill" id="ringPro" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill-over" id="ringProOver" cx="50" cy="50" r="42" />
+                    </svg>
+                    <div class="mt-center">
+                      <strong id="tPro">0g</strong>
+                    </div>
+                  </div>
+                  <span class="mt-lab">Eaten</span>
+                </div>
+                <div class="mt-circle tone-goal">
+                  <div class="mt-ring-wrap">
+                    <svg class="mt-ring" viewBox="0 0 100 100" aria-hidden="true">
+                      <circle class="mt-track" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill" id="ringProGoal" cx="50" cy="50" r="42" />
+                    </svg>
+                    <div class="mt-center">
+                      <strong id="tProGoal">0g</strong>
+                    </div>
+                  </div>
+                  <span class="mt-lab">Goal</span>
+                </div>
               </div>
             </div>
-            <div class="macro-ring">
-              <svg class="ring sm" viewBox="0 0 100 100">
-                <circle class="ring-bg" cx="50" cy="50" r="40" />
-                <circle class="ring-fg fat" id="ringFat" cx="50" cy="50" r="40" />
-              </svg>
-              <div class="macro-lab">
-                <strong id="tFat">0</strong>
-                <span>Fat</span>
-                <em id="tFatGoal">/ 100g</em>
-              </div>
-            </div>
-            <div class="macro-ring">
-              <svg class="ring sm" viewBox="0 0 100 100">
-                <circle class="ring-bg" cx="50" cy="50" r="40" />
-                <circle class="ring-fg carbs" id="ringCarb" cx="50" cy="50" r="40" />
-              </svg>
-              <div class="macro-lab">
-                <strong id="tCarb">0</strong>
-                <span>Carbs</span>
-                <em id="tCarbGoal">/ 50g</em>
-              </div>
-            </div>
-          </div>
-        </article>
-      </section>
+      </div>
 
-      <section class="block dash-grid dash-secondary">
+      <!-- FAT panel -->
+      <div class="layout-panel" data-panel="fat" data-size="full" id="panelFat">
+        <div class="layout-panel-chrome">
+          <span class="layout-drag" title="Drag">⠿</span>
+          <span class="layout-panel-title">Fat</span>
+          <button type="button" class="layout-size-btn" data-size-cycle>Full</button>
+        </div>
+            <div class="macro-row" id="macroFatWrap">
+              <div class="macro-row-name">Fat</div>
+              <div class="macro-tri">
+                <div class="mt-circle tone-left">
+                  <div class="mt-ring-wrap">
+                    <svg class="mt-ring" viewBox="0 0 100 100" aria-hidden="true">
+                      <circle class="mt-track" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill" id="ringFatLeft" cx="50" cy="50" r="42" />
+                    </svg>
+                    <div class="mt-center">
+                      <strong id="tFatLeft">0g</strong>
+                    </div>
+                  </div>
+                  <span class="mt-lab" id="tFatLeftLab">Left</span>
+                </div>
+                <div class="mt-circle tone-eaten">
+                  <div class="mt-ring-wrap">
+                    <svg class="mt-ring" viewBox="0 0 100 100" aria-hidden="true">
+                      <circle class="mt-track" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill" id="ringFat" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill-over" id="ringFatOver" cx="50" cy="50" r="42" />
+                    </svg>
+                    <div class="mt-center">
+                      <strong id="tFat">0g</strong>
+                    </div>
+                  </div>
+                  <span class="mt-lab">Eaten</span>
+                </div>
+                <div class="mt-circle tone-goal">
+                  <div class="mt-ring-wrap">
+                    <svg class="mt-ring" viewBox="0 0 100 100" aria-hidden="true">
+                      <circle class="mt-track" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill" id="ringFatGoal" cx="50" cy="50" r="42" />
+                    </svg>
+                    <div class="mt-center">
+                      <strong id="tFatGoal">0g</strong>
+                    </div>
+                  </div>
+                  <span class="mt-lab">Goal</span>
+                </div>
+              </div>
+            </div>
+      </div>
+
+      <!-- CARBS panel -->
+      <div class="layout-panel" data-panel="carb" data-size="full" id="panelCarb">
+        <div class="layout-panel-chrome">
+          <span class="layout-drag" title="Drag">⠿</span>
+          <span class="layout-panel-title">Carbs</span>
+          <button type="button" class="layout-size-btn" data-size-cycle>Full</button>
+        </div>
+            <div class="macro-row" id="macroCarbWrap">
+              <div class="macro-row-name">Carbs</div>
+              <div class="macro-tri">
+                <div class="mt-circle tone-left">
+                  <div class="mt-ring-wrap">
+                    <svg class="mt-ring" viewBox="0 0 100 100" aria-hidden="true">
+                      <circle class="mt-track" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill" id="ringCarbLeft" cx="50" cy="50" r="42" />
+                    </svg>
+                    <div class="mt-center">
+                      <strong id="tCarbLeft">0g</strong>
+                    </div>
+                  </div>
+                  <span class="mt-lab" id="tCarbLeftLab">Left</span>
+                </div>
+                <div class="mt-circle tone-eaten">
+                  <div class="mt-ring-wrap">
+                    <svg class="mt-ring" viewBox="0 0 100 100" aria-hidden="true">
+                      <circle class="mt-track" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill" id="ringCarb" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill-over" id="ringCarbOver" cx="50" cy="50" r="42" />
+                    </svg>
+                    <div class="mt-center">
+                      <strong id="tCarb">0g</strong>
+                    </div>
+                  </div>
+                  <span class="mt-lab">Eaten</span>
+                </div>
+                <div class="mt-circle tone-goal">
+                  <div class="mt-ring-wrap">
+                    <svg class="mt-ring" viewBox="0 0 100 100" aria-hidden="true">
+                      <circle class="mt-track" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill" id="ringCarbGoal" cx="50" cy="50" r="42" />
+                    </svg>
+                    <div class="mt-center">
+                      <strong id="tCarbGoal">0g</strong>
+                    </div>
+                  </div>
+                  <span class="mt-lab">Goal</span>
+                </div>
+              </div>
+            </div>
+      </div>
+
+      <!-- NET CARBS panel -->
+      <div class="layout-panel" data-panel="net" data-size="full" id="panelNet">
+        <div class="layout-panel-chrome">
+          <span class="layout-drag" title="Drag">⠿</span>
+          <span class="layout-panel-title">Net carbs</span>
+          <button type="button" class="layout-size-btn" data-size-cycle>Full</button>
+        </div>
+            <div class="macro-row macro-row-net" id="macroNetWrap">
+              <div class="macro-row-name">Net carbs</div>
+              <div class="macro-tri">
+                <div class="mt-circle tone-left">
+                  <div class="mt-ring-wrap">
+                    <svg class="mt-ring" viewBox="0 0 100 100" aria-hidden="true">
+                      <circle class="mt-track" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill" id="ringNetLeft" cx="50" cy="50" r="42" />
+                    </svg>
+                    <div class="mt-center">
+                      <strong id="tNetLeft">0g</strong>
+                    </div>
+                  </div>
+                  <span class="mt-lab" id="tNetLeftLab">Left</span>
+                </div>
+                <div class="mt-circle tone-eaten">
+                  <div class="mt-ring-wrap">
+                    <svg class="mt-ring" viewBox="0 0 100 100" aria-hidden="true">
+                      <circle class="mt-track" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill" id="ringNet" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill-over" id="ringNetOver" cx="50" cy="50" r="42" />
+                    </svg>
+                    <div class="mt-center">
+                      <strong id="tNet">0g</strong>
+                    </div>
+                  </div>
+                  <span class="mt-lab">Eaten</span>
+                </div>
+                <div class="mt-circle tone-goal">
+                  <div class="mt-ring-wrap">
+                    <svg class="mt-ring" viewBox="0 0 100 100" aria-hidden="true">
+                      <circle class="mt-track" cx="50" cy="50" r="42" />
+                      <circle class="mt-fill" id="ringNetGoal" cx="50" cy="50" r="42" />
+                    </svg>
+                    <div class="mt-center">
+                      <strong id="tNetGoal">0g</strong>
+                    </div>
+                  </div>
+                  <span class="mt-lab">Goal</span>
+                </div>
+              </div>
+            </div>
+      </div>
+
+      <!-- MINERALS panel -->
+      <div class="layout-panel" data-panel="minerals" data-size="half" id="panelMinerals">
+        <div class="layout-panel-chrome">
+          <span class="layout-drag" title="Drag">⠿</span>
+          <span class="layout-panel-title">Minerals</span>
+          <button type="button" class="layout-size-btn" data-size-cycle>Half</button>
+        </div>
         <article class="dash-card">
           <div class="dash-card-head">
             <h2>Minerals</h2>
@@ -150,7 +360,15 @@
             <li><span>Fiber</span><strong><span id="tFib">0</span> g</strong></li>
           </ul>
         </article>
+      </div>
 
+      <!-- SUMMARY panel -->
+      <div class="layout-panel" data-panel="summary" data-size="half" id="panelSummary">
+        <div class="layout-panel-chrome">
+          <span class="layout-drag" title="Drag">⠿</span>
+          <span class="layout-panel-title">Day summary</span>
+          <button type="button" class="layout-size-btn" data-size-cycle>Half</button>
+        </div>
         <article class="dash-card">
           <div class="dash-card-head">
             <h2>Day summary</h2>
@@ -163,18 +381,28 @@
             <li><span>Fat</span><strong id="tFat2">0 g</strong></li>
           </ul>
         </article>
-      </section>
+      </div>
 
-      <section class="block">
-        <div class="block-head">
-          <h2>Food diary</h2>
-          <button type="button" class="text-btn" id="btnManualAdd">+ Manual item</button>
+      <!-- FOOD DIARY panel -->
+      <div class="layout-panel" data-panel="food" data-size="full" id="panelFood">
+        <div class="layout-panel-chrome">
+          <span class="layout-drag" title="Drag">⠿</span>
+          <span class="layout-panel-title">Food diary</span>
+          <button type="button" class="layout-size-btn" data-size-cycle>Full</button>
         </div>
-        <div id="foodCards" class="food-cards"></div>
-        <div id="foodEmpty" class="empty-state">
-          Nothing logged yet — tell the coach above, or add manually.
-        </div>
-      </section>
+        <section class="block">
+          <div class="block-head">
+            <h2>Food diary</h2>
+            <button type="button" class="text-btn" id="btnManualAdd">+ Manual item</button>
+          </div>
+          <div id="foodCards" class="food-cards"></div>
+          <div id="foodEmpty" class="empty-state">
+            Nothing logged yet — tell BigBricey above, or add manually.
+          </div>
+        </section>
+      </div>
+
+      </div><!-- #layoutBoard -->
     </main>
 
     <!-- confirm delete modal -->
@@ -193,7 +421,7 @@
     <div class="modal" id="manualModal" hidden>
       <div class="modal-card">
         <h3>Add food manually</h3>
-        <p class="dash-sub">Or just type in the coach — this is optional.</p>
+        <p class="dash-sub">Or just type above — this is optional.</p>
         <div class="form-grid manual-form">
           <label>Name<input id="mName" placeholder="e.g. eggs" /></label>
           <label>kcal<input id="mKcal" type="number" placeholder="0" /></label>
@@ -280,18 +508,61 @@
         <div class="block-head"><h2>You</h2></div>
         <div class="you-row"><span>Account</span><strong id="youEmail">—</strong></div>
         <div class="you-row"><span>Role</span><strong id="youRole">member</strong></div>
-        <div class="you-row"><span>Coach profile</span><strong id="youProfileSummary">—</strong></div>
+        <div class="you-row"><span>Your profile</span><strong id="youProfileSummary">—</strong></div>
         <div class="you-row"><span>Daily targets</span><strong id="youGoalsSummary">—</strong></div>
         <p style="margin:12px 0 0;display:flex;flex-wrap:wrap;gap:8px">
           <a class="pill" href="/onboarding.html?edit=1" style="display:inline-block;text-decoration:none">Update setup</a>
           <button type="button" class="pill" id="btnExport30">Export 30-day pack</button>
           <button type="button" class="pill" id="btnExport7">Export 7-day pack</button>
         </p>
+      </div>
+
+      <div class="block theme-block">
+        <div class="block-head">
+          <h2>Look &amp; theme</h2>
+          <button type="button" class="text-btn" id="btnResetTheme">Reset</button>
+        </div>
+        <p class="theme-active">Active: <strong id="themeActiveName">Midnight</strong> · or tell BigBricey “make it neon”</p>
+        <div class="theme-preset-grid" id="themePresetGrid"></div>
+        <div class="theme-color-grid">
+          <label>Accent<input type="color" id="themeAccent" value="#38bdf8" /></label>
+          <label>Background<input type="color" id="themeBg" value="#06080f" /></label>
+          <label>Left ring<input type="color" id="themeRingLeft" value="#34d399" /></label>
+          <label>Eaten ring<input type="color" id="themeRingEaten" value="#38bdf8" /></label>
+          <label>Goal ring<input type="color" id="themeRingGoal" value="#facc15" /></label>
+          <label>Over ring<input type="color" id="themeRingOver" value="#f87171" /></label>
+        </div>
+        <div class="theme-sliders">
+          <label>Text size <span id="themeFontScaleLab">100%</span>
+            <input type="range" id="themeFontScale" min="0.85" max="1.3" step="0.05" value="1" />
+          </label>
+          <label>Corner roundness <span id="themeRadiusLab">20px</span>
+            <input type="range" id="themeRadius" min="0" max="32" step="1" value="20" />
+          </label>
+          <label>Density
+            <select id="themeDensity">
+              <option value="cozy">Cozy</option>
+              <option value="compact">Compact</option>
+            </select>
+          </label>
+        </div>
+        <p style="margin:10px 0 0;display:flex;flex-wrap:wrap;gap:8px">
+          <button type="button" class="pill" id="btnShapeSquare">Square corners</button>
+          <button type="button" class="pill" id="btnShapeRound">Round corners</button>
+        </p>
+        <p class="dash-sub">Saved to your account. Or tell BigBricey “make rings pink / bigger text / square corners / pastel vibe”.</p>
+      </div>
+
+      <div class="block">
+        <div class="block-head"><h2>Export</h2></div>
         <p class="dash-sub" style="margin:10px 0 0">Copy/paste for your doctor or another AI (Grok, ChatGPT, Claude). Data only — not medical advice.</p>
         <textarea id="exportBox" hidden readonly rows="12" style="width:100%;margin-top:12px;box-sizing:border-box;border-radius:12px;border:1px solid var(--line);background:#0a0e18;color:var(--text);padding:12px;font:12px var(--mono)"></textarea>
       </div>
       <div class="block" id="feedbackBox" hidden>
         <div class="block-head"><h2>Friend suggestions</h2></div>
+        <p class="dash-sub" style="margin:0 0 12px">Ranked themes for you to review with Grok/Claude — nothing auto-builds. Chat “what are people asking for?” for a digest.</p>
+        <div id="feedbackThemes" class="theme-rank-list"></div>
+        <div class="block-head" style="margin-top:16px"><h2>Raw notes</h2></div>
         <div id="feedbackList" class="alert-list"></div>
         <button type="button" class="pill" id="refreshFeedback">Refresh</button>
       </div>
@@ -332,6 +603,9 @@
       <button type="button" class="tab" data-tab="you"><span class="tab-ico">☺</span><span>You</span></button>
     </nav>
   </div>
+  <script src="/theme.js"></script>
+  <script src="/layout.js"></script>
+  <script src="/boxes.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

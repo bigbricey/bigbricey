@@ -507,7 +507,13 @@ export async function foodSearch(q) {
   return { query: q, foods: results, errors };
 }
 
-export async function resolveFood(text) {
+/**
+ * Resolve food text → nutrition row.
+ * @param {string} text
+ * @param {{ email?: string, findSavedFood?: Function, rowFromSavedFood?: Function }} opts
+ *   Optional saved-foods lookup (injected to avoid circular imports).
+ */
+export async function resolveFood(text, opts = {}) {
   const parseResult = await parseFood(text);
   const parsed = parseResult.parsed;
   if (parsed?.error === "off_topic") {
@@ -523,6 +529,24 @@ export async function resolveFood(text) {
       row: rowFromCustom(parsed, custom),
       note: "custom food",
     };
+  }
+
+  // Personal library (shakes, recipes) before USDA
+  if (opts.email && typeof opts.findSavedFood === "function") {
+    try {
+      const saved = await opts.findSavedFood(opts.email, q);
+      if (saved && typeof opts.rowFromSavedFood === "function") {
+        const amount = Number(parsed?.amount) || 1;
+        return {
+          parsed,
+          match: { description: saved.name, source: "saved" },
+          row: opts.rowFromSavedFood(saved, amount),
+          note: "saved food",
+        };
+      }
+    } catch {
+      /* fall through to USDA */
+    }
   }
 
   const searchQ = expandQuery(q);

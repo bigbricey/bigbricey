@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#06080f" />
-  <title>Set up your coach — BigBricey</title>
+  <title>Set up — BigBricey</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -190,9 +190,9 @@
     { id: "low_carb", label: "Lower carb", sub: "Prefer fewer starches and sugars." },
     { id: "higher_protein", label: "High protein focus", sub: "Protein-first (meat, eggs, dairy, etc.)." },
     { id: "plant_forward", label: "Plant-forward", sub: "More plants; not necessarily strict vegan." },
-    { id: "vegan", label: "Vegan", sub: "No animal products. Coach stays plant-only." },
+    { id: "vegan", label: "Vegan", sub: "No animal products. BigBricey stays plant-only." },
     { id: "carnivore", label: "Carnivore / animal-based", sub: "Mostly or only animal foods." },
-    { id: "other", label: "I’ll describe later", sub: "Tell the coach in chat when you’re ready." },
+    { id: "other", label: "I’ll describe later", sub: "Tell BigBricey in chat when you’re ready." },
   ];
   const OBSTACLE_OPTS = [
     { id: "lack_of_time", label: "Lack of time" },
@@ -349,7 +349,7 @@
     progBar.style.width = Math.round((step / Math.max(1, steps.length - 1)) * 100) + "%";
     const id = steps[step];
     const isLast = step === steps.length - 1;
-    const cta = isLast ? "Finish & open coach" : "Continue";
+    const cta = isLast ? "Finish & open BigBricey" : "Continue";
     let html = "";
 
     if (id === "welcome") {
@@ -366,7 +366,7 @@
       html = `<div class="ob-step on">
         <div class="ob-lock">🔒</div>
         <h1 class="ob-title">Your health &amp; your data</h1>
-        <p class="ob-sub">Private to your account. Used to run your ledger and coach tools — not sold, not shown to other members.</p>
+        <p class="ob-sub">Private to your account. Used to run your ledger — not sold, not shown to other members.</p>
         <div class="ob-consent">
           <label class="ob-check ${state.consent_health ? "on" : ""}" id="ckHealth">
             <input type="checkbox" id="consentHealth" ${state.consent_health ? "checked" : ""} />
@@ -381,7 +381,7 @@
     } else if (id === "name") {
       html = `<div class="ob-step on">
         <h1 class="ob-title">What's your first name?</h1>
-        <p class="ob-sub">So the coach can talk to you like a person.</p>
+        <p class="ob-sub">So BigBricey can talk to you like a person.</p>
         <input class="ob-field" id="nameIn" autocomplete="given-name" placeholder="First name" value="${esc(state.first_name)}" />
         <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
       </div>`;
@@ -451,7 +451,7 @@
     } else if (id === "eating") {
       html = `<div class="ob-step on">
         <h1 class="ob-title">Any eating style preference?</h1>
-        <p class="ob-sub">We don’t push vegan, carnivore, or anything else. This just helps the coach talk your language. You can change later.</p>
+        <p class="ob-sub">We don’t push vegan, carnivore, or anything else. This just helps BigBricey talk your language. You can change later.</p>
         <div class="ob-choices" id="eatChoices">${renderChoice(EAT_OPTS, state.eating_style, false)}</div>
         <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
       </div>`;
@@ -501,7 +501,7 @@
     } else if (id === "confidence") {
       html = `<div class="ob-step on">
         <h1 class="ob-title">How confident are you you’ll stick with it?</h1>
-        <p class="ob-sub">Honest answer helps the coach’s tone. Still just data.</p>
+        <p class="ob-sub">Honest answer helps the tone. Still just data.</p>
         <div class="ob-choices" id="confChoices">${renderChoice(CONF_OPTS, state.confidence, false)}</div>
         <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
       </div>`;
@@ -621,7 +621,7 @@
     showErr("");
     if (!state.consent_health) {
       showErr("Health data consent is required.");
-      if (next) { next.disabled = false; next.textContent = "Finish & open coach"; }
+      if (next) { next.disabled = false; next.textContent = "Finish & open BigBricey"; }
       return;
     }
     const cur = Number(state.current_weight_lb);
@@ -659,7 +659,7 @@
       location.replace("/app.html?welcome=1");
     } catch (e) {
       showErr(e.message || String(e));
-      if (next) { next.disabled = false; next.textContent = "Finish & open coach"; }
+      if (next) { next.disabled = false; next.textContent = "Finish & open BigBricey"; }
     }
   }
 

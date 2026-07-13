@@ -17,8 +17,17 @@ import {
   getProfile,
   onboardingFromPrefs,
   ensureProfile,
+  listSavedFoods,
+  findSavedFood,
+  upsertSavedFood,
+  deleteSavedFood,
+  rowFromSavedFood,
+  updateUserGoals,
+  saveUserLayout,
+  saveUserTheme,
+  saveUserBoxes,
 } from "./_supabase.js";
-import { submitFeedback } from "./_members.js";
+import { submitFeedback, summarizeFeedback, isAdmin } from "./_members.js";
 import { llmChat, llmConfig, DOMAIN_CONTRACT } from "./_llm.js";
 import { buildStatsReport } from "./_report.js";
 import { formatPersonBlock } from "./_coach_context.js";
@@ -60,18 +69,58 @@ export default async function handler(req, res) {
       }
     }
 
+    let savedList = [];
+    if (supabaseConfig().ok) {
+      try {
+        savedList = await listSavedFoods(session.email);
+      } catch {
+        savedList = [];
+      }
+    }
+
+    // Fast path: "what can you do?" — never treat as food
+    if (isAbilitiesQuestion(text)) {
+      return sendJson(res, 200, {
+        reply: ABILITIES_REPLY,
+        rows,
+        changed: false,
+        actions: [],
+      });
+    }
+
     const intent = await interpretIntent(text, rows, {
       email: session.email,
       name: session.name,
       person: personCtx,
+      savedFoods: savedList,
     });
 
     if (intent?.error === "model_failed") {
-      // Fallback: treat as add food
-      return await doAdd(text, rows, res, "Couldn't fully parse that — tried as a food add.");
+      // Questions / customization talk → never force food add
+      if (isAbilitiesQuestion(text) || isNonFoodUtterance(text)) {
+        return sendJson(res, 200, {
+          reply: isAbilitiesQuestion(text)
+            ? ABILITIES_REPLY
+            : "I can log food & life data, change goals, rearrange Today, restyle colors/text size/corners, add custom boxes & charts, and export packs. Ask “what can you do?” for the full list — or just say what you want (e.g. “make eaten rings pink”).",
+          rows,
+          changed: false,
+        });
+      }
+      return await doAdd(
+        text,
+        rows,
+        res,
+        session.email,
+        "Couldn't fully parse that — tried as a food add."
+      );
     }
 
     const actions = intent?.actions || [];
+    let goalsOut = null;
+    let layoutOut = null;
+    let themeOut = null;
+    let boxesOut = null;
+    let suggestionsOut = null;
 
     // Export / print stats for doctor or other AI agents
     for (const action of actions) {
@@ -116,7 +165,7 @@ export default async function handler(req, res) {
 
     // If model just said add with food phrase, or returned empty — try add
     if (!actions.length) {
-      return await doAdd(text, rows, res, null);
+      return await doAdd(text, rows, res, session.email);
     }
 
     let next = rows.map((r) => ({ ...r }));
@@ -129,13 +178,54 @@ export default async function handler(req, res) {
       if (type === "feedback" || type === "suggestion" || type === "product_feedback") {
         const msg = action.message || action.text || text;
         try {
-          await submitFeedback(session.email, msg, {
+          const saved = await submitFeedback(session.email, msg, {
             name: session.name,
             source: "chat",
+            category: action.category || action.cat,
+            theme_key: action.theme_key || action.theme || action.themeKey,
+            theme_label: action.theme_label || action.themeLabel || action.title,
           });
-          notes.push("Got it — sent your suggestion to Brice (not your food log, just the note).");
+          notes.push(
+            "Noted on the BigBricey product backlog for the owner to review (app idea only — not your food diary). Nothing ships until Brice decides."
+          );
+          if (saved?.theme_key) {
+            /* quiet */
+          }
         } catch (err) {
-          notes.push(`Couldn't send feedback: ${err.message}`);
+          notes.push(`Couldn't save product note: ${err.message}`);
+        }
+        continue;
+      }
+
+      // Admin only: digest of user suggestions (human-in-the-loop, no auto-build)
+      if (
+        type === "list_suggestions" ||
+        type === "suggestion_digest" ||
+        type === "feedback_digest" ||
+        type === "what_people_want"
+      ) {
+        try {
+          if (!(await isAdmin(session.email))) {
+            notes.push("Suggestion digest is admin-only.");
+            continue;
+          }
+          const summary = await summarizeFeedback({ limit: 200 });
+          const top = (summary.themes || []).slice(0, 15);
+          if (!top.length) {
+            notes.push("No product suggestions in the backlog yet.");
+          } else {
+            const lines = top.map(
+              (t, i) =>
+                `${i + 1}. [${t.importance}] ${t.theme_label} · ${t.unique_users} people · ${t.count} mentions · ${t.category} · new:${t.new_count}`
+            );
+            notes.push(
+              `Suggestion board (${summary.total_items} notes → ${summary.total_themes} themes). Review with Brice — do NOT auto-build.\n` +
+                lines.join("\n")
+            );
+          }
+          suggestionsOut = summary;
+        } catch (err) {
+          notes.push(`Couldn't load suggestions: ${err.message}`);
         }
         continue;
       }
@@ -312,6 +402,862 @@ export default async function handler(req, res) {
         continue;
       }
 
+      if (
+        type === "save_food" ||
+        type === "save_saved_food" ||
+        type === "remember_food" ||
+        type === "save_shake"
+      ) {
+        try {
+          const name = action.name || action.food || action.label;
+          if (!name) {
+            notes.push("Need a name to save that food (e.g. “morning shake”).");
+            continue;
+          }
+          if (
+            action.kcal == null &&
+            action.protein == null &&
+            action.fat == null &&
+            action.carbs == null
+          ) {
+            notes.push(
+              `To save “${name}”, give macros once (kcal / protein / fat / carbs). Then you can log it by name forever.`
+            );
+            continue;
+          }
+          const saved = await upsertSavedFood(session.email, {
+            name,
+            description: action.description || null,
+            ingredients: action.ingredients || action.recipe || null,
+            ingredients_list:
+              action.ingredients_list || action.ingredients_detail || null,
+            serving_label: action.serving_label || action.serving || "1 serving",
+            kcal: action.kcal,
+            protein: action.protein,
+            fat: action.fat,
+            carbs: action.carbs,
+            fiber: action.fiber,
+            sugars: action.sugars,
+            potassium: action.potassium,
+            magnesium: action.magnesium,
+            sodium: action.sodium,
+            grams: action.grams,
+            net_carbs: action.net_carbs,
+            nutrients: action.nutrients || action.micros || action.vitamins || null,
+            extras: action.extras || null,
+            // pass through any other flat nutrient fields the model included
+            ...Object.fromEntries(
+              Object.entries(action).filter(
+                ([k]) =>
+                  ![
+                    "type",
+                    "action",
+                    "name",
+                    "food",
+                    "label",
+                    "description",
+                    "ingredients",
+                    "recipe",
+                    "ingredients_list",
+                    "ingredients_detail",
+                    "serving_label",
+                    "serving",
+                    "kcal",
+                    "protein",
+                    "fat",
+                    "carbs",
+                    "fiber",
+                    "sugars",
+                    "potassium",
+                    "magnesium",
+                    "sodium",
+                    "grams",
+                    "net_carbs",
+                    "nutrients",
+                    "micros",
+                    "vitamins",
+                    "extras",
+                  ].includes(k)
+              )
+            ),
+          });
+          const microN = saved.extras?.nutrients
+            ? Object.keys(saved.extras.nutrients).length
+            : 0;
+          notes.push(
+            `Saved “${saved.name}” (${saved.serving_label}): ${saved.kcal} kcal, ${saved.protein}P / ${saved.fat}F / ${saved.carbs}C` +
+              (microN ? ` · ${microN} extra nutrients stored` : "") +
+              (saved.ingredients ? ` · ingredients kept` : "") +
+              `. Say “log ${saved.name}” anytime.`
+          );
+        } catch (err) {
+          notes.push(`Couldn't save food: ${err.message}`);
+        }
+        continue;
+      }
+
+      if (
+        type === "log_saved" ||
+        type === "log_saved_food" ||
+        type === "add_saved" ||
+        type === "use_saved_food"
+      ) {
+        const name = action.name || action.food || action.match || action.food_text;
+        const amount = action.amount != null ? Number(action.amount) : 1;
+        if (!name) {
+          notes.push("Which saved food? (e.g. “log morning shake”)");
+          continue;
+        }
+        try {
+          const saved = await findSavedFood(session.email, name);
+          if (!saved) {
+            notes.push(
+              `No saved food named “${name}”. Save it first with name + macros, or say “list my saved foods”.`
+            );
+            continue;
+          }
+          next.push(rowFromSavedFood(saved, amount));
+          notes.push(`Added saved: ${amount === 1 ? saved.name : amount + " × " + saved.name}`);
+        } catch (err) {
+          notes.push(`Couldn't load saved food: ${err.message}`);
+        }
+        continue;
+      }
+
+      if (type === "list_saved" || type === "list_saved_foods") {
+        try {
+          const list = await listSavedFoods(session.email);
+          if (!list.length) {
+            notes.push("No saved foods yet. Save one: name + kcal/protein/fat/carbs.");
+          } else {
+            const lines = list.map(
+              (f) =>
+                `• ${f.name} (${f.serving_label}): ${f.kcal} kcal, ${f.protein}P/${f.fat}F/${f.carbs}C`
+            );
+            notes.push(`Your saved foods (${list.length}):\n${lines.join("\n")}`);
+          }
+        } catch (err) {
+          notes.push(`Couldn't list saved foods: ${err.message}`);
+        }
+        continue;
+      }
+
+      if (type === "delete_saved" || type === "remove_saved_food") {
+        const name = action.name || action.food || action.match;
+        if (!name) {
+          notes.push("Which saved food to delete?");
+          continue;
+        }
+        try {
+          const gone = await deleteSavedFood(session.email, name);
+          notes.push(gone ? `Deleted saved food “${gone.name}”.` : `No saved food “${name}”.`);
+        } catch (err) {
+          notes.push(`Couldn't delete: ${err.message}`);
+        }
+        continue;
+      }
+
+      if (
+        type === "add_box" ||
+        type === "set_box" ||
+        type === "update_box" ||
+        type === "create_box" ||
+        type === "add_chart" ||
+        type === "set_chart" ||
+        type === "chart_box" ||
+        type === "remove_box" ||
+        type === "delete_box" ||
+        type === "clear_boxes"
+      ) {
+        try {
+          const prof = await getProfile(session.email);
+          const prefs =
+            prof?.prefs && typeof prof.prefs === "object" ? prof.prefs : {};
+          let boxes = Array.isArray(prefs.boxes)
+            ? prefs.boxes.map((b) => ({ ...b }))
+            : [];
+
+          if (type === "clear_boxes") {
+            boxesOut = await saveUserBoxes(session.email, []);
+            notes.push("Removed all custom boxes.");
+            continue;
+          }
+
+          if (type === "remove_box" || type === "delete_box") {
+            const key = String(
+              action.id || action.box || action.measure_id || action.name || action.title || ""
+            )
+              .toLowerCase()
+              .replace(/[^a-z0-9_]+/g, "_");
+            const before = boxes.length;
+            boxes = boxes.filter((b) => {
+              const id = String(b.id || "").toLowerCase();
+              const mid = String(b.measure_id || "").toLowerCase();
+              const title = String(b.title || "").toLowerCase();
+              return (
+                id !== key &&
+                mid !== key &&
+                title !== key &&
+                id !== "c_" + key &&
+                !title.includes(key)
+              );
+            });
+            if (boxes.length === before) {
+              notes.push(`No custom box matched “${key}”.`);
+              continue;
+            }
+            boxesOut = await saveUserBoxes(session.email, boxes);
+            // also drop from layout order
+            try {
+              const lay = prefs.layout && typeof prefs.layout === "object" ? prefs.layout : {};
+              const order = Array.isArray(lay.order)
+                ? lay.order.filter((x) => !String(x).startsWith("c_") || boxes.some((b) => b.id === x))
+                : undefined;
+              if (order) {
+                layoutOut = await saveUserLayout(session.email, { ...lay, order });
+              }
+            } catch {
+              /* optional */
+            }
+            notes.push(`Removed custom box “${key}”.`);
+            continue;
+          }
+
+          // add / update counter or chart
+          let kind = String(action.kind || "counter").toLowerCase();
+          if (
+            type === "add_chart" ||
+            type === "set_chart" ||
+            type === "chart_box" ||
+            kind === "chart" ||
+            kind === "graph" ||
+            kind === "trend"
+          ) {
+            kind = "chart";
+          }
+
+          const slug = (s) =>
+            String(s || "")
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, "_")
+              .replace(/^_+|_+$/g, "")
+              .slice(0, 32);
+
+          let measures = [];
+          if (Array.isArray(action.measures)) {
+            measures = action.measures.map(slug).filter(Boolean);
+          } else if (action.measure_id || action.measure) {
+            measures = [slug(action.measure_id || action.measure)];
+          }
+          const title =
+            action.title ||
+            action.label ||
+            action.name ||
+            action.measure ||
+            (kind === "chart" ? "Chart" : "Custom");
+          const measure_id =
+            measures[0] ||
+            slug(action.measure_id || action.measure || action.name || title) ||
+            "custom";
+          if (kind === "chart" && !measures.length) measures = [measure_id];
+
+          let days = Number(action.days ?? action.range ?? action.window);
+          if (action.weeks != null) days = Number(action.weeks) * 7;
+          if (action.months != null) days = Number(action.months) * 30;
+          if (action.years != null) days = Number(action.years) * 365;
+          if (!Number.isFinite(days) || days < 1) days = kind === "chart" ? 30 : null;
+          if (days != null) days = Math.min(1095, Math.max(1, Math.round(days)));
+
+          let chart = String(action.chart || action.chart_type || action.style || "line").toLowerCase();
+          if (!["line", "bar", "pie"].includes(chart)) chart = "line";
+
+          let id = String(action.id || "").toLowerCase().trim();
+          if (!id) {
+            id =
+              kind === "chart"
+                ? "c_chart_" + measures.slice(0, 2).join("_") + "_" + days + "d"
+                : "c_" + measure_id;
+          }
+          if (!id.startsWith("c_")) id = "c_" + id.replace(/[^a-z0-9_]/g, "");
+          id = id.slice(0, 48);
+
+          const goal =
+            action.goal ?? action.target ?? action.target_min ?? action.min ?? null;
+          const box = {
+            id,
+            kind,
+            title: String(title).slice(0, 48),
+            measure_id,
+            measures: kind === "chart" ? measures.slice(0, 6) : [measure_id],
+            unit: action.unit || "",
+            goal:
+              kind === "counter" && goal != null && goal !== ""
+                ? Number(goal)
+                : null,
+            mode: action.mode || "floor",
+            color: action.color || action.accent || "#38bdf8",
+            icon: action.icon || action.emoji || (kind === "chart" ? "📈" : "◎"),
+            size: action.size || (kind === "chart" ? "full" : "half"),
+            chart: kind === "chart" ? chart : undefined,
+            days: kind === "chart" ? days : undefined,
+          };
+
+          const idx = boxes.findIndex(
+            (b) => b.id === id || (kind === "counter" && b.measure_id === measure_id && b.kind !== "chart")
+          );
+          if (idx >= 0) boxes[idx] = { ...boxes[idx], ...box };
+          else boxes.push(box);
+
+          boxesOut = await saveUserBoxes(session.email, boxes);
+
+          // put new box into layout (near top after chat) if new
+          try {
+            const lay =
+              prefs.layout && typeof prefs.layout === "object"
+                ? { ...prefs.layout }
+                : { order: [], sizes: {} };
+            let order = Array.isArray(lay.order) ? lay.order.slice() : [];
+            if (!order.includes(id)) {
+              const chatAt = order.indexOf("chat");
+              if (chatAt >= 0) order.splice(chatAt + 1, 0, id);
+              else order.unshift(id);
+            }
+            const sizes = { ...(lay.sizes || {}), [id]: box.size || "half" };
+            layoutOut = await saveUserLayout(session.email, { order, sizes });
+          } catch {
+            /* optional */
+          }
+
+          // optional: watch for counter goals
+          if (
+            kind === "counter" &&
+            box.goal != null &&
+            Number.isFinite(Number(box.goal))
+          ) {
+            try {
+              await upsertWatchTarget(session.email, {
+                measureId: measure_id,
+                label: box.title,
+                mode: box.mode || "floor",
+                targetMin: box.mode === "ceiling" ? null : Number(box.goal),
+                targetMax: box.mode === "ceiling" ? Number(box.goal) : null,
+                windowDays: 1,
+                unit: box.unit || "",
+                severity: "yellow",
+              });
+            } catch {
+              /* optional */
+            }
+          }
+
+          if (kind === "chart") {
+            notes.push(
+              `Chart box “${box.title}” · ${measures.join(", ")} · last ${days} days · ${chart}. Drag ⠿ to move · × to remove.`
+            );
+          } else {
+            notes.push(
+              `Custom box “${box.title}” ready${
+                box.goal != null
+                  ? ` · goal ${box.goal}${box.unit ? " " + box.unit : ""}`
+                  : ""
+              }. Drag ⠿ to move it. Log with measure “${measure_id}”.`
+            );
+          }
+        } catch (err) {
+          notes.push(`Couldn't update custom box: ${err.message}`);
+        }
+        continue;
+      }
+
+      if (
+        type === "set_theme" ||
+        type === "update_theme" ||
+        type === "set_look" ||
+        type === "restyle" ||
+        type === "reset_theme"
+      ) {
+        try {
+          if (type === "reset_theme" || action.reset) {
+            themeOut = await saveUserTheme(session.email, {
+              preset: "midnight",
+              accent: "#38bdf8",
+              good: "#34d399",
+              warn: "#fbbf24",
+              bad: "#f87171",
+              bg0: "#06080f",
+              text: "#f1f5f9",
+              muted: "#8b95a8",
+              card: "rgba(14, 18, 28, 0.75)",
+              ring_left: "#34d399",
+              ring_eaten: "#38bdf8",
+              ring_goal: "#facc15",
+              ring_over: "#f87171",
+              glow1: "56,189,248",
+              glow2: "52,211,153",
+              glow3: "167,139,250",
+            });
+            notes.push("Theme reset to Midnight.");
+            continue;
+          }
+          const PRESET_MAP = {
+            midnight: {
+              preset: "midnight",
+              accent: "#38bdf8",
+              bg0: "#06080f",
+              text: "#f1f5f9",
+              muted: "#8b95a8",
+              card: "rgba(14, 18, 28, 0.75)",
+              good: "#34d399",
+              warn: "#fbbf24",
+              bad: "#f87171",
+              ring_left: "#34d399",
+              ring_eaten: "#38bdf8",
+              ring_goal: "#facc15",
+              ring_over: "#f87171",
+              glow1: "56,189,248",
+              glow2: "52,211,153",
+              glow3: "167,139,250",
+            },
+            light: {
+              preset: "light",
+              accent: "#0284c7",
+              bg0: "#f1f5f9",
+              text: "#0f172a",
+              muted: "#64748b",
+              card: "rgba(255,255,255,0.88)",
+              good: "#059669",
+              warn: "#d97706",
+              bad: "#dc2626",
+              ring_left: "#059669",
+              ring_eaten: "#0284c7",
+              ring_goal: "#ca8a04",
+              ring_over: "#dc2626",
+              glow1: "14,165,233",
+              glow2: "16,185,129",
+              glow3: "139,92,246",
+            },
+            neon: {
+              preset: "neon",
+              accent: "#22d3ee",
+              bg0: "#050510",
+              text: "#f5f3ff",
+              muted: "#a5b4fc",
+              card: "rgba(20, 10, 40, 0.8)",
+              good: "#a3e635",
+              warn: "#fde047",
+              bad: "#fb7185",
+              ring_left: "#a3e635",
+              ring_eaten: "#e879f9",
+              ring_goal: "#fde047",
+              ring_over: "#fb7185",
+              glow1: "232,121,249",
+              glow2: "34,211,238",
+              glow3: "163,230,53",
+            },
+            forest: {
+              preset: "forest",
+              accent: "#34d399",
+              bg0: "#07140f",
+              text: "#ecfdf5",
+              muted: "#86efac",
+              card: "rgba(6, 28, 18, 0.8)",
+              good: "#4ade80",
+              warn: "#fbbf24",
+              bad: "#f87171",
+              ring_left: "#4ade80",
+              ring_eaten: "#2dd4bf",
+              ring_goal: "#fbbf24",
+              ring_over: "#f87171",
+              glow1: "52,211,153",
+              glow2: "16,185,129",
+              glow3: "251,191,36",
+            },
+            pink: {
+              preset: "pink",
+              accent: "#f472b6",
+              bg0: "#1a0a14",
+              text: "#fdf2f8",
+              muted: "#f9a8d4",
+              card: "rgba(40, 12, 28, 0.8)",
+              good: "#fb7185",
+              warn: "#fbbf24",
+              bad: "#e11d48",
+              ring_left: "#fb7185",
+              ring_eaten: "#f472b6",
+              ring_goal: "#fde047",
+              ring_over: "#e11d48",
+              glow1: "244,114,182",
+              glow2: "251,113,133",
+              glow3: "192,132,252",
+            },
+            terminal: {
+              preset: "terminal",
+              accent: "#4ade80",
+              bg0: "#020403",
+              text: "#d1fae5",
+              muted: "#6ee7b7",
+              card: "rgba(0, 20, 10, 0.85)",
+              good: "#22c55e",
+              warn: "#eab308",
+              bad: "#ef4444",
+              ring_left: "#4ade80",
+              ring_eaten: "#22c55e",
+              ring_goal: "#a3e635",
+              ring_over: "#ef4444",
+              glow1: "74,222,128",
+              glow2: "34,197,94",
+              glow3: "163,230,53",
+              radius: 8,
+              density: "compact",
+            },
+            pastel: {
+              preset: "pastel",
+              accent: "#c084fc",
+              bg0: "#1e1230",
+              text: "#faf5ff",
+              muted: "#d8b4fe",
+              card: "rgba(45, 25, 70, 0.75)",
+              good: "#86efac",
+              warn: "#fcd34d",
+              bad: "#f9a8d4",
+              ring_left: "#86efac",
+              ring_eaten: "#f9a8d4",
+              ring_goal: "#fde68a",
+              ring_over: "#fb7185",
+              glow1: "244,114,182",
+              glow2: "192,132,252",
+              glow3: "125,211,252",
+              font_scale: 1.05,
+              radius: 24,
+            },
+            sunset: {
+              preset: "sunset",
+              accent: "#fb923c",
+              bg0: "#1a0c08",
+              text: "#fff7ed",
+              muted: "#fdba74",
+              card: "rgba(40, 18, 12, 0.8)",
+              good: "#fbbf24",
+              warn: "#f97316",
+              bad: "#ef4444",
+              ring_left: "#fbbf24",
+              ring_eaten: "#fb923c",
+              ring_goal: "#fde047",
+              ring_over: "#ef4444",
+              glow1: "251,146,60",
+              glow2: "244,63,94",
+              glow3: "250,204,21",
+            },
+          };
+          const VIBE = {
+            my_little_pony: "pastel",
+            mlp: "pastel",
+            pony: "pastel",
+            kawaii: "pastel",
+            cute: "pastel",
+            barbie: "pink",
+            matrix: "terminal",
+            hacker: "terminal",
+            cyber: "neon",
+            nature: "forest",
+          };
+          // Load current as base for partial patches
+          let cur = {};
+          try {
+            const prof = await getProfile(session.email);
+            if (prof?.prefs?.theme && typeof prof.prefs.theme === "object") {
+              cur = { ...prof.prefs.theme };
+            }
+          } catch {
+            /* */
+          }
+
+          let next = { ...cur };
+          let presetName = String(
+            action.preset || action.theme || action.name || action.vibe || ""
+          )
+            .toLowerCase()
+            .replace(/\s+/g, "_");
+          if (VIBE[presetName]) presetName = VIBE[presetName];
+          if (PRESET_MAP[presetName]) {
+            next = { ...PRESET_MAP[presetName] };
+          }
+          // color aliases from natural language
+          const pick = (...keys) => {
+            for (const k of keys) {
+              if (action[k] != null) return action[k];
+            }
+            return null;
+          };
+          const accent = pick("accent", "accent_color", "primary");
+          const bg0 = pick("bg0", "background", "bg", "background_color");
+          const ring_left = pick("ring_left", "left_color", "left");
+          const ring_eaten = pick("ring_eaten", "eaten_color", "eaten");
+          const ring_goal = pick("ring_goal", "goal_color", "goal");
+          const ring_over = pick("ring_over", "over_color", "over");
+          if (accent) next.accent = accent;
+          if (bg0) next.bg0 = bg0;
+          if (ring_left) next.ring_left = ring_left;
+          if (ring_eaten) next.ring_eaten = ring_eaten;
+          if (ring_goal) next.ring_goal = ring_goal;
+          if (ring_over) next.ring_over = ring_over;
+          if (action.text && String(action.text).startsWith("#")) next.text = action.text;
+          if (action.good) next.good = action.good;
+          if (action.font_scale != null || action.fontScale != null || action.font_size != null) {
+            next.font_scale = action.font_scale ?? action.fontScale ?? action.font_size;
+          }
+          if (action.radius != null) next.radius = action.radius;
+          if (action.shape || action.corners) next.shape = action.shape || action.corners;
+          if (action.density) next.density = action.density;
+          if (action.compact === true) next.density = "compact";
+
+          // free-text color words → hex (small map)
+          const COLOR_WORDS = {
+            pink: "#f472b6",
+            hotpink: "#ec4899",
+            blue: "#38bdf8",
+            green: "#34d399",
+            purple: "#a78bfa",
+            yellow: "#facc15",
+            red: "#f87171",
+            orange: "#fb923c",
+            white: "#f8fafc",
+            black: "#06080f",
+            neon: "#22d3ee",
+            cyan: "#22d3ee",
+            lime: "#a3e635",
+          };
+          const wordHex = (v) => {
+            if (v == null) return null;
+            const s = String(v).toLowerCase().trim();
+            if (s.startsWith("#")) return s;
+            return COLOR_WORDS[s] || null;
+          };
+          for (const k of [
+            "accent",
+            "bg0",
+            "ring_left",
+            "ring_eaten",
+            "ring_goal",
+            "ring_over",
+            "text",
+            "good",
+          ]) {
+            if (next[k]) {
+              const h = wordHex(next[k]);
+              if (h) next[k] = h;
+            }
+          }
+          if (!Object.keys(next).length) {
+            notes.push(
+              "Try a preset: midnight, light, neon, forest, pink, terminal — or “accent pink, background black”."
+            );
+            continue;
+          }
+          if (!PRESET_MAP[presetName] && (accent || bg0 || ring_left || ring_eaten || ring_goal)) {
+            next.preset = "custom";
+          }
+          themeOut = await saveUserTheme(session.email, next);
+          notes.push(
+            `Look updated${themeOut.preset ? ` (${themeOut.preset})` : ""}. Open You → Look & theme anytime.`
+          );
+        } catch (err) {
+          notes.push(`Couldn't update theme: ${err.message}`);
+        }
+        continue;
+      }
+
+      if (
+        type === "set_layout" ||
+        type === "update_layout" ||
+        type === "arrange" ||
+        type === "move_panel" ||
+        type === "reset_layout"
+      ) {
+        try {
+          // Load current layout from prefs as base
+          let cur = null;
+          if (supabaseConfig().ok) {
+            try {
+              const prof = await getProfile(session.email);
+              cur =
+                prof?.prefs?.layout && typeof prof.prefs.layout === "object"
+                  ? prof.prefs.layout
+                  : null;
+            } catch {
+              cur = null;
+            }
+          }
+          const PANEL_IDS = [
+            "chat",
+            "kcal",
+            "pro",
+            "fat",
+            "carb",
+            "net",
+            "minerals",
+            "summary",
+            "food",
+          ];
+          const SIZES = new Set(["full", "half", "third"]);
+          let order = Array.isArray(cur?.order)
+            ? cur.order.slice()
+            : PANEL_IDS.slice();
+          let sizes = {
+            chat: "full",
+            kcal: "full",
+            pro: "full",
+            fat: "full",
+            carb: "full",
+            net: "full",
+            minerals: "half",
+            summary: "half",
+            food: "full",
+            ...(cur?.sizes || {}),
+          };
+
+          if (type === "reset_layout" || action.reset) {
+            order = PANEL_IDS.slice();
+            sizes = {
+              chat: "full",
+              kcal: "full",
+              pro: "full",
+              fat: "full",
+              carb: "full",
+              net: "full",
+              minerals: "half",
+              summary: "half",
+              food: "full",
+            };
+          } else {
+            if (Array.isArray(action.order) && action.order.length) {
+              order = action.order.map((x) => String(x).toLowerCase());
+            }
+            if (action.sizes && typeof action.sizes === "object") {
+              for (const [k, v] of Object.entries(action.sizes)) {
+                const id = String(k).toLowerCase();
+                const s = String(v).toLowerCase();
+                if (PANEL_IDS.includes(id) && SIZES.has(s)) sizes[id] = s;
+              }
+            }
+            const panel = String(
+              action.panel || action.id || action.put || action.move || ""
+            ).toLowerCase();
+            if (action.size && PANEL_IDS.includes(panel)) {
+              const s = String(action.size).toLowerCase();
+              if (SIZES.has(s)) sizes[panel] = s;
+            }
+            // put X before/after Y
+            const put = String(
+              action.put || action.move || action.panel || ""
+            ).toLowerCase();
+            const before = action.before
+              ? String(action.before).toLowerCase()
+              : null;
+            const after = action.after
+              ? String(action.after).toLowerCase()
+              : null;
+            if (put && PANEL_IDS.includes(put) && (before || after)) {
+              order = order.filter((x) => x !== put);
+              const anchor = before || after;
+              const ai = order.indexOf(anchor);
+              if (ai >= 0) {
+                order.splice(before ? ai : ai + 1, 0, put);
+              } else {
+                order.push(put);
+              }
+            }
+            if (action.chat_bottom || action.chat === "bottom") {
+              order = order.filter((x) => x !== "chat").concat(["chat"]);
+            }
+            if (action.chat_top || action.chat === "top") {
+              order = ["chat"].concat(order.filter((x) => x !== "chat"));
+            }
+          }
+
+          // ensure full set
+          const seen = new Set();
+          order = order.filter((id) => {
+            if (!PANEL_IDS.includes(id) || seen.has(id)) return false;
+            seen.add(id);
+            return true;
+          });
+          for (const id of PANEL_IDS) {
+            if (!seen.has(id)) order.push(id);
+          }
+
+          const layout = await saveUserLayout(session.email, { order, sizes });
+          layoutOut = layout;
+          notes.push(
+            `Layout updated: ${layout.order.join(" → ")}. Use Edit layout to fine-tune.`
+          );
+        } catch (err) {
+          notes.push(`Couldn't update layout: ${err.message}`);
+        }
+        continue;
+      }
+
+      if (
+        type === "set_goals" ||
+        type === "update_goals" ||
+        type === "change_goals" ||
+        type === "set_macros" ||
+        type === "set_diet"
+      ) {
+        try {
+          const patch = {
+            kcal: action.kcal ?? action.calories,
+            protein: action.protein,
+            fat: action.fat,
+            carbs: action.carbs ?? action.carbohydrates,
+            net_carbs:
+              action.net_carbs ??
+              action.netCarbs ??
+              action.net_carb ??
+              action.net,
+            potassium: action.potassium,
+            magnesium: action.magnesium,
+            eating_style: action.eating_style || action.diet || action.style,
+            recompute: Boolean(action.recompute),
+          };
+          // style-only → recompute macros from formula
+          if (
+            patch.eating_style &&
+            patch.kcal == null &&
+            patch.protein == null &&
+            patch.fat == null &&
+            patch.carbs == null &&
+            patch.net_carbs == null
+          ) {
+            patch.recompute = true;
+          }
+          const hasAny =
+            patch.kcal != null ||
+            patch.protein != null ||
+            patch.fat != null ||
+            patch.carbs != null ||
+            patch.net_carbs != null ||
+            patch.eating_style != null;
+          if (!hasAny) {
+            notes.push(
+              "Tell me what to change — e.g. “100g carbs, 50g net carbs” or “2200 calories, 180 protein”."
+            );
+            continue;
+          }
+          const out = await updateUserGoals(session.email, patch);
+          const g = out.goals || {};
+          const netBit =
+            g.net_carbs != null ? ` · net C ${g.net_carbs}g` : "";
+          notes.push(
+            `Targets updated${out.eating_style ? ` (${out.eating_style})` : ""}: ${g.kcal} kcal · P ${g.protein}g · F ${g.fat}g · C ${g.carbs}g${netBit}. Rings use these now.`
+          );
+          goalsOut = out.goals;
+        } catch (err) {
+          notes.push(`Couldn't update goals: ${err.message}`);
+        }
+        continue;
+      }
+
       if (type === "add" || type === "add_food") {
         const phrase =
           action.food_text ||
@@ -321,7 +1267,24 @@ export default async function handler(req, res) {
           notes.push("Add requested but no food specified.");
           continue;
         }
-        const resolved = await resolveFood(String(phrase));
+        // Prefer personal library if name matches a saved food (always new row id)
+        try {
+          const maybeName = String(action.food || action.match || phrase);
+          const saved = await findSavedFood(session.email, maybeName);
+          if (saved && !/\d+\s*(oz|g|lb|egg)/i.test(phrase)) {
+            const amount = action.amount != null ? Number(action.amount) : 1;
+            next.push(rowFromSavedFood(saved, amount));
+            notes.push(`Added saved: ${amount === 1 ? saved.name : amount + " × " + saved.name}`);
+            continue;
+          }
+        } catch {
+          /* USDA path */
+        }
+        const resolved = await resolveFood(String(phrase), {
+          email: session.email,
+          findSavedFood,
+          rowFromSavedFood,
+        });
         if (resolved.error === "off_topic") {
           notes.push(`Couldn't add “${phrase}”.`);
           continue;
@@ -359,7 +1322,11 @@ export default async function handler(req, res) {
           notes.push("Update needs a new amount.");
           continue;
         }
-        const resolved = await resolveFood(phrase);
+        const resolved = await resolveFood(phrase, {
+          email: session.email,
+          findSavedFood,
+          rowFromSavedFood,
+        });
         if (!resolved.row || !rowHasMacros(resolved.row)) {
           // scale existing row if lookup fails but we know grams ratio
           if (amount != null && old.grams) {
@@ -392,7 +1359,11 @@ export default async function handler(req, res) {
         if (action.text) notes.push(action.text);
       } else if (type === "add_food_phrase") {
         // alias
-        const resolved = await resolveFood(action.food_text || text);
+        const resolved = await resolveFood(action.food_text || text, {
+          email: session.email,
+          findSavedFood,
+          rowFromSavedFood,
+        });
         if (resolved.row && rowHasMacros(resolved.row)) {
           next.push(resolved.row);
           notes.push(`Added: ${resolved.row.label}`);
@@ -402,7 +1373,7 @@ export default async function handler(req, res) {
 
     // If nothing worked and looks like a food, try plain add
     if (!notes.length || (notes.every((n) => /couldn't|no /i.test(n)) && looksLikeFood(text))) {
-      return await doAdd(text, rows, res, notes.join(" "));
+      return await doAdd(text, rows, res, session.email, notes.join(" "));
     }
 
     let watchStatuses = null;
@@ -414,6 +1385,16 @@ export default async function handler(req, res) {
       }
     }
 
+    if (goalsOut && supabaseConfig().ok) {
+      try {
+        const prof = await getProfile(session.email);
+        const ob = onboardingFromPrefs(prof?.prefs);
+        if (ob?.goals) goalsOut = ob.goals;
+      } catch {
+        /* keep */
+      }
+    }
+
     return sendJson(res, 200, {
       reply: intent.reply || notes.join(" "),
       rows: next,
@@ -421,6 +1402,12 @@ export default async function handler(req, res) {
       notes,
       sideEvents,
       watchStatuses,
+      goals: goalsOut,
+      eating_style: goalsOut?.eating_style || null,
+      layout: layoutOut,
+      theme: themeOut,
+      boxes: boxesOut,
+      suggestions: suggestionsOut,
     });
   } catch (e) {
     return sendJson(res, 500, {
@@ -430,13 +1417,33 @@ export default async function handler(req, res) {
   }
 }
 
-async function doAdd(text, rows, res, prefix) {
-  const resolved = await resolveFood(text);
+async function doAdd(text, rows, res, email, prefix) {
+  // Direct hit on personal library by whole phrase (e.g. "log my shake")
+  if (email && supabaseConfig().ok) {
+    try {
+      const saved = await findSavedFood(email, text);
+      if (saved) {
+        const next = [...rows, rowFromSavedFood(saved, 1)];
+        return sendJson(res, 200, {
+          reply: (prefix ? prefix + " " : "") + `Added saved: ${saved.name}`,
+          rows: next,
+          changed: true,
+        });
+      }
+    } catch {
+      /* continue */
+    }
+  }
+  const resolved = await resolveFood(text, {
+    email,
+    findSavedFood,
+    rowFromSavedFood,
+  });
   if (resolved.error === "off_topic") {
     return sendJson(res, 200, {
       reply:
         (prefix ? prefix + " " : "") +
-        "I can add foods, change amounts (e.g. “make blackberries 10 oz”), remove items, or clear the day. What do you want to do?",
+        "I can add foods, save shakes/favorites, change amounts, remove items, or clear the day. What do you want to do?",
       rows,
       changed: false,
     });
@@ -454,6 +1461,82 @@ async function doAdd(text, rows, res, prefix) {
     rows: next,
     changed: true,
   });
+}
+
+const ABILITIES_REPLY = `I'm your private BigBricey fitness data ledger — not a general assistant. Everything stays on your account for you (doctor / other AI export when you want).
+
+Here's what I can do when you talk to me:
+
+FOOD & DATA
+• Log food (real nutrition lookup — I don't invent macros)
+• Save shakes/favorites, re-log by name, fix amounts, remove, clear day
+• Log workouts, steps, body weight, custom metrics (water, push-ups…)
+• Daily goals / diet style any day (“low carb”, “2200 kcal”, “100g carbs / 50g net”)
+• Watches (e.g. potassium floor) and export packs for doctor/other AI
+
+CUSTOMIZE YOUR SPACE (your private “room”)
+• Themes: midnight, light, neon, forest, pink, terminal, pastel, sunset
+• Vibe words: “pastel / cute / My Little Pony vibe”, “matrix”, “sunset”
+• Colors: accent, background, Left / Eaten / Goal / Over rings (any hex or color word)
+• Text size, corner roundness (square ↔ round), cozy vs compact density
+• Also: You tab → Look & theme (sliders + pickers)
+
+LAYOUT
+• Drag ⠿ boxes like a playlist, or tell me “put chat at the bottom / protein half width”
+• Sizes: full, half, 1/3 · Reset layout
+
+CUSTOM BOXES & CHARTS
+• Counters: “add push-up box goal 100”
+• Charts: “graph magnesium last 6 months”, “pie of macros this week” (line/bar/pie)
+• Drag them, resize, remove with ×
+
+PRODUCT IDEAS
+• “I wish the app had X” → goes on the owner backlog (not auto-built)
+
+I cannot (yet): upload photos as wallpaper, generate images, browse the live web, or act as a doctor/therapist.
+
+Try: “make it pastel”, “eaten rings hot pink”, “bigger text”, “square corners”, “add water box 100oz”, “chart protein 30 days”.`;
+
+function isAbilitiesQuestion(text) {
+  const t = String(text || "").toLowerCase();
+  if (!t.trim()) return false;
+  if (
+    /what (can|do) you (do|know)|your abilities|what are you (able|capable)|what all can i|how does this work|what can i (ask|do|change|customize)|do you (even )?know|capabilities|help me (use|customize)|what.?s possible/.test(
+      t
+    )
+  ) {
+    return true;
+  }
+  // "are you able to change colors / sizes / themes" without food words
+  if (
+    /(are you able|can you|could you).*(color|colour|theme|layout|size|font|square|round|customize|custom|ring|circle|box|chart|graph)/.test(
+      t
+    ) &&
+    !/(ate|eaten|had|log|bacon|egg|oz|lb|protein shake|calories?\s+\d)/.test(t)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isNonFoodUtterance(text) {
+  const t = String(text || "").toLowerCase().trim();
+  if (!t) return true;
+  if (/^(hi|hello|hey|thanks|thank you|ok|okay)\b/.test(t)) return true;
+  if (
+    /\?/.test(t) &&
+    !/(ate|eaten|had|food|log|bacon|egg|oz|lb|kcal|calorie)/.test(t)
+  ) {
+    return true;
+  }
+  if (
+    /(theme|color|colour|layout|font|corner|square|round|pastel|neon|customize|custom|background|ring)/.test(
+      t
+    )
+  ) {
+    return true;
+  }
+  return false;
 }
 
 async function interpretIntent(text, rows, ctx = {}) {
@@ -478,18 +1561,38 @@ async function interpretIntent(text, rows, ctx = {}) {
 
   const personBlock = formatPersonBlock(ctx);
 
+  const saved = Array.isArray(ctx.savedFoods) ? ctx.savedFoods : [];
+  const savedBlock = saved.length
+    ? `USER SAVED FOODS (personal library — use these exact names; macros already known):\n${saved
+        .map(
+          (f) =>
+            `- "${f.name}" (${f.serving_label}): ${f.kcal} kcal, P${f.protein} F${f.fat} C${f.carbs}${
+              f.ingredients ? " | " + String(f.ingredients).slice(0, 80) : ""
+            }`
+        )
+        .join("\n")}`
+    : `USER SAVED FOODS: (none yet)`;
+
   const system = `${DOMAIN_CONTRACT}
 
 ${personBlock}
+
+${savedBlock}
 
 ${knowledgeForSystemPrompt()}
 
 You manage:
 1) TODAY's food table (add/fix/remove/clear) — server looks up real nutrition; NEVER invent macros
-2) Forever cloud events — life activity becomes categories automatically
-3) Watch targets — "watch my potassium, warn if under 3500mg / 7 days"
-4) Product feedback to Brice — app ideas/bugs only, NEVER private food diary
-5) Export packs — "print my stats" / "export for my doctor" / "pack for ChatGPT"
+2) Personal SAVED FOODS library — shakes/recipes/favorites the user teaches once, then logs by name
+3) DAILY TARGETS (kcal + macros + eating style) — user can change ANY day by talking: low carb, high carb, vegan, carnivore, fruit day, whatever. Use set_goals.
+4) Forever cloud events — life activity becomes categories automatically
+5) Watch targets — "watch my potassium, warn if under 3500mg / 7 days"
+6) Product backlog — app ideas/bugs via feedback action with message + category + theme_key + theme_label. Categories: layout, charts, themes, boxes, food, goals, chat, bugs, mobile, export, other. theme_key = short snake_case cluster id (same idea → same key). NEVER say you are messaging Brice/Bryce. Say product backlog for the owner to review. NEVER auto-promise builds. NEVER private food diary.
+11) ADMIN ONLY: if the logged-in user asks “what are people asking for / suggestion digest / backlog summary” → list_suggestions (owner reviews; nothing auto-builds).
+7) Export packs — "print my stats" / "export for my doctor" / "pack for ChatGPT"
+8) TODAY LAYOUT — reorder/resize boxes on the Today screen. Use set_layout. Panels: chat, kcal, pro, fat, carb, net, minerals, summary, food. Sizes: full, half, third.
+9) LOOK / THEME — set_theme. Presets: midnight, light, neon, forest, pink, terminal, pastel, sunset. Vibes: mlp/my_little_pony/cute→pastel, matrix/hacker→terminal, barbie→pink. Fields: accent, bg0/background, ring_left, ring_eaten (eaten circle), ring_goal, ring_over, font_scale (0.85–1.3), radius (0–32) or shape square|round, density cozy|compact.
+10) CUSTOM BOXES — (a) counters: push-ups/water goals via add_box kind counter. (b) CHARTS: any history graph via add_box kind:chart (or add_chart). Fields: measures[] (protein,kcal,fat,carbs,magnesium,potassium,sodium,fiber,steps,pushups,water_oz…), days|weeks|months|years, chart: line|bar|pie, title, color, size. Example: magnesium last 6 months line chart. remove_box deletes.
 
 Current food log:
 ${JSON.stringify(summary, null, 0)}
@@ -502,26 +1605,70 @@ Respond with ONLY valid JSON:
     {"type":"update","match":"blackberries","amount":10,"unit":"oz"},
     {"type":"remove","match":"artichoke"},
     {"type":"clear"},
+    {"type":"save_food","name":"HLTH Code shake","serving_label":"3 scoops","kcal":600,"protein":40,"fat":40,"carbs":19,"fiber":9,"net_carbs":10,"potassium":400,"magnesium":80,"sodium":200,"iron":2,"ingredients":"3 scoops HLTH Code, water","ingredients_list":["3 scoops HLTH Code Complete Meal","water"],"nutrients":{"iron":2,"calcium":200,"vitamin_d":10}},
+    {"type":"log_saved","name":"morning shake","amount":1},
+    {"type":"list_saved"},
+    {"type":"delete_saved","name":"morning shake"},
+    {"type":"set_goals","eating_style":"low_carb","recompute":true},
+    {"type":"set_goals","kcal":2200,"protein":180,"fat":140,"carbs":100,"net_carbs":50,"eating_style":"low_carb"},
+    {"type":"set_goals","carbs":100,"net_carbs":50},
+    {"type":"set_layout","put":"chat","after":"food"},
+    {"type":"set_layout","chat":"bottom"},
+    {"type":"set_layout","order":["chat","kcal","pro","fat","carb","net","food","minerals","summary"],"sizes":{"minerals":"half","summary":"half","pro":"half","fat":"half"}},
+    {"type":"set_layout","panel":"kcal","size":"half"},
+    {"type":"reset_layout"},
+    {"type":"set_theme","preset":"neon"},
+    {"type":"set_theme","preset":"pink"},
+    {"type":"set_theme","preset":"pastel"},
+    {"type":"set_theme","vibe":"my_little_pony"},
+    {"type":"set_theme","accent":"#f472b6","bg0":"#1a0a14","ring_eaten":"#f472b6"},
+    {"type":"set_theme","ring_eaten":"#f472b6","ring_left":"#34d399","ring_goal":"#facc15"},
+    {"type":"set_theme","font_scale":1.15},
+    {"type":"set_theme","shape":"square","radius":6},
+    {"type":"set_theme","shape":"round","radius":24},
+    {"type":"set_theme","density":"compact"},
+    {"type":"reset_theme"},
+    {"type":"add_box","title":"Push-ups","measure_id":"pushups","goal":100,"unit":"reps","icon":"💪","color":"#a78bfa","size":"half"},
+    {"type":"add_box","title":"Water","measure_id":"water_oz","goal":100,"unit":"oz","icon":"💧","color":"#38bdf8","size":"half"},
+    {"type":"add_chart","kind":"chart","title":"Magnesium 6 mo","measures":["magnesium"],"months":6,"chart":"line","size":"full","icon":"📈"},
+    {"type":"add_chart","kind":"chart","title":"Macros 30d","measures":["protein","fat","carbs"],"days":30,"chart":"line","size":"full"},
+    {"type":"add_chart","kind":"chart","title":"Protein pie 7d","measures":["protein","fat","carbs"],"days":7,"chart":"pie","size":"half"},
+    {"type":"remove_box","name":"pushups"},
     {"type":"log_exercise","title":"Incline push-ups","category_id":"pushups","sets":3,"reps":20},
     {"type":"log_activity","title":"Mountain bike 45 min","category_id":"cycling","category_kind":"exercise","duration_min":45},
     {"type":"log_steps","steps":30000},
     {"type":"log_metric","measure_id":"weight_lb","label":"Body weight","value":210,"unit":"lb"},
     {"type":"set_watch","measure_id":"potassium","label":"Potassium","mode":"floor","target_min":3500,"unit":"mg","window_days":7,"severity":"yellow"},
     {"type":"export_report","days":30},
-    {"type":"feedback","message":"Would love a barcode scanner"}
+    {"type":"feedback","message":"Show total carbs and net carbs in the daily view","category":"food","theme_key":"net_carbs_display","theme_label":"Show net carbs in daily view"},
+    {"type":"list_suggestions"}
   ]
 }
 
 Rules:
+- "save my shake / remember this food / store this recipe" → save_food. User MUST supply numbers — NEVER invent macros/micros. When they give a FULL label/breakdown, store ALL of it: kcal, macros, fiber, sugars, net_carbs, potassium, magnesium, sodium, iron, calcium, vitamins, and ingredients_list. Put extra vitamins/minerals in nutrients:{}. One saved food can hold many ingredients + many micros (not one number only).
+- "I had my morning shake" / "log the HLTH shake" when name matches SAVED FOODS → log_saved (not USDA guess)
+- "list my saved foods" → list_saved
+- "delete saved X" → delete_saved
+- Diet/goal changes ANY time: "I'm low carb today", "set carbs to 40", "2000 calories", "high protein day", "vegan this week", "carnivore", "fruit day" → set_goals. Map styles to: low_carb, keto, carnivore, higher_protein, plant_forward, vegan, flexible, no_pref, or short free text. If they only change style, set recompute:true so macros rebalance near their calorie target. If they give exact numbers, use those (don't invent). NEVER invent macros for food logging.
+- TOTAL CARBS vs NET CARBS are SEPARATE goals. "100g carbs and 50g net carbs" → set_goals with carbs:100 AND net_carbs:50. Do NOT say this is impossible. Both fields exist; the UI has separate Carbs and Net carbs rings.
+- Layout moves: "put chat at the bottom", "chat below food", "make protein half width", "put macros side by side", "reset layout" → set_layout (or reset_layout). Prefer put/before/after or chat:top|bottom for simple moves; full order+sizes when rearranging many boxes. Panel ids only: chat,kcal,pro,fat,carb,net,minerals,summary,food.
+- Look/theme: "make it neon", "pastel / My Little Pony vibe", "eaten rings pink", "make circles/goal yellow", "bigger text", "smaller text", "square corners", "round corners", "compact mode", "light mode", "reset theme" → set_theme (include ring_eaten/ring_left/ring_goal, font_scale, radius or shape).
+- "What can you do / abilities / what are you able to change" → empty actions + reply listing food logging, goals, layout, theme/colors/font/corners, custom boxes, charts, export. NEVER try to add food for capability questions.
+- Custom counters: "add a push-up box with goal 100", "track water 100oz" → add_box kind counter.
+- Charts/graphs: "show magnesium last 6 months", "graph protein 3 weeks", "pie of macros this week", "bar chart calories 90 days" → add_chart / add_box kind:chart with measures + days/weeks/months + chart line|bar|pie. Always create a box they can keep/move — don't only describe data in text if they asked for a graph.
+- remove_box to delete any custom box.
 - Ambiguous food ("sushi") → empty actions + reply asking what kind before add
 - Stress/argument → log_activity with category_id stress, title factual (no counseling)
 - Export/print/stats for doctor or other AI → export_report with days (7/30/90)
 - Watch magnesium/potassium → set_watch
 - "30000 steps" → log_steps
-- App ideas → feedback only
+- App ideas / “I wish the app had X” → feedback with message + category + theme_key + theme_label. Same idea from many people should reuse the same theme_key. Phrase as backlog for owner review — NEVER “send to Brice/Bryce”. Do NOT promise it will be built.
+- Admin “what are people asking for?” → list_suggestions only for admin; summarize themes/counts; do not implement features from that list unless owner decides.
 - Never invent nutrition numbers
 - Totals questions → empty actions + answer from log
-- Off-topic → empty actions + friendly redirect (DOMAIN CONTRACT)`;
+- Off-topic → empty actions + friendly redirect (DOMAIN CONTRACT)
+- You are BigBricey (the product). The logged-in user’s name is for addressing them only — never treat them as a third-party product owner.`;
 
   try {
     const out = await llmChat({

@@ -17,13 +17,16 @@ import {
   onboardingFromPrefs,
   saveOnboarding,
   computeGoalsFromOnboarding,
+  dayTotalsForMeasures,
 } from "./_supabase.js";
 import { buildStatsReport } from "./_report.js";
 import {
   isAdmin,
   listFeedback,
   markFeedback,
+  markFeedbackTheme,
   submitFeedback,
+  summarizeFeedback,
 } from "./_members.js";
 
 /**
@@ -77,6 +80,27 @@ export default async function handler(req, res) {
     const wantFeedback = url.searchParams.get("feedback") === "1";
     const wantOnboarding = url.searchParams.get("onboarding") === "1";
     const wantReport = url.searchParams.get("report") === "1";
+    const wantBoxes = url.searchParams.get("boxes") === "1";
+
+    if (req.method === "GET" && wantBoxes) {
+      const day = url.searchParams.get("date") || dayKeyFor();
+      const profile = await getProfile(user.email);
+      const prefs =
+        profile?.prefs && typeof profile.prefs === "object" ? profile.prefs : {};
+      const boxes = Array.isArray(prefs.boxes) ? prefs.boxes : [];
+      const measureIds = boxes.map((b) => b.measure_id).filter(Boolean);
+      // also accept ?measures=a,b
+      const extra = String(url.searchParams.get("measures") || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const values = await dayTotalsForMeasures(
+        user.email,
+        [...measureIds, ...extra],
+        day
+      );
+      return sendJson(res, 200, { day, boxes, values, totals: values });
+    }
 
     if (req.method === "GET" && wantReport) {
       const days = Number(url.searchParams.get("days") || 30);
@@ -94,8 +118,9 @@ export default async function handler(req, res) {
       if (!(await isAdmin(user.email))) {
         return sendJson(res, 403, { error: "admin_only" });
       }
-      const items = await listFeedback({ limit: 100 });
-      return sendJson(res, 200, { feedback: items });
+      const items = await listFeedback({ limit: 200 });
+      const summary = await summarizeFeedback({ limit: 200 });
+      return sendJson(res, 200, { feedback: items, summary });
     }
 
     if (req.method === "GET" && wantWatches) {
@@ -187,8 +212,11 @@ export default async function handler(req, res) {
         const row = await submitFeedback(user.email, msg, {
           name: user.name,
           source: body.source || "form",
+          category: body.category,
+          theme_key: body.theme_key || body.themeKey,
+          theme_label: body.theme_label || body.themeLabel,
         });
-        return sendJson(res, 200, { ok: true, id: row?.id });
+        return sendJson(res, 200, { ok: true, id: row?.id, theme_key: row?.theme_key });
       }
 
       if (body.op === "feedback_status" && body.id) {
@@ -196,6 +224,14 @@ export default async function handler(req, res) {
           return sendJson(res, 403, { error: "admin_only" });
         }
         await markFeedback(body.id, body.status || "read");
+        return sendJson(res, 200, { ok: true });
+      }
+
+      if (body.op === "feedback_theme_status" && body.theme_key) {
+        if (!(await isAdmin(user.email))) {
+          return sendJson(res, 403, { error: "admin_only" });
+        }
+        await markFeedbackTheme(body.theme_key, body.status || "read");
         return sendJson(res, 200, { ok: true });
       }
 

@@ -287,16 +287,46 @@ export function computeGoalsFromOnboarding(o) {
   const protein = Math.round(
     Math.max(100, Math.min(280, proteinAnchor * proteinMult))
   );
-  const fat = Math.round(Math.max(60, (kcal * 0.35) / 9));
-  const carbs = Math.round(
-    Math.max(20, Math.min(400, (kcal - protein * 4 - fat * 9) / 4))
-  );
+
+  // Macro split respects eating_style (user can override anytime via chat)
+  const style = String(o.eating_style || "no_pref").toLowerCase().replace(/\s+/g, "_");
+  let fat;
+  let carbs;
+  const restKcal = Math.max(0, kcal - protein * 4);
+  let net_carbs;
+  if (style === "low_carb" || style === "keto" || style === "carnivore") {
+    // Low carb: cap carbs hard, fat takes the rest
+    carbs = style === "carnivore" ? 40 : style === "keto" ? 50 : 100;
+    net_carbs = style === "carnivore" ? 20 : style === "keto" ? 30 : 50;
+    const carbKcal = carbs * 4;
+    fat = Math.round(Math.max(60, (restKcal - carbKcal) / 9));
+  } else if (style === "higher_protein") {
+    fat = Math.round(Math.max(50, (kcal * 0.28) / 9));
+    carbs = Math.round(Math.max(40, (kcal - protein * 4 - fat * 9) / 4));
+  } else if (style === "plant_forward" || style === "vegan") {
+    fat = Math.round(Math.max(45, (kcal * 0.28) / 9));
+    carbs = Math.round(Math.max(80, (kcal - protein * 4 - fat * 9) / 4));
+  } else {
+    // flexible / no pref — moderate split
+    fat = Math.round(Math.max(55, (kcal * 0.32) / 9));
+    carbs = Math.round(
+      Math.max(40, Math.min(400, (kcal - protein * 4 - fat * 9) / 4))
+    );
+  }
+  // Keep macros kcal-aligned within reason
+  if (protein * 4 + fat * 9 + carbs * 4 > kcal + 200) {
+    carbs = Math.max(20, Math.round((kcal - protein * 4 - fat * 9) / 4));
+  }
+
+  if (net_carbs == null) net_carbs = carbs;
 
   return {
     kcal,
     protein,
     fat,
     carbs,
+    net_carbs,
+    eating_style: style,
     potassium: 3500,
     magnesium: 350,
     bmr: Math.round(bmr),
@@ -542,38 +572,61 @@ export async function syncFoodDay(email, dayKey, rows, { rawText } = {}) {
     },
   });
 
-  const keepIds = new Set(
-    (rows || []).map((r) => String(r.id || r.client_id || "")).filter(Boolean)
-  );
-
-  // Soft-delete removed
-  for (const ev of existing || []) {
-    if (ev.client_id && keepIds.has(String(ev.client_id))) continue;
-    if (!ev.client_id) {
-      // orphan without client_id — soft delete
-      await sb("events", {
-        method: "PATCH",
-        query: { id: `eq.${ev.id}` },
-        body: { deleted_at: new Date().toISOString() },
-        headers: { Prefer: "return=minimal" },
-      });
-      continue;
-    }
-    if (!keepIds.has(String(ev.client_id))) {
-      await sb("events", {
-        method: "PATCH",
-        query: { id: `eq.${ev.id}` },
-        body: { deleted_at: new Date().toISOString() },
-        headers: { Prefer: "return=minimal" },
-      });
-    }
+  // Dedupe incoming rows by id (last wins) so we never re-insert doubles
+  const incoming = [];
+  const seenIn = new Set();
+  for (const r of [...(rows || [])].reverse()) {
+    const cid = String(r?.id || r?.client_id || "").trim();
+    if (!cid || seenIn.has(cid)) continue;
+    seenIn.add(cid);
+    incoming.unshift({ ...r, id: cid, client_id: cid });
   }
 
+  const keepIds = new Set(incoming.map((r) => String(r.id)));
+
+  // Soft-delete anything not in the current list; if multiple events share
+  // the same client_id, keep one and delete the rest (fixes refresh doubles).
+  const seenClientKeep = new Set();
+  for (const ev of existing || []) {
+    const cid = ev.client_id ? String(ev.client_id) : "";
+    if (cid && keepIds.has(cid)) {
+      if (seenClientKeep.has(cid)) {
+        // duplicate client_id in DB — kill extras
+        await sb("events", {
+          method: "PATCH",
+          query: { id: `eq.${ev.id}` },
+          body: { deleted_at: new Date().toISOString() },
+          headers: { Prefer: "return=minimal" },
+        });
+        continue;
+      }
+      seenClientKeep.add(cid);
+      continue; // keep this one
+    }
+    // not in current day list (or missing client_id) → soft-delete
+    await sb("events", {
+      method: "PATCH",
+      query: { id: `eq.${ev.id}` },
+      body: { deleted_at: new Date().toISOString() },
+      headers: { Prefer: "return=minimal" },
+    });
+  }
+
+  // Re-fetch survivors after cleanup
+  const existing2 = await sb("events", {
+    query: {
+      select: "id,client_id",
+      user_email: `eq.${e}`,
+      day_key: `eq.${dayKey}`,
+      category_id: "eq.food",
+      deleted_at: "is.null",
+    },
+  });
   const byClient = new Map(
-    (existing || []).filter((x) => x.client_id).map((x) => [String(x.client_id), x])
+    (existing2 || []).filter((x) => x.client_id).map((x) => [String(x.client_id), x])
   );
 
-  for (const row of rows || []) {
+  for (const row of incoming) {
     const clientId = String(row.id || row.client_id || "");
     if (!clientId) continue;
     const payload = foodRowToPayload(row);
@@ -655,7 +708,7 @@ export async function syncFoodDay(email, dayKey, rows, { rawText } = {}) {
     /* non-fatal */
   }
 
-  return { ok: true, day: dayKey, count: (rows || []).length };
+  return { ok: true, day: dayKey, count: incoming.length };
 }
 
 export async function loadFoodDay(email, dayKey) {
@@ -671,11 +724,17 @@ export async function loadFoodDay(email, dayKey) {
     },
   });
 
-  const rows = (events || []).map((ev) => {
+  // Collapse only true DB glitches: multiple events with the same client_id.
+  // Same shake logged twice = two client_ids = both kept.
+  const byKey = new Map();
+  for (const ev of events || []) {
     const p = ev.payload || {};
     const macros = p.macros || {};
-    return {
-      id: ev.client_id || ev.id,
+    const clientId = ev.client_id ? String(ev.client_id) : String(ev.id);
+    const fingerprint = ev.client_id ? `id:${clientId}` : `ev:${ev.id}`;
+    if (byKey.has(fingerprint)) continue;
+    byKey.set(fingerprint, {
+      id: clientId,
       label: p.label || ev.title || "Food",
       amount: p.amount,
       unit: p.unit,
@@ -684,9 +743,9 @@ export async function loadFoodDay(email, dayKey) {
       extras: p.extras || undefined,
       occurred_at: ev.occurred_at,
       _event_id: ev.id,
-    };
-  });
-  return rows;
+    });
+  }
+  return Array.from(byKey.values());
 }
 
 /**
@@ -1083,6 +1142,370 @@ function fmtN(n) {
   return x.toFixed(1).replace(/\.0$/, "");
 }
 
+/**
+ * Patch daily goals / eating style from chat.
+ * User can change diet day-to-day: "go low carb, 2200 kcal, 50g carbs"
+ */
+export async function updateUserGoals(email, patch = {}) {
+  const e = String(email || "").toLowerCase();
+  if (!e) throw new Error("email required");
+  const profile = await getProfile(e);
+  const prefs =
+    profile?.prefs && typeof profile.prefs === "object" ? { ...profile.prefs } : {};
+  const onboarding =
+    prefs.onboarding && typeof prefs.onboarding === "object"
+      ? { ...prefs.onboarding }
+      : { complete: true };
+  const prevGoals =
+    onboarding.goals && typeof onboarding.goals === "object"
+      ? { ...onboarding.goals }
+      : computeGoalsFromOnboarding(onboarding);
+
+  if (patch.eating_style != null && String(patch.eating_style).trim()) {
+    onboarding.eating_style = String(patch.eating_style)
+      .toLowerCase()
+      .replace(/\s+/g, "_")
+      .trim();
+  }
+
+  // If style changed and user didn't pass explicit macros, recompute from style
+  const styleOnly =
+    patch.eating_style != null &&
+    patch.kcal == null &&
+    patch.protein == null &&
+    patch.fat == null &&
+    patch.carbs == null &&
+    patch.net_carbs == null;
+
+  let goals = { ...prevGoals };
+  if (styleOnly || patch.recompute) {
+    if (patch.kcal != null) onboarding.kcal_confirmed = Number(patch.kcal);
+    goals = computeGoalsFromOnboarding(onboarding);
+  }
+
+  const n = (x) => {
+    if (x == null || x === "") return null;
+    const v = Number(x);
+    return Number.isFinite(v) ? Math.round(v) : null;
+  };
+  if (n(patch.kcal) != null) {
+    goals.kcal = Math.max(800, Math.min(12000, n(patch.kcal)));
+    onboarding.kcal_confirmed = goals.kcal;
+  }
+  if (n(patch.protein) != null) goals.protein = Math.max(0, Math.min(400, n(patch.protein)));
+  if (n(patch.fat) != null) goals.fat = Math.max(0, Math.min(400, n(patch.fat)));
+  if (n(patch.carbs) != null) goals.carbs = Math.max(0, Math.min(600, n(patch.carbs)));
+  // Separate net-carb ceiling (can differ from total carbs)
+  if (n(patch.net_carbs) != null) {
+    goals.net_carbs = Math.max(0, Math.min(600, n(patch.net_carbs)));
+  }
+  // If total carbs set but net never set, keep existing net_carbs (don't clobber)
+  if (goals.net_carbs == null && goals.carbs != null) {
+    goals.net_carbs = goals.carbs;
+  }
+  if (n(patch.potassium) != null) goals.potassium = n(patch.potassium);
+  if (n(patch.magnesium) != null) goals.magnesium = n(patch.magnesium);
+  if (onboarding.eating_style) goals.eating_style = onboarding.eating_style;
+  goals.updated_at = new Date().toISOString();
+  goals.updated_via = "chat";
+
+  onboarding.goals = goals;
+  prefs.onboarding = onboarding;
+  await sb("profiles", {
+    method: "PATCH",
+    query: { email: `eq.${e}` },
+    body: { prefs, updated_at: new Date().toISOString() },
+  });
+  return { goals, eating_style: onboarding.eating_style || null, onboarding };
+}
+
+const LAYOUT_CORE_IDS = [
+  "chat",
+  "kcal",
+  "pro",
+  "fat",
+  "carb",
+  "net",
+  "minerals",
+  "summary",
+  "food",
+];
+const LAYOUT_SIZES = new Set(["full", "half", "third"]);
+
+function layoutIdOk(key) {
+  return LAYOUT_CORE_IDS.includes(key) || /^c_[a-z0-9_]{1,40}$/.test(key);
+}
+
+/** Normalize and save Today layout into profiles.prefs.layout */
+export async function saveUserLayout(email, raw = {}) {
+  const e = String(email || "").toLowerCase();
+  if (!e) throw new Error("email required");
+
+  const seen = new Set();
+  const order = [];
+  const incoming = Array.isArray(raw.order) ? raw.order : [];
+  for (const id of incoming) {
+    const key = String(id || "")
+      .toLowerCase()
+      .trim();
+    if (!layoutIdOk(key) || seen.has(key)) continue;
+    seen.add(key);
+    order.push(key);
+  }
+  for (const id of LAYOUT_CORE_IDS) {
+    if (!seen.has(id)) order.push(id);
+  }
+
+  const sizes = {};
+  const rs = raw.sizes && typeof raw.sizes === "object" ? raw.sizes : {};
+  for (const id of order) {
+    const fallback = id.startsWith("c_") ? "half" : "full";
+    const s = String(rs[id] || fallback).toLowerCase();
+    sizes[id] = LAYOUT_SIZES.has(s) ? s : fallback;
+  }
+  if (rs.minerals == null && sizes.minerals) sizes.minerals = sizes.minerals;
+  if (rs.minerals == null) sizes.minerals = "half";
+  if (rs.summary == null) sizes.summary = "half";
+
+  const layout = { order, sizes, updated_at: new Date().toISOString() };
+
+  const profile = await getProfile(e);
+  const prefs =
+    profile?.prefs && typeof profile.prefs === "object" ? { ...profile.prefs } : {};
+  prefs.layout = layout;
+
+  await sb("profiles", {
+    method: "PATCH",
+    query: { email: `eq.${e}` },
+    body: { prefs, updated_at: new Date().toISOString() },
+    headers: { Prefer: "return=minimal" },
+  });
+  return layout;
+}
+
+/** Custom goal boxes (push-ups, water, etc.) */
+export async function saveUserBoxes(email, list = []) {
+  const e = String(email || "").toLowerCase();
+  if (!e) throw new Error("email required");
+
+  const slug = (s) =>
+    String(s || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 32);
+  const hex = (v) =>
+    typeof v === "string" && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v.trim())
+      ? v.trim()
+      : null;
+
+  const boxes = [];
+  const seen = new Set();
+  const arr = Array.isArray(list) ? list : [];
+  for (const raw of arr) {
+    if (!raw || typeof raw !== "object") continue;
+    let kind = String(raw.kind || "counter").toLowerCase();
+    if (kind === "graph" || kind === "trend" || kind === "plot") kind = "chart";
+    if (kind !== "chart") kind = "counter";
+
+    let measures = [];
+    if (Array.isArray(raw.measures)) {
+      measures = raw.measures.map(slug).filter(Boolean).slice(0, 6);
+    } else if (raw.measure_id || raw.measure) {
+      measures = [slug(raw.measure_id || raw.measure)].filter(Boolean);
+    }
+    const mid = measures[0] || slug(raw.measure_id || raw.measure || raw.title || "custom") || "custom";
+    if (kind === "chart" && !measures.length) measures = [mid];
+
+    let days = null;
+    if (kind === "chart") {
+      let d = Number(raw.days ?? raw.range ?? raw.window);
+      if (!Number.isFinite(d) || d < 1) d = 30;
+      if (raw.weeks != null) d = Number(raw.weeks) * 7;
+      if (raw.months != null) d = Number(raw.months) * 30;
+      if (raw.years != null) d = Number(raw.years) * 365;
+      days = Math.min(1095, Math.max(1, Math.round(d)));
+    }
+
+    let chart = String(raw.chart || raw.chart_type || "line").toLowerCase();
+    if (!["line", "bar", "pie"].includes(chart)) chart = "line";
+
+    let id = String(raw.id || "").toLowerCase().trim();
+    if (!id) {
+      id =
+        kind === "chart"
+          ? "c_chart_" + measures.slice(0, 2).join("_") + "_" + days + "d"
+          : "c_" + mid;
+    }
+    if (!id.startsWith("c_")) id = "c_" + slug(id);
+    id = id.slice(0, 48);
+    if (!/^c_[a-z0-9_]{1,48}$/.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    let goal = raw.goal != null ? Number(raw.goal) : raw.target != null ? Number(raw.target) : null;
+    if (goal != null && !Number.isFinite(goal)) goal = null;
+    const sizeDefault = kind === "chart" ? "full" : "half";
+    boxes.push({
+      id,
+      kind,
+      title: String(raw.title || raw.label || mid).slice(0, 48),
+      measure_id: mid,
+      measures: kind === "chart" ? measures : [mid],
+      unit: String(raw.unit || "").slice(0, 16),
+      goal: kind === "counter" ? goal : null,
+      mode: String(raw.mode || "floor").toLowerCase() === "ceiling" ? "ceiling" : "floor",
+      color: hex(raw.color) || hex(raw.accent) || "#38bdf8",
+      icon: String(raw.icon || raw.emoji || (kind === "chart" ? "📈" : "◎")).slice(0, 4),
+      size: ["full", "half", "third"].includes(raw.size) ? raw.size : sizeDefault,
+      chart: kind === "chart" ? chart : undefined,
+      days: kind === "chart" ? days : undefined,
+    });
+    if (boxes.length >= 20) break;
+  }
+
+  const profile = await getProfile(e);
+  const prefs =
+    profile?.prefs && typeof profile.prefs === "object" ? { ...profile.prefs } : {};
+  prefs.boxes = boxes;
+
+  await sb("profiles", {
+    method: "PATCH",
+    query: { email: `eq.${e}` },
+    body: { prefs, updated_at: new Date().toISOString() },
+    headers: { Prefer: "return=minimal" },
+  });
+  return boxes;
+}
+
+/** Today totals for a list of measure ids (from day_totals). */
+export async function dayTotalsForMeasures(email, measureIds, dayKey) {
+  const e = String(email || "").toLowerCase();
+  const day = dayKey || dayKeyFor();
+  const ids = (Array.isArray(measureIds) ? measureIds : [])
+    .map((x) => String(x).toLowerCase().replace(/[^a-z0-9_]/g, ""))
+    .filter(Boolean)
+    .slice(0, 30);
+  if (!ids.length) return {};
+  const rows =
+    (await sb("day_totals", {
+      query: {
+        select: "measure_id,total,unit",
+        user_email: `eq.${e}`,
+        day_key: `eq.${day}`,
+        measure_id: `in.(${ids.join(",")})`,
+      },
+    })) || [];
+  const out = {};
+  for (const id of ids) out[id] = 0;
+  for (const r of rows) {
+    if (r.measure_id) out[r.measure_id] = Number(r.total) || 0;
+  }
+  return out;
+}
+
+/** Save look/theme into profiles.prefs.theme */
+export async function saveUserTheme(email, raw = {}) {
+  const e = String(email || "").toLowerCase();
+  if (!e) throw new Error("email required");
+
+  const PRESETS = new Set([
+    "midnight",
+    "light",
+    "neon",
+    "forest",
+    "pink",
+    "terminal",
+    "pastel",
+    "sunset",
+    "custom",
+  ]);
+  const hex = (v) =>
+    typeof v === "string" && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v.trim())
+      ? v.trim()
+      : null;
+  const glow = (v) =>
+    typeof v === "string" && /^\d{1,3},\s*\d{1,3},\s*\d{1,3}$/.test(v.trim())
+      ? v.replace(/\s/g, "")
+      : null;
+
+  const theme = { updated_at: new Date().toISOString() };
+  let preset = String(raw.preset || raw.vibe || "custom")
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+  const vibe = {
+    my_little_pony: "pastel",
+    mlp: "pastel",
+    pony: "pastel",
+    kawaii: "pastel",
+    cute: "pastel",
+    barbie: "pink",
+    matrix: "terminal",
+    hacker: "terminal",
+    cyber: "neon",
+    nature: "forest",
+  };
+  if (vibe[preset]) preset = vibe[preset];
+  if (!PRESETS.has(preset)) preset = "custom";
+  theme.preset = preset;
+
+  for (const k of [
+    "accent",
+    "good",
+    "warn",
+    "bad",
+    "bg0",
+    "text",
+    "muted",
+    "ring_left",
+    "ring_eaten",
+    "ring_goal",
+    "ring_over",
+  ]) {
+    const h = hex(raw[k]);
+    if (h) theme[k] = h;
+  }
+  if (hex(raw.eaten)) theme.ring_eaten = hex(raw.eaten);
+  if (hex(raw.left)) theme.ring_left = hex(raw.left);
+  if (hex(raw.goal)) theme.ring_goal = hex(raw.goal);
+  if (hex(raw.background || raw.bg)) theme.bg0 = hex(raw.background || raw.bg);
+  if (typeof raw.card === "string" && raw.card.length < 80) theme.card = raw.card;
+  for (const k of ["glow1", "glow2", "glow3"]) {
+    const g = glow(raw[k]);
+    if (g) theme[k] = g;
+  }
+  if (raw.label) theme.label = String(raw.label).slice(0, 40);
+
+  let radius = raw.radius != null ? Number(raw.radius) : null;
+  const shape = String(raw.shape || raw.corners || "").toLowerCase();
+  if (shape === "square" || shape === "sharp" || shape === "boxy") radius = 6;
+  if (shape === "round" || shape === "soft" || shape === "pill") radius = 24;
+  if (radius != null && Number.isFinite(radius)) {
+    theme.radius = Math.min(40, Math.max(0, Math.round(radius)));
+  }
+  let fs = raw.font_scale ?? raw.fontScale ?? raw.font_size;
+  if (fs != null) {
+    fs = Number(fs);
+    if (Number.isFinite(fs)) {
+      if (fs > 3) fs = fs / 100;
+      theme.font_scale = Math.min(1.35, Math.max(0.85, fs));
+    }
+  }
+  if (raw.density === "compact" || raw.density === "cozy") theme.density = raw.density;
+  if (raw.compact === true) theme.density = "compact";
+
+  const profile = await getProfile(e);
+  const prefs =
+    profile?.prefs && typeof profile.prefs === "object" ? { ...profile.prefs } : {};
+  prefs.theme = theme;
+
+  await sb("profiles", {
+    method: "PATCH",
+    query: { email: `eq.${e}` },
+    body: { prefs, updated_at: new Date().toISOString() },
+    headers: { Prefer: "return=minimal" },
+  });
+  return theme;
+}
+
 /** Seed sensible default watches for Brice if none exist. */
 export async function seedDefaultWatches(email) {
   const existing = await listWatchTargets(email);
@@ -1098,4 +1521,248 @@ export async function seedDefaultWatches(email) {
     await upsertWatchTarget(email, d);
   }
   return listWatchTargets(email);
+}
+
+/** Normalize name for matching ("My Shake" → "my shake") */
+export function savedFoodNameKey(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 120);
+}
+
+/**
+ * Personal food/shake library — light DB for "log my morning shake".
+ * Soft practical cap: 200 items per user (plenty for personal use).
+ */
+const SAVED_FOODS_MAX = 200;
+
+export async function listSavedFoods(email) {
+  const e = String(email).toLowerCase();
+  const rows = await sb("saved_foods", {
+    query: {
+      select: "*",
+      user_email: `eq.${e}`,
+      order: "name.asc",
+      limit: String(SAVED_FOODS_MAX),
+    },
+  });
+  return Array.isArray(rows) ? rows : [];
+}
+
+export async function findSavedFood(email, nameOrKey) {
+  const e = String(email).toLowerCase();
+  let key = savedFoodNameKey(nameOrKey);
+  if (!key) return null;
+  // strip common log-speak so "log my shake" / "had a shake" still matches
+  key = key
+    .replace(/^(log|add|had|have|ate|another|one|my|the|a|an)\s+/g, "")
+    .replace(/\s+(please|today|now)$/g, "")
+    .trim();
+  if (!key) key = savedFoodNameKey(nameOrKey);
+
+  // exact key first
+  let rows = await sb("saved_foods", {
+    query: {
+      select: "*",
+      user_email: `eq.${e}`,
+      name_key: `eq.${key}`,
+      limit: "1",
+    },
+  });
+  if (rows?.[0]) return rows[0];
+  // fuzzy: name contains or key contains query
+  const all = await listSavedFoods(e);
+  let hit = all.find(
+    (r) =>
+      r.name_key === key ||
+      r.name_key.includes(key) ||
+      key.includes(r.name_key) ||
+      String(r.name || "").toLowerCase().includes(key)
+  );
+  if (hit) return hit;
+  // single token like "shake" → unique saved food containing that word
+  const tokens = key.split(/\s+/).filter((t) => t.length >= 3);
+  for (const t of tokens) {
+    const matches = all.filter(
+      (r) => r.name_key.includes(t) || String(r.name || "").toLowerCase().includes(t)
+    );
+    if (matches.length === 1) return matches[0];
+  }
+  // only one saved food total and user said "shake"/"meal"/etc. → use it
+  if (all.length === 1 && /shake|meal|scoop|hlth/i.test(key)) return all[0];
+  return null;
+}
+
+export async function upsertSavedFood(email, food) {
+  await ensureProfile(email);
+  const e = String(email).toLowerCase();
+  const name = String(food.name || food.label || "").trim();
+  if (!name) {
+    const err = new Error("saved food needs a name");
+    err.code = "bad_saved_food";
+    throw err;
+  }
+  const name_key = savedFoodNameKey(name);
+  const existing = await listSavedFoods(e);
+  const already = existing.find((r) => r.name_key === name_key);
+  if (!already && existing.length >= SAVED_FOODS_MAX) {
+    const err = new Error(`saved foods full (${SAVED_FOODS_MAX} max)`);
+    err.code = "saved_foods_full";
+    throw err;
+  }
+
+  const n = (x) => {
+    const v = Number(x);
+    return Number.isFinite(v) ? v : 0;
+  };
+  // Full dump: ingredients list, micros, vitamins, net carbs, label notes → extras JSON
+  const extrasIn =
+    food.extras && typeof food.extras === "object" ? { ...food.extras } : {};
+  if (food.ingredients_list || food.ingredients_detail) {
+    extrasIn.ingredients_list =
+      food.ingredients_list || food.ingredients_detail;
+  }
+  if (food.net_carbs != null) extrasIn.net_carbs = n(food.net_carbs);
+  if (food.nutrients && typeof food.nutrients === "object") {
+    extrasIn.nutrients = food.nutrients;
+  }
+  // Any extra numeric micros passed flat (iron, calcium, vitamin_d, …)
+  const CORE = new Set([
+    "name",
+    "label",
+    "description",
+    "ingredients",
+    "recipe",
+    "ingredients_list",
+    "ingredients_detail",
+    "serving_label",
+    "serving",
+    "kcal",
+    "protein",
+    "fat",
+    "carbs",
+    "fiber",
+    "sugars",
+    "potassium",
+    "magnesium",
+    "sodium",
+    "grams",
+    "extras",
+    "net_carbs",
+    "nutrients",
+  ]);
+  const flatMicros = {};
+  for (const [k, v] of Object.entries(food)) {
+    if (CORE.has(k)) continue;
+    if (v == null || v === "") continue;
+    if (typeof v === "number" || (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v)))) {
+      flatMicros[k] = n(v);
+    } else if (typeof v === "string" || typeof v === "object") {
+      extrasIn[k] = v;
+    }
+  }
+  if (Object.keys(flatMicros).length) {
+    extrasIn.nutrients = { ...(extrasIn.nutrients || {}), ...flatMicros };
+  }
+  // Keep a human-readable ingredients string
+  let ingredientsText = food.ingredients || food.recipe || null;
+  if (!ingredientsText && Array.isArray(extrasIn.ingredients_list)) {
+    ingredientsText = extrasIn.ingredients_list
+      .map((x) => (typeof x === "string" ? x : x?.name || JSON.stringify(x)))
+      .join("; ");
+  }
+
+  const row = {
+    user_email: e,
+    name,
+    name_key,
+    description: food.description || null,
+    ingredients: ingredientsText,
+    serving_label: food.serving_label || food.serving || "1 serving",
+    kcal: n(food.kcal),
+    protein: n(food.protein),
+    fat: n(food.fat),
+    carbs: n(food.carbs),
+    fiber: n(food.fiber),
+    sugars: n(food.sugars),
+    potassium: n(food.potassium ?? extrasIn.nutrients?.potassium),
+    magnesium: n(food.magnesium ?? extrasIn.nutrients?.magnesium),
+    sodium: n(food.sodium ?? extrasIn.nutrients?.sodium),
+    grams: food.grams != null ? n(food.grams) : null,
+    extras: extrasIn,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (already) {
+    const updated = await sb("saved_foods", {
+      method: "PATCH",
+      query: { id: `eq.${already.id}`, select: "*" },
+      body: row,
+      headers: { Prefer: "return=representation" },
+    });
+    return Array.isArray(updated) ? updated[0] : updated;
+  }
+
+  const inserted = await sb("saved_foods", {
+    method: "POST",
+    body: row,
+    headers: { Prefer: "return=representation" },
+  });
+  return Array.isArray(inserted) ? inserted[0] : inserted;
+}
+
+export async function deleteSavedFood(email, nameOrKey) {
+  const found = await findSavedFood(email, nameOrKey);
+  if (!found) return null;
+  await sb("saved_foods", {
+    method: "DELETE",
+    query: { id: `eq.${found.id}` },
+    headers: { Prefer: "return=minimal" },
+  });
+  return found;
+}
+
+/** Build a log row from a saved food (amount = number of servings). */
+export function rowFromSavedFood(saved, amount = 1) {
+  const a = Number(amount) > 0 ? Number(amount) : 1;
+  const n = (x) => Math.round((Number(x) || 0) * a * 10) / 10;
+  const label =
+    a === 1
+      ? saved.name
+      : `${a} × ${saved.name}`;
+  const extras =
+    saved.extras && typeof saved.extras === "object" ? saved.extras : {};
+  const micros = extras.nutrients && typeof extras.nutrients === "object" ? extras.nutrients : {};
+  const scaledMicros = {};
+  for (const [k, v] of Object.entries(micros)) {
+    scaledMicros[k] = n(v);
+  }
+  return {
+    id: crypto.randomUUID(),
+    label,
+    source: "saved",
+    saved_food_id: saved.id,
+    fdcId: null,
+    grams: saved.grams != null ? n(saved.grams) : null,
+    kcal: n(saved.kcal),
+    protein: n(saved.protein),
+    fat: n(saved.fat),
+    carbs: n(saved.carbs),
+    fiber: n(saved.fiber),
+    sugars: n(saved.sugars),
+    potassium: n(saved.potassium || micros.potassium),
+    magnesium: n(saved.magnesium || micros.magnesium),
+    sodium: n(saved.sodium || micros.sodium),
+    // Full detail for ledger / future mineral rings
+    extras: {
+      ...extras,
+      nutrients: scaledMicros,
+      net_carbs:
+        extras.net_carbs != null ? n(extras.net_carbs) : undefined,
+      ingredients: saved.ingredients || extras.ingredients_list || null,
+    },
+  };
 }
