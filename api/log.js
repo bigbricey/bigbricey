@@ -18,6 +18,7 @@ import {
   saveOnboarding,
   computeGoalsFromOnboarding,
   dayTotalsForMeasures,
+  summarizeLlmUsage,
 } from "./_supabase.js";
 import { buildStatsReport } from "./_report.js";
 import {
@@ -81,6 +82,18 @@ export default async function handler(req, res) {
     const wantOnboarding = url.searchParams.get("onboarding") === "1";
     const wantReport = url.searchParams.get("report") === "1";
     const wantBoxes = url.searchParams.get("boxes") === "1";
+    const wantUsage =
+      url.searchParams.get("usage") === "1" ||
+      url.searchParams.get("llm_usage") === "1";
+
+    if (req.method === "GET" && wantUsage) {
+      if (!(await isAdmin(user.email))) {
+        return sendJson(res, 403, { error: "admin_only" });
+      }
+      const days = Number(url.searchParams.get("days") || 30);
+      const summary = await summarizeLlmUsage({ days });
+      return sendJson(res, 200, summary);
+    }
 
     if (req.method === "GET" && wantBoxes) {
       const day = url.searchParams.get("date") || dayKeyFor();

@@ -95,6 +95,7 @@ async function init() {
 
   document.getElementById("wSave")?.addEventListener("click", saveWatchFromForm);
   document.getElementById("refreshFeedback")?.addEventListener("click", loadFeedbackInbox);
+  document.getElementById("refreshUsage")?.addEventListener("click", loadUsageInbox);
   document.getElementById("btnExport30")?.addEventListener("click", () => exportStatsPack(30));
   document.getElementById("btnExport7")?.addEventListener("click", () => exportStatsPack(7));
   document.getElementById("refreshCharts")?.addEventListener("click", loadCharts);
@@ -220,7 +221,10 @@ function setTab(tab) {
   });
   if (activeTab === "trends") loadCharts();
   if (activeTab === "goals") loadWatches();
-  if (activeTab === "you" && window.__ntUser?.admin) loadFeedbackInbox();
+  if (activeTab === "you" && window.__ntUser?.admin) {
+    loadFeedbackInbox();
+    loadUsageInbox();
+  }
 }
 
 function todayKey() {
@@ -842,6 +846,8 @@ async function requireAuth() {
     if (d.admin) {
       const fb = document.getElementById("feedbackBox");
       if (fb) fb.hidden = false;
+      const ub = document.getElementById("usageBox");
+      if (ub) ub.hidden = false;
     }
     const o = d.onboarding || {};
     const goalMap = {
@@ -897,6 +903,68 @@ async function exportStatsPack(days) {
   } catch (e) {
     appendChat("bot", e.message || String(e), true);
   }
+}
+
+async function loadUsageInbox() {
+  const list = document.getElementById("usageList");
+  const totalsEl = document.getElementById("usageTotals");
+  if (!list) return;
+  try {
+    const r = await fetch("/api/log?usage=1&days=30");
+    if (!r.ok) {
+      list.innerHTML = `<div class="alert-empty">Couldn't load usage.</div>`;
+      return;
+    }
+    const d = await r.json();
+    if (d.error === "table_missing") {
+      list.innerHTML = `<div class="alert-empty">Usage table not ready yet.</div>`;
+      return;
+    }
+    const t = d.totals || {};
+    if (totalsEl) {
+      totalsEl.innerHTML = `
+        <div class="usage-total-card">
+          <span>Requests</span><strong>${t.requests || 0}</strong>
+        </div>
+        <div class="usage-total-card">
+          <span>Total tokens</span><strong>${fmtTokens(t.total_tokens)}</strong>
+        </div>
+        <div class="usage-total-card">
+          <span>In / Out</span><strong>${fmtTokens(t.prompt_tokens)} / ${fmtTokens(t.completion_tokens)}</strong>
+        </div>
+        <div class="usage-total-card">
+          <span>Cost (if reported)</span><strong>${t.cost_usd ? "$" + Number(t.cost_usd).toFixed(4) : "—"}</strong>
+        </div>`;
+    }
+    const users = d.users || [];
+    if (!users.length) {
+      list.innerHTML = `<div class="alert-empty">No usage logged yet — send a chat message.</div>`;
+      return;
+    }
+    list.innerHTML = users
+      .map(
+        (u) => `<div class="usage-row">
+        <div>
+          <div class="atitle">${escapeHtml(u.user_email)}</div>
+          <div class="abody">${u.requests} requests · last ${(u.last_at || "").slice(0, 16).replace("T", " ")}</div>
+        </div>
+        <div class="usage-nums">
+          <strong>${fmtTokens(u.total_tokens)}</strong>
+          <span>${fmtTokens(u.prompt_tokens)} in · ${fmtTokens(u.completion_tokens)} out</span>
+        </div>
+      </div>`
+      )
+      .join("");
+  } catch {
+    list.innerHTML = `<div class="alert-empty">Usage error.</div>`;
+  }
+}
+
+function fmtTokens(n) {
+  const x = Number(n) || 0;
+  if (x >= 1e6) return (x / 1e6).toFixed(2) + "M";
+  if (x >= 1e3) return (x / 1e3).toFixed(1) + "k";
+  return String(Math.round(x));
 }
 
 async function loadFeedbackInbox() {

@@ -572,6 +572,16 @@
         <p class="dash-sub" style="margin:10px 0 0">Copy/paste for your doctor or another AI (Grok, ChatGPT, Claude). Data only — not medical advice.</p>
         <textarea id="exportBox" hidden readonly rows="12" style="width:100%;margin-top:12px;box-sizing:border-box;border-radius:12px;border:1px solid var(--line);background:#0a0e18;color:var(--text);padding:12px;font:12px var(--mono)"></textarea>
       </div>
+      <div class="block" id="usageBox" hidden>
+        <div class="block-head">
+          <h2>AI token usage</h2>
+          <button type="button" class="pill" id="refreshUsage">Refresh</button>
+        </div>
+        <p class="dash-sub" style="margin:0 0 10px">Per-user OpenRouter tokens (admin). Last 30 days.</p>
+        <div id="usageTotals" class="usage-totals"></div>
+        <div id="usageList" class="usage-list"></div>
+      </div>
+
       <div class="block" id="feedbackBox" hidden>
         <div class="block-head"><h2>Friend suggestions</h2></div>
         <p class="dash-sub" style="margin:0 0 12px">Ranked themes for you to review with Grok/Claude — nothing auto-builds. Chat “what are people asking for?” for a digest.</p>

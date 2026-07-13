@@ -84,10 +84,27 @@ async function openRouterChat({ apiKey, model, messages, temperature, title }) {
     throw err;
   }
   const content = data.choices?.[0]?.message?.content || "";
+  const u = data.usage || {};
+  const prompt_tokens = Number(u.prompt_tokens ?? u.input_tokens ?? 0) || 0;
+  const completion_tokens =
+    Number(u.completion_tokens ?? u.output_tokens ?? 0) || 0;
+  const total_tokens =
+    Number(u.total_tokens ?? prompt_tokens + completion_tokens) ||
+    prompt_tokens + completion_tokens;
+  // OpenRouter sometimes includes cost in usage or native fields
+  let cost_usd = null;
+  if (u.cost != null && Number.isFinite(Number(u.cost))) cost_usd = Number(u.cost);
+  else if (data.usage?.total_cost != null) cost_usd = Number(data.usage.total_cost);
   return {
     content,
-    model,
+    model: data.model || model,
     provider: "openrouter",
+    usage: {
+      prompt_tokens,
+      completion_tokens,
+      total_tokens,
+      cost_usd,
+    },
     raw: data,
   };
 }

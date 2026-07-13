@@ -1984,3 +1984,116 @@ export async function removeMemoryNote(email, match) {
   const next = cur.filter((n) => !n.toLowerCase().includes(m));
   return saveMemoryNotes(email, next);
 }
+
+/* ——— LLM usage metering (per user) ——— */
+
+export async function logLlmUsage(email, usage = {}, meta = {}) {
+  const e = String(email || "").toLowerCase();
+  if (!e) return null;
+  const prompt = Math.max(0, Math.round(Number(usage.prompt_tokens) || 0));
+  const completion = Math.max(0, Math.round(Number(usage.completion_tokens) || 0));
+  const total =
+    Math.max(0, Math.round(Number(usage.total_tokens) || 0)) || prompt + completion;
+  if (prompt + completion + total <= 0) return null;
+  try {
+    const body = {
+      user_email: e,
+      model: meta.model || usage.model || null,
+      provider: meta.provider || "openrouter",
+      prompt_tokens: prompt,
+      completion_tokens: completion,
+      total_tokens: total,
+      cost_usd:
+        usage.cost_usd != null && Number.isFinite(Number(usage.cost_usd))
+          ? Number(usage.cost_usd)
+          : null,
+      conversation_id: meta.conversation_id || null,
+      purpose: meta.purpose || "chat",
+    };
+    const created = await sb("llm_usage", {
+      method: "POST",
+      body,
+      headers: { Prefer: "return=representation" },
+    });
+    return created?.[0] || { ok: true };
+  } catch {
+    return null;
+  }
+}
+
+/** Admin: aggregate usage by user (last N days). */
+export async function summarizeLlmUsage({ days = 30, limit = 100 } = {}) {
+  const since = new Date();
+  since.setUTCDate(since.getUTCDate() - Math.max(1, Math.min(365, Number(days) || 30)));
+  const sinceIso = since.toISOString();
+  let rows = [];
+  try {
+    rows =
+      (await sb("llm_usage", {
+        query: {
+          select:
+            "user_email,prompt_tokens,completion_tokens,total_tokens,cost_usd,model,created_at",
+          created_at: `gte.${sinceIso}`,
+          order: "created_at.desc",
+          limit: "5000",
+        },
+      })) || [];
+  } catch {
+    return { days, users: [], totals: zeroUsage(), error: "table_missing" };
+  }
+
+  const byUser = new Map();
+  const totals = zeroUsage();
+  for (const r of rows) {
+    const email = String(r.user_email || "").toLowerCase();
+    if (!email) continue;
+    if (!byUser.has(email)) {
+      byUser.set(email, {
+        user_email: email,
+        requests: 0,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        cost_usd: 0,
+        last_at: r.created_at,
+        models: {},
+      });
+    }
+    const u = byUser.get(email);
+    u.requests += 1;
+    u.prompt_tokens += Number(r.prompt_tokens) || 0;
+    u.completion_tokens += Number(r.completion_tokens) || 0;
+    u.total_tokens += Number(r.total_tokens) || 0;
+    if (r.cost_usd != null) u.cost_usd += Number(r.cost_usd) || 0;
+    if (r.created_at && (!u.last_at || r.created_at > u.last_at)) u.last_at = r.created_at;
+    const m = r.model || "unknown";
+    u.models[m] = (u.models[m] || 0) + 1;
+
+    totals.requests += 1;
+    totals.prompt_tokens += Number(r.prompt_tokens) || 0;
+    totals.completion_tokens += Number(r.completion_tokens) || 0;
+    totals.total_tokens += Number(r.total_tokens) || 0;
+    if (r.cost_usd != null) totals.cost_usd += Number(r.cost_usd) || 0;
+  }
+
+  const users = Array.from(byUser.values())
+    .sort((a, b) => b.total_tokens - a.total_tokens)
+    .slice(0, limit)
+    .map((u) => ({
+      ...u,
+      cost_usd: Math.round(u.cost_usd * 1e6) / 1e6,
+    }));
+
+  totals.cost_usd = Math.round(totals.cost_usd * 1e6) / 1e6;
+  return { days, since: sinceIso, users, totals, row_count: rows.length };
+}
+
+function zeroUsage() {
+  return {
+    requests: 0,
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+    cost_usd: 0,
+  };
+}

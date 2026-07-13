@@ -36,6 +36,7 @@ import {
   getMemoryNotes,
   addMemoryNote,
   removeMemoryNote,
+  logLlmUsage,
 } from "./_supabase.js";
 import { submitFeedback, summarizeFeedback, isAdmin } from "./_members.js";
 import { llmChat, llmConfig, DOMAIN_CONTRACT } from "./_llm.js";
@@ -198,6 +199,7 @@ export default async function handler(req, res) {
       chatSummary,
       theme: themeSnap,
       memoryNotes,
+      conversationId,
     });
 
     if (intent?.error === "model_failed") {
@@ -1923,6 +1925,15 @@ Rules:
         { role: "user", content: text },
       ],
     });
+    // Meter tokens per user (fire-and-forget)
+    if (ctx.email && out?.usage) {
+      logLlmUsage(ctx.email, out.usage, {
+        model: out.model,
+        provider: out.provider,
+        conversation_id: ctx.conversationId || null,
+        purpose: "chat",
+      }).catch(() => {});
+    }
     const parsed = extractJson(out.content);
     if (parsed?.error === "no_json" || parsed?.error === "bad_json") {
       return { error: "model_failed", raw: out.content };
