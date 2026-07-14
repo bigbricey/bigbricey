@@ -1,10 +1,12 @@
 # BigBricey — AI handoff (read this first)
 
-**Last updated:** 2026-07-14  
+**Last updated:** 2026-07-14 (evening — Codex + Grok resume continuity)  
 **Owner:** Brice (`bigbricey`)  
 **Live site:** https://bigbricey.com  
 **GitHub:** https://github.com/bigbricey/bigbricey  
-**Local folder:** `/Users/bigbricey/Projects/nutri-table` (folder name is legacy; product is BigBricey)
+**Local folder:** `/Users/bigbricey/Projects/nutri-table` (folder name is legacy; product is BigBricey)  
+**Latest main (local at last check):** `7586f4a` Improve verified food logging feedback  
+**Codex continuity session:** `019f5e0e-9d09-79a1-abfe-22d58a80c8ff` (see session log)
 
 Any AI picking up this project: start here. Do **not** trust the root README alone (it still mentions NutriTable/FitnessFixZone — outdated).
 
@@ -129,8 +131,9 @@ Implemented in migrations 009/010 and the matching API/frontend release:
 2. “Change my goals today” still changes the baseline profile; per-day goal overrides are a future feature.
 3. Home customization is curated themes/scenes/layout today, not arbitrary generated backgrounds, avatar outfits, or user HTML/CSS/JS.
 4. Billing, self-serve signup, account deletion/export policy, support operations, and production monitoring still need a deliberate commercial launch pass.
+5. **Photo / barcode logging (designed, not built):** separate vision model + confirm UI; barcode/label first, plate estimation second. Details in `docs/SESSION-LOG-2026-07-14.md` (Codex evening section).
 
-**Product direction:** Buddy Home (room, avatar, outfits) as curated layers — not MLP trademark preset; original pastel aesthetic if needed.
+**Product direction:** Buddy Home (room, avatar, outfits) as curated layers — not MLP trademark preset; original pastel aesthetic if needed. Sellable private buddy for food + workouts, not a general-purpose agent.
 
 **Brice said:** privacy hotfix when he orders it — don’t only lecture.
 
@@ -164,4 +167,4 @@ Env (Vercel): `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, Supabase, Google OAuth, 
 
 ## Session log pointer
 
-See `docs/SESSION-LOG-2026-07-14.md` for the long session narrative (scenes + chat lobotomy fix + audit summary).
+See `docs/SESSION-LOG-2026-07-14.md` for the long session narrative (scenes + chat lobotomy fix + audit + Codex evening / photo-logging design).

@@ -76,3 +76,28 @@ When he asks whether work is saved for other AIs — **write docs + git push**, 
   fillets/teaspoons/servings now ask for label weight instead of silently guessing.
 - Aligned long-chat excerpting to the actual 24-message model window and kept
   the most recent excluded context in the bounded prompt.
+
+## Codex session (evening) + Grok resume — 2026-07-14
+
+**Codex session ID:** `019f5e0e-9d09-79a1-abfe-22d58a80c8ff`  
+**Resumed into Grok Build** with `/resume-codex` (this continuity note).
+
+### What Codex shipped
+- Reverted the **Living World / Rainbow Pony Kingdom** gimmick card (wrong product interpretation).
+- Shipped **verified food-logging feedback**: receipt with calories/macros, real dashboard reaction, background = real page atmosphere (not a fake kingdom box).
+- Git `main` at handoff time: `7586f4a` *Improve verified food logging feedback* (working tree clean).
+
+### What Codex designed but did NOT build
+Photo / barcode food logging architecture:
+
+1. **Chat brain:** keep `z-ai/glm-5.2` (text).
+2. **Vision model (separate env):** recommend `google/gemini-3.1-flash-lite` via OpenRouter; cheaper alt `google/gemini-2.5-flash-lite`. Do **not** replace GLM for all chat.
+3. **Pipeline:** photo or barcode or nutrition label → identify → **nutrition DB** (saved foods → Open Food Facts → USDA) → editable confirm card → log. Models never invent macros from pixels alone.
+4. **Build order:** barcode + label first (high accuracy), then guided plate estimation (scale/geometry problem; web search ≠ weight).
+5. **Missing today:** camera/upload UI, barcode button, `OPENROUTER_VISION_MODEL` (or equivalent), confirm-before-log for vision results.
+
+### Product goal (Brice — durable)
+Sellable private AI buddy home for food + workouts; customizable atmosphere (e.g. kid-friendly themes); **not** a general agent that builds SaaS or answers anything. Curated themes/scenes — not arbitrary user HTML/JS. Family/kids mode later (COPPA-real).
+
+### Next when Brice says go
+Implement barcode + label scan path first, then plate photo estimation.
