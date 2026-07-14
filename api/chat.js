@@ -2528,6 +2528,8 @@ ${savedBlock}
 
 ${themeBlock}
 
+${sceneBlock}
+
 ${memoryBlock}
 
 ${summaryBlock}
