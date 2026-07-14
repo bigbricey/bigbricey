@@ -177,6 +177,49 @@ export default async function handler(req, res) {
       }
     }
 
+    // ── Scenes are deterministic (regex), not LLM — model kept messing them up ──
+    const sceneIntent = resolveSceneIntent(text);
+    if (sceneIntent.scene) {
+      try {
+        await persistUserScene(session.email, sceneIntent.scene);
+      } catch {
+        /* still return client scene so UI applies */
+      }
+      const reply = sceneReplyFor(sceneIntent.scene);
+      if (conversationId) {
+        try {
+          await appendMessage(session.email, conversationId, "assistant", reply);
+        } catch {
+          /* */
+        }
+      }
+      return sendJson(res, 200, {
+        reply,
+        rows,
+        changed: false,
+        actions: [{ type: "set_scene", scene: sceneIntent.scene }],
+        scene: sceneIntent.scene,
+        conversation_id: conversationId,
+      });
+    }
+    if (sceneIntent.helpOnly) {
+      const reply = SCENES_HELP;
+      if (conversationId) {
+        try {
+          await appendMessage(session.email, conversationId, "assistant", reply);
+        } catch {
+          /* */
+        }
+      }
+      return sendJson(res, 200, {
+        reply,
+        rows,
+        changed: false,
+        actions: [],
+        conversation_id: conversationId,
+      });
+    }
+
     // Fast path: "what can you do?" — never treat as food
     if (isAbilitiesQuestion(text)) {
       const reply = ABILITIES_REPLY;
@@ -208,25 +251,17 @@ export default async function handler(req, res) {
       conversationId,
     });
 
-    // Model often says "Let it snow!" with no set_scene — we force it from user text
-    const forcedScene = detectSceneFromText(text);
-
     if (intent?.error === "model_failed") {
-      // Still honor clear scene *commands* without the LLM
-      if (forcedScene) {
-        intent = {
-          reply: sceneReplyFor(forcedScene),
-          actions: [{ type: "set_scene", scene: forcedScene }],
-        };
-      } else if (isSceneChat(text)) {
+      // Never food-add scene/theme/custom talk
+      if (isSceneChat(text)) {
         return sendJson(res, 200, {
           reply: SCENES_HELP,
           rows,
           changed: false,
           conversation_id: conversationId,
         });
-      } else if (isAbilitiesQuestion(text) || isNonFoodUtterance(text)) {
-        // Questions / customization talk → never force food add
+      }
+      if (isAbilitiesQuestion(text) || isNonFoodUtterance(text)) {
         return sendJson(res, 200, {
           reply: isAbilitiesQuestion(text)
             ? ABILITIES_REPLY
@@ -235,33 +270,17 @@ export default async function handler(req, res) {
           changed: false,
           conversation_id: conversationId,
         });
-      } else {
-        return await doAdd(
-          text,
-          rows,
-          res,
-          session.email,
-          "Couldn't fully parse that — tried as a food add."
-        );
       }
+      return await doAdd(
+        text,
+        rows,
+        res,
+        session.email,
+        "Couldn't fully parse that — tried as a food add."
+      );
     }
 
     const actions = Array.isArray(intent?.actions) ? [...intent.actions] : [];
-    if (forcedScene) {
-      const hasScene = actions.some((a) => {
-        const t = String(a?.type || a?.action || "").toLowerCase();
-        return (
-          t === "set_scene" ||
-          t === "scene" ||
-          t === "set_effect" ||
-          t === "weather" ||
-          t === "ambiance"
-        );
-      });
-      if (!hasScene) {
-        actions.push({ type: "set_scene", scene: forcedScene });
-      }
-    }
 
     let goalsOut = null;
     let layoutOut = null;
@@ -320,8 +339,25 @@ export default async function handler(req, res) {
       });
     }
 
-    // If model just said add with food phrase, or returned empty — try add
+    // Empty actions — never treat scene/theme talk as food
     if (!actions.length) {
+      if (isSceneChat(text)) {
+        return sendJson(res, 200, {
+          reply: SCENES_HELP,
+          rows,
+          changed: false,
+          conversation_id: conversationId,
+        });
+      }
+      if (isNonFoodUtterance(text)) {
+        return sendJson(res, 200, {
+          reply:
+            "I can log food & life data, change goals, rearrange Today, restyle colors/text size/corners, add custom boxes & charts, scenes (rain/snow/ocean…), and export packs. What do you want?",
+          rows,
+          changed: false,
+          conversation_id: conversationId,
+        });
+      }
       return await doAdd(text, rows, res, session.email, null, conversationId);
     }
 
@@ -967,44 +1003,14 @@ export default async function handler(req, res) {
           )
             .toLowerCase()
             .replace(/\s+/g, "_");
-          const aliases = {
-            raining: "rain",
-            rainy: "rain",
-            cats_and_dogs: "rain",
-            dust: "desert",
-            sandy: "desert",
-            sand: "desert",
-            mud: "desert",
-            muddy: "desert",
-            dust_storm: "desert",
-            beach: "ocean",
-            sea: "ocean",
-            space: "stars",
-            party: "confetti",
-            clear: "none",
-            off: "none",
-            stop: "none",
-          };
-          if (aliases[scene]) scene = aliases[scene];
+          scene = normalizeSceneId(scene) || scene;
           if (!SCENE_IDS.includes(scene)) {
             notes.push(
               `Unknown scene “${scene}”. Try: ${SCENE_IDS.join(", ")}.`
             );
             continue;
           }
-          // persist on prefs.scene
-          const profile = await getProfile(session.email);
-          const prefs =
-            profile?.prefs && typeof profile.prefs === "object"
-              ? { ...profile.prefs }
-              : {};
-          prefs.scene = scene;
-          await sb("profiles", {
-            method: "PATCH",
-            query: { email: `eq.${String(session.email).toLowerCase()}` },
-            body: { prefs, updated_at: new Date().toISOString() },
-            headers: { Prefer: "return=minimal" },
-          });
+          await persistUserScene(session.email, scene);
           sceneOut = scene;
           notes.push(
             scene === "none"
@@ -1779,7 +1785,7 @@ function sceneReplyFor(scene) {
     snow: "Let it snow — flakes are falling. ❄️",
     rain: "Rain’s on. 🌧️",
     desert: "Desert / sand dust rolling in.",
-    ocean: "Ocean vibes up.",
+    ocean: "Ocean vibes up. 🌊",
     matrix: "Welcome to the Matrix.",
     stars: "Starfield online.",
     confetti: "Confetti time.",
@@ -1797,121 +1803,219 @@ function sceneReplyMatches(reply, scene) {
   return (
     new RegExp(String(scene).replace(/_/g, "[ _]"), "i").test(reply) ||
     (scene === "desert" && /\b(sand|dust|mud|desert)\b/i.test(reply)) ||
+    (scene === "ocean" && /\b(ocean|sea|underwater|bubbles)\b/i.test(reply)) ||
     /scene|look up|ambient|effect|vibe|falling|rolling/i.test(reply)
   );
 }
 
-/**
- * Only force a scene on clear *commands* — never on "how did you make snow?"
- * or "can you do mud?" (those are questions, not apply requests).
- */
-function detectSceneFromText(text) {
-  const t = String(text || "").toLowerCase().trim();
-  if (!t) return null;
+/** Map casual words → scene id (first hit left-to-right). */
+const SCENE_KEYWORDS = [
+  { id: "snow", re: /\b(snow|snowing|snowfall|blizzard)\b/i },
+  { id: "rain", re: /\b(rain|raining|rainy|downpour)\b/i },
+  { id: "desert", re: /\b(desert|sand|sandy|mud|muddy|dust|dusty)\b/i },
+  { id: "ocean", re: /\b(ocean|underwater|bubbles|sea)\b/i },
+  { id: "matrix", re: /\bmatrix\b/i },
+  { id: "stars", re: /\b(stars|starry|starfield)\b/i },
+  { id: "confetti", re: /\bconfetti\b/i },
+  { id: "fireflies", re: /\bfireflies\b/i },
+  { id: "aurora", re: /\b(aurora|northern lights)\b/i },
+  { id: "mist", re: /\b(mist|foggy|\bfog\b)\b/i },
+  { id: "neon_city", re: /\b(neon(?:\s+city)?|cyberpunk)\b/i },
+];
 
-  // Capability / how-it-works questions — never force a scene
-  // "how you made snow", "can you do like mud?", "what else can you do?"
-  // Still allow "can you make it snow?" (has make it / let it).
-  if (
-    /\b(how (did|do|you|does|it)|what else|tell me (about|how)|explain|how (it|you) (made|make|works?))\b/.test(
-      t
-    )
-  ) {
-    // unless they also issue a clear apply after ("… and make it rain")
-    if (!/\b(make it|let it)\s+(snow|rain)\b|\b(do|apply|set|switch to)\s+(the\s+)?(sand|rain|snow|desert|mud)\b/.test(t)) {
-      return null;
-    }
-  }
-  if (
-    /\b(can you|could you)\b/.test(t) &&
-    (/\?/.test(t) || /\b(do like|do mud|do sand)\b/.test(t)) &&
-    !/\b(make it|let it)\b/.test(t) &&
-    !/\b(i want|please (make|set|turn)|switch to|turn on)\b/.test(t)
-  ) {
-    return null;
-  }
+const SCENE_ALIASES = {
+  raining: "rain",
+  rainy: "rain",
+  cats_and_dogs: "rain",
+  dust: "desert",
+  sandy: "desert",
+  sand: "desert",
+  mud: "desert",
+  muddy: "desert",
+  dust_storm: "desert",
+  beach: "ocean",
+  sea: "ocean",
+  space: "stars",
+  party: "confetti",
+  clear: "none",
+  off: "none",
+  stop: "none",
+};
 
-  // Imperative apply patterns (must look like a request, not a mention)
-  // Order matters: first match wins among alternatives in one message.
-  const applyPatterns = [
-    [
-      /\b(make it|let it)\s+snow\b|\b(start|enable|turn on)\s+(the\s+)?snow\b|\b(do|apply|set|switch to|use)\s+(the\s+)?snow\b|\bsnow\s+scene\b|\bsnowing\b(?!\s+(on|was|is)\b)/,
-      "snow",
-    ],
-    [
-      /\b(make it|let it)\s+rain\b|\b(start|enable|turn on)\s+(the\s+)?rain\b|\b(do|apply|set|switch to|use|try)\s+(the\s+)?rain\b|\brain\s+scene\b|\braining\b/,
-      "rain",
-    ],
-    [
-      /\b(make it|do|apply|set|switch to|use|try)\s+(like\s+)?(the\s+)?(sand|desert|dust|mud|dusty)\b|\bdesert\s+(dust|scene)\b|\bsand\s+scene\b|\bmud\s+scene\b/,
-      "desert",
-    ],
-    [
-      /\b(make it|do|apply|set|switch to|use|try)\s+(the\s+)?(ocean|underwater|bubbles)\b|\bocean\s+scene\b/,
-      "ocean",
-    ],
-    [/\b(make it|do|apply|set|switch to|use|try)\s+(the\s+)?matrix\b|\bmatrix\s+(rain|scene)\b/, "matrix"],
-    [
-      /\b(make it|do|apply|set|switch to|use|try)\s+(the\s+)?(stars|starry|space)\b|\bstars?\s+scene\b/,
-      "stars",
-    ],
-    [/\b(make it|do|apply|set|switch to|use|try)\s+(the\s+)?confetti\b/, "confetti"],
-    [/\b(make it|do|apply|set|switch to|use|try)\s+(the\s+)?fireflies\b/, "fireflies"],
-    [
-      /\b(make it|do|apply|set|switch to|use|try)\s+(the\s+)?(aurora|northern lights)\b/,
-      "aurora",
-    ],
-    [/\b(make it|do|apply|set|switch to|use|try)\s+(the\s+)?(mist|fog)\b/, "mist"],
-    [
-      /\b(make it|do|apply|set|switch to|use|try)\s+(the\s+)?(neon( city)?|cyberpunk)\b/,
-      "neon_city",
-    ],
-  ];
-
-  // "I don't want snow — do sand or rain" → apply alternate, don't clear-only
-  // Pick earliest match in the message so "sand or rain" prefers sand.
-  const applied = [];
-  for (const [re, id] of applyPatterns) {
-    if (!SCENE_IDS.includes(id)) continue;
-    const m = t.match(re);
-    if (m && m.index != null) applied.push({ id, at: m.index });
-  }
-  applied.sort((a, b) => a.at - b.at);
-
-  // Explicit stop/clear (no alternate apply in same message)
-  const wantsClear =
-    /\b(stop|clear|turn off|disable|no more|get rid of)\b.{0,24}\b(the\s+)?(scene|effect|effects|rain|snow|weather|sand|desert|matrix|particles|ambiance)\b/.test(
-      t
-    ) ||
-    /\b(stop|clear)\s+(the\s+)?(snow|rain|effects?|scene)\b/.test(t) ||
-    (/\b(don'?t want|do not want|no more)\b.{0,16}\b(snow|rain|effects?|scene)\b/.test(t) &&
-      !applied.length);
-
-  if (wantsClear && !applied.length) return "none";
-  if (applied.length) {
-    // Prefer non-snow if they also said they don't want snow
-    if (/\b(don'?t want|do not want|no|stop|not)\b.{0,20}\bsnow\b/.test(t)) {
-      const other = applied.find((x) => x.id !== "snow");
-      if (other) return other.id;
-    }
-    return applied[0].id;
-  }
-
-  return null;
+function normalizeSceneId(raw) {
+  let s = String(raw || "none")
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+  if (SCENE_ALIASES[s]) s = SCENE_ALIASES[s];
+  return SCENE_IDS.includes(s) ? s : null;
 }
 
-/** Scene-related talk that is NOT a hard apply command (answer, don't food-log). */
+function findSceneMentions(t) {
+  const hits = [];
+  for (const { id, re } of SCENE_KEYWORDS) {
+    const m = t.match(re);
+    if (m && m.index != null && SCENE_IDS.includes(id)) {
+      hits.push({ id, at: m.index, word: m[0] });
+    }
+  }
+  hits.sort((a, b) => a.at - b.at);
+  // de-dupe by id keep first
+  const seen = new Set();
+  return hits.filter((h) => {
+    if (seen.has(h.id)) return false;
+    seen.add(h.id);
+    return true;
+  });
+}
+
+/** User wants to turn a scene on/off (not just chat about it). */
+function hasSceneApplyIntent(t) {
+  return /\b(make(\s+it)?|let(\s+it)?|show(\s+me)?|let\s+me(\s+see)?|see|try|do|set|switch(\s+to)?|apply|use|turn\s+on|put(\s+on)?|start|enable|i\s+want|give\s+me|display|play|go\s+with|change(\s+it)?(\s+to)?|run|bring\s+up|pull\s+up)\b/i.test(
+    t
+  );
+}
+
+function wantsSceneClear(t) {
+  return (
+    /\b(stop|clear|turn\s+off|disable|no\s+more|get\s+rid\s+of|remove)\b.{0,32}\b(the\s+)?(scene|effect|effects|rain|snow|weather|sand|desert|ocean|matrix|particles|ambiance|ambience)\b/i.test(
+      t
+    ) ||
+    /\b(stop|clear)\s+(the\s+)?(snow|rain|effects?|scene)\b/i.test(t) ||
+    /\b(don'?t\s+want|do\s+not\s+want)\b.{0,20}\b(snow|rain|effects?|scene|sand|desert)\b/i.test(
+      t
+    )
+  );
+}
+
+/**
+ * Pure Q about scenes/how it works — answer with help, do not apply.
+ * "how you made snow", "can you do mud?", "what scenes"
+ * NOT pure Q: "can you make it rain?", "let me see ocean", "show rain"
+ */
+function isSceneHelpOnly(t, mentions) {
+  const explain =
+    /\b(how\s+(did|do|you|does|it)|what\s+else|tell\s+me\s+(about|how)|explain|how\s+(it|you)\s+(made|make|works?)|what\s+(scenes|effects)|which\s+scenes|list\s+(the\s+)?scenes|what\s+can\s+you\s+do)\b/i.test(
+      t
+    );
+  const softCanYou =
+    /\b(can\s+you|could\s+you)\b/i.test(t) &&
+    !/\b(make(\s+it)?|let(\s+it)?|show|see|turn\s+on|i\s+want|let\s+me)\b/i.test(t);
+
+  // Strong apply always wins even if they also ask "what can you do"
+  if (hasSceneApplyIntent(t) && mentions.length) {
+    // "can you make it like rain or … what can you do" → apply
+    if (/\b(make(\s+it)?|let(\s+it)?|show(\s+me)?|let\s+me|see|turn\s+on|i\s+want)\b/i.test(t)) {
+      return false;
+    }
+  }
+
+  if (explain && !/\b(make(\s+it)?|let(\s+it)?|show(\s+me)?|let\s+me\s+see|turn\s+on)\b/i.test(t)) {
+    return true;
+  }
+  if (softCanYou && (/\?/.test(t) || /\b(mud|sand|rain|snow|ocean)\b/i.test(t))) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Deterministic scene resolver. Returns:
+ *   { scene: "rain"|"none"|... } to apply
+ *   { helpOnly: true } to list scenes
+ *   {} if not a scene utterance
+ */
+function resolveSceneIntent(text) {
+  const t = String(text || "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t) return {};
+
+  const mentions = findSceneMentions(t);
+  const clear = wantsSceneClear(t);
+
+  // Bare name: "ocean" / "ocean." / "rain please"
+  const bare = t
+    .replace(/[.!?,]+$/g, "")
+    .replace(/\b(please|now|thanks|tho|though)\b/g, "")
+    .trim();
+  const bareId = normalizeSceneId(bare.replace(/\s+/g, "_")) || normalizeSceneId(bare);
+
+  if (isSceneHelpOnly(t, mentions)) {
+    return { helpOnly: true };
+  }
+
+  // Filter out scenes they're rejecting ("don't want snow")
+  let picks = mentions.slice();
+  if (/\b(don'?t\s+want|do\s+not\s+want|stop|no\s+more|no)\b.{0,20}\bsnow\b/i.test(t)) {
+    picks = picks.filter((m) => m.id !== "snow");
+  }
+
+  // Clear + no replacement → none. Clear + "do sand/rain" → replacement.
+  if (clear && !(hasSceneApplyIntent(t) && picks.length)) {
+    return { scene: "none" };
+  }
+
+  if (hasSceneApplyIntent(t) && picks.length) {
+    return { scene: picks[0].id };
+  }
+  if (hasSceneApplyIntent(t) && mentions.length && !picks.length) {
+    // they rejected the only mentions (e.g. only said snow to stop it)
+    return { scene: "none" };
+  }
+
+  // Short bare scene command
+  if (bareId && bareId !== "none" && bare.length <= 24) {
+    return { scene: bareId };
+  }
+
+  // "ocean scene", "rain effect"
+  const sceneNoun = t.match(
+    /\b(snow|rain|desert|sand|mud|ocean|matrix|stars|confetti|fireflies|aurora|mist|neon(?:\s+city)?)\s+(scene|effect|mode|vibe)\b/i
+  );
+  if (sceneNoun) {
+    const id = normalizeSceneId(sceneNoun[1].replace(/\s+/g, "_"));
+    if (id) return { scene: id };
+  }
+
+  return {};
+}
+
+/** @deprecated use resolveSceneIntent — kept for call sites expecting id|null */
+function detectSceneFromText(text) {
+  const r = resolveSceneIntent(text);
+  return r.scene || null;
+}
+
+async function persistUserScene(email, scene) {
+  if (!email || !supabaseConfig().ok) return;
+  const id = normalizeSceneId(scene);
+  if (!id && scene !== "none") return;
+  const sceneId = id || "none";
+  const profile = await getProfile(email);
+  const prefs =
+    profile?.prefs && typeof profile.prefs === "object" ? { ...profile.prefs } : {};
+  prefs.scene = sceneId;
+  await sb("profiles", {
+    method: "PATCH",
+    query: { email: `eq.${String(email).toLowerCase()}` },
+    body: { prefs, updated_at: new Date().toISOString() },
+    headers: { Prefer: "return=minimal" },
+  });
+}
+
+/** Scene-related talk — never food-log. */
 function isSceneChat(text) {
   const t = String(text || "").toLowerCase();
   if (!t.trim()) return false;
-  if (detectSceneFromText(t)) return true;
-  return /\b(scene|scenes|effect|effects|snow|rain|desert|sand|mud|matrix|stars|confetti|fireflies|aurora|mist|neon|weather|ambiance|ambient|particles|how you made|what else can you)\b/.test(
+  if (resolveSceneIntent(t).scene || resolveSceneIntent(t).helpOnly) return true;
+  return /\b(scene|scenes|effect|effects|snow|rain|desert|sand|mud|ocean|matrix|stars|confetti|fireflies|aurora|mist|neon|weather|ambiance|ambient|particles|underwater|bubbles)\b/.test(
     t
   );
 }
 
 const SCENES_HELP =
-  "Scenes I can put on the screen: rain, snow, desert (sand/dust/mud vibe), ocean, matrix, stars, confetti, fireflies, aurora, mist, neon city — or “stop the snow” / “clear effects”. Say e.g. “make it rain” or “desert dust”. No freeform mud physics yet — desert is the sandy one.";
+  "Scenes I can put on the screen: rain, snow, desert (sand/dust/mud vibe), ocean, matrix, stars, confetti, fireflies, aurora, mist, neon city — or “stop the snow” / “clear effects”. Try: “make it rain”, “let me see ocean”, “desert dust”, “show me stars”.";
 
 function isAbilitiesQuestion(text) {
   const t = String(text || "").toLowerCase();
@@ -1950,6 +2054,7 @@ function isNonFoodUtterance(text) {
   const t = String(text || "").toLowerCase().trim();
   if (!t) return true;
   if (/^(hi|hello|hey|thanks|thank you|ok|okay)\b/.test(t)) return true;
+  if (isSceneChat(t)) return true;
   if (
     /\?/.test(t) &&
     !/(ate|eaten|had|food|log|bacon|egg|oz|lb|kcal|calorie)/.test(t)
@@ -1957,7 +2062,7 @@ function isNonFoodUtterance(text) {
     return true;
   }
   if (
-    /(theme|color|colour|layout|font|corner|square|round|pastel|neon|customize|custom|background|ring)/.test(
+    /(theme|color|colour|layout|font|corner|square|round|pastel|neon|customize|custom|background|ring|scene|snow|rain|ocean|desert)/.test(
       t
     )
   ) {
@@ -2115,7 +2220,7 @@ Respond with ONLY valid JSON:
 Rules:
 - You HAVE conversation history in prior messages. “Change it back” / undo → use CURRENT THEME + recent turns. Default eaten ring is #38bdf8 if they want original blue.
 - “Remember that I like X” → remember action. Do not remember medical diagnoses.
-- Ambient vibes: “make it rain”, “desert”, “snow”, “matrix”, “stars”, “clear the effects” → set_scene with scene id from CAPABILITIES list. Optionally also set_theme to match.
+- Ambient vibes / scenes (client also handles these): “make it rain”, “make it like rain”, “let me see ocean”, “show me sand”, “desert”, “snow”, “matrix”, “stars”, “stop the snow”, “clear effects” → set_scene with scene id from CAPABILITIES. Casual phrasing counts. NEVER food-add for scene talk.
 - "save my shake / remember this food / store this recipe" → save_food. User MUST supply numbers — NEVER invent macros/micros. When they give a FULL label/breakdown, store ALL of it: kcal, macros, fiber, sugars, net_carbs, potassium, magnesium, sodium, iron, calcium, vitamins, and ingredients_list. Put extra vitamins/minerals in nutrients:{}. One saved food can hold many ingredients + many micros (not one number only).
 - "I had my morning shake" / "log the HLTH shake" when name matches SAVED FOODS → log_saved (not USDA guess)
 - "list my saved foods" → list_saved
