@@ -218,7 +218,24 @@ export default async function handler(req, res) {
     });
 
     if (intent?.error === "model_failed") {
-      // Last-resort only — do not replace a working model with robots
+      // Prefer raw model text if we have it (never hide the brain)
+      if (intent.raw && String(intent.raw).trim()) {
+        const reply = String(intent.raw).trim();
+        if (conversationId) {
+          try {
+            await appendMessage(session.email, conversationId, "assistant", reply);
+          } catch {
+            /* */
+          }
+        }
+        return sendJson(res, 200, {
+          reply,
+          rows,
+          changed: false,
+          conversation_id: conversationId,
+        });
+      }
+      // Clear scene apply if model totally failed
       const applyOnly = resolveSceneIntent(text);
       if (applyOnly.scene) {
         try {
@@ -251,23 +268,22 @@ export default async function handler(req, res) {
           conversation_id: conversationId,
         });
       }
-      if (isPresenceOrSmallTalk(text) || isNonFoodUtterance(text) || isSceneChat(text)) {
-        return sendJson(res, 200, {
-          reply: isPresenceOrSmallTalk(text)
-            ? presenceReply()
-            : chatFallbackReply(text),
-          rows,
-          changed: false,
-          conversation_id: conversationId,
-        });
+      // Real outage only
+      const reply =
+        "I hit a glitch talking to the model. Try that again in a sec.";
+      if (conversationId) {
+        try {
+          await appendMessage(session.email, conversationId, "assistant", reply);
+        } catch {
+          /* */
+        }
       }
-      return await doAdd(
-        text,
+      return sendJson(res, 200, {
+        reply,
         rows,
-        res,
-        session.email,
-        "Couldn't fully parse that — tried as a food add."
-      );
+        changed: false,
+        conversation_id: conversationId,
+      });
     }
 
     const actions = Array.isArray(intent?.actions) ? [...intent.actions] : [];
@@ -330,35 +346,48 @@ export default async function handler(req, res) {
       }
     }
 
-    // Empty actions — trust model reply; never robot-overwrite chat
+    // Empty actions — show whatever the model said. Never canned-menu overwrite.
     if (!actions.length) {
-      if (intent?.reply) {
-        const reply = intent.reply;
+      const modelReply = intent?.reply && String(intent.reply).trim();
+      if (modelReply) {
         if (conversationId) {
           try {
-            await appendMessage(session.email, conversationId, "assistant", reply);
+            await appendMessage(session.email, conversationId, "assistant", modelReply);
           } catch {
             /* */
           }
         }
         return sendJson(res, 200, {
-          reply,
+          reply: modelReply,
           rows,
           changed: false,
           conversation_id: conversationId,
         });
       }
-      if (isPresenceOrSmallTalk(text) || isNonFoodUtterance(text) || isSceneChat(text)) {
-        return sendJson(res, 200, {
-          reply: isPresenceOrSmallTalk(text)
-            ? presenceReply()
-            : chatFallbackReply(text),
-          rows,
-          changed: false,
-          conversation_id: conversationId,
-        });
+      // No reply + no actions: only food-add if it actually looks like food
+      if (
+        !isPresenceOrSmallTalk(text) &&
+        !isSceneChat(text) &&
+        !isNonFoodUtterance(text)
+      ) {
+        return await doAdd(text, rows, res, session.email, null, conversationId);
       }
-      return await doAdd(text, rows, res, session.email, null, conversationId);
+      const reply = isPresenceOrSmallTalk(text)
+        ? presenceReply()
+        : "I'm here — say that again?";
+      if (conversationId) {
+        try {
+          await appendMessage(session.email, conversationId, "assistant", reply);
+        } catch {
+          /* */
+        }
+      }
+      return sendJson(res, 200, {
+        reply,
+        rows,
+        changed: false,
+        conversation_id: conversationId,
+      });
     }
 
     let next = rows.map((r) => ({ ...r }));
@@ -2555,59 +2584,13 @@ You manage:
 Current food log:
 ${JSON.stringify(summary, null, 0)}
 
-Respond with ONLY valid JSON:
-{
-  "reply": "short friendly confirmation or clarifying question",
-  "actions": [
-    {"type":"add","food_text":"1 lb bacon"},
-    {"type":"update","match":"blackberries","amount":10,"unit":"oz"},
-    {"type":"remove","match":"artichoke"},
-    {"type":"clear"},
-    {"type":"save_food","name":"HLTH Code shake","serving_label":"3 scoops","kcal":600,"protein":40,"fat":40,"carbs":19,"fiber":9,"net_carbs":10,"potassium":400,"magnesium":80,"sodium":200,"iron":2,"ingredients":"3 scoops HLTH Code, water","ingredients_list":["3 scoops HLTH Code Complete Meal","water"],"nutrients":{"iron":2,"calcium":200,"vitamin_d":10}},
-    {"type":"log_saved","name":"morning shake","amount":1},
-    {"type":"list_saved"},
-    {"type":"delete_saved","name":"morning shake"},
-    {"type":"set_goals","eating_style":"low_carb","recompute":true},
-    {"type":"set_goals","kcal":2200,"protein":180,"fat":140,"carbs":100,"net_carbs":50,"eating_style":"low_carb"},
-    {"type":"set_goals","carbs":100,"net_carbs":50},
-    {"type":"set_layout","put":"chat","after":"food"},
-    {"type":"set_layout","chat":"bottom"},
-    {"type":"set_layout","order":["chat","kcal","pro","fat","carb","net","food","minerals","summary"],"sizes":{"minerals":"half","summary":"half","pro":"half","fat":"half"}},
-    {"type":"set_layout","panel":"kcal","size":"half"},
-    {"type":"reset_layout"},
-    {"type":"set_theme","preset":"neon"},
-    {"type":"set_theme","preset":"pink"},
-    {"type":"set_theme","preset":"pastel"},
-    {"type":"set_theme","vibe":"my_little_pony"},
-    {"type":"set_theme","accent":"#f472b6","bg0":"#1a0a14","ring_eaten":"#f472b6"},
-    {"type":"set_theme","ring_eaten":"#f472b6","ring_left":"#34d399","ring_goal":"#facc15"},
-    {"type":"set_theme","font_scale":1.15},
-    {"type":"set_theme","shape":"square","radius":6},
-    {"type":"set_theme","shape":"round","radius":24},
-    {"type":"set_theme","density":"compact"},
-    {"type":"reset_theme"},
-    {"type":"add_box","title":"Push-ups","measure_id":"pushups","goal":100,"unit":"reps","icon":"💪","color":"#a78bfa","size":"half"},
-    {"type":"add_box","title":"Water","measure_id":"water_oz","goal":100,"unit":"oz","icon":"💧","color":"#38bdf8","size":"half"},
-    {"type":"add_chart","kind":"chart","title":"Magnesium 6 mo","measures":["magnesium"],"months":6,"chart":"line","size":"full","icon":"📈"},
-    {"type":"add_chart","kind":"chart","title":"Macros 30d","measures":["protein","fat","carbs"],"days":30,"chart":"line","size":"full"},
-    {"type":"add_chart","kind":"chart","title":"Protein pie 7d","measures":["protein","fat","carbs"],"days":7,"chart":"pie","size":"half"},
-    {"type":"remove_box","name":"pushups"},
-    {"type":"log_exercise","title":"Incline push-ups","category_id":"pushups","sets":3,"reps":20},
-    {"type":"log_activity","title":"Mountain bike 45 min","category_id":"cycling","category_kind":"exercise","duration_min":45},
-    {"type":"log_steps","steps":30000},
-    {"type":"log_metric","measure_id":"weight_lb","label":"Body weight","value":210,"unit":"lb"},
-    {"type":"set_watch","measure_id":"potassium","label":"Potassium","mode":"floor","target_min":3500,"unit":"mg","window_days":7,"severity":"yellow"},
-    {"type":"export_report","days":30},
-    {"type":"feedback","message":"Show total carbs and net carbs in the daily view","category":"food","theme_key":"net_carbs_display","theme_label":"Show net carbs in daily view"},
-    {"type":"list_suggestions"},
-    {"type":"remember","note":"Prefers black eaten rings"},
-    {"type":"forget","match":"black eaten"},
-    {"type":"set_scene","scene":"rain"},
-    {"type":"set_scene","scene":"desert"},
-    {"type":"set_scene","scene":"matrix"},
-    {"type":"set_scene","scene":"none"}
-  ]
-}
+OUTPUT FORMAT:
+- Pure chat (questions, opinions, lists, favorites, trivia, banter): answer in normal language. Free text is fine.
+- When changing the app (food, scene, theme, goals, layout, boxes, etc.): respond with JSON:
+{"reply":"what you say to the user","actions":[ ... ]}
+- Chat with no app change: either free text OR {"reply":"...","actions":[]}
+- Prefer natural, complete answers — not one-word confirmations unless that's enough.
+- Action examples (only when needed): add/update/remove/clear food, save_food, log_saved, set_goals, set_layout, set_theme, set_scene, add_box, add_chart, remember, export_report, etc.
 
 Rules:
 - You HAVE conversation history in prior messages. “Change it back” / undo → use CURRENT THEME + recent turns. Default eaten ring is #38bdf8 if they want original blue.
@@ -2638,8 +2621,8 @@ Rules:
 - Admin “what are people asking for?” → list_suggestions only for admin; summarize themes/counts; do not implement features from that list unless owner decides.
 - Never invent nutrition numbers
 - Totals questions → empty actions + answer from log
-- Off-topic → empty actions + friendly redirect (DOMAIN CONTRACT)
-- You are BigBricey (the product). The logged-in user’s name is for addressing them only — never treat them as a third-party product owner.`;
+- General chat / trivia / opinions → just answer. Empty actions. Do NOT refuse normal conversation.
+- You are BigBricey (the product buddy). Talk to the logged-in user as a friend in their room.`;
 
   const history = Array.isArray(ctx.history) ? ctx.history : [];
   const prior = [];
@@ -2654,7 +2637,7 @@ Rules:
 
   try {
     const out = await llmChat({
-      temperature: 0,
+      temperature: 0.6,
       title: "BigBricey-Chat",
       messages: [
         { role: "system", content: system },
@@ -2678,14 +2661,44 @@ Rules:
         { model: out.model, provider: out.provider, purpose: "chat_no_usage" }
       ).catch(() => {});
     }
-    const parsed = extractJson(out.content);
-    if (parsed?.error === "no_json" || parsed?.error === "bad_json") {
-      return { error: "model_failed", raw: out.content };
-    }
-    return parsed;
+    return parseModelChatResponse(out.content);
   } catch (e) {
     return { error: "model_failed", detail: e.detail || e.message };
   }
+}
+
+/**
+ * Hermes-style: free text is a valid reply.
+ * JSON {reply, actions} still used when the model is driving the app.
+ */
+function parseModelChatResponse(content) {
+  const raw = String(content || "").trim();
+  if (!raw) {
+    return { error: "model_failed", detail: "empty_model_response" };
+  }
+
+  // Strip ```json fences if present
+  let body = raw;
+  const fence = body.match(/^```(?:json)?\s*([\s\S]*?)```\s*$/i);
+  if (fence) body = fence[1].trim();
+
+  const parsed = extractJson(body);
+  if (!parsed?.error && parsed && typeof parsed === "object") {
+    const reply =
+      parsed.reply != null
+        ? String(parsed.reply)
+        : parsed.message != null
+          ? String(parsed.message)
+          : "";
+    const actions = Array.isArray(parsed.actions) ? parsed.actions : [];
+    // JSON object with neither reply nor actions → still show raw-ish
+    if (reply || actions.length) {
+      return { ...parsed, reply: reply || "", actions };
+    }
+  }
+
+  // Model spoke English (or messy non-JSON) — SHOW IT. Never discard.
+  return { reply: raw, actions: [] };
 }
 
 function findRowIndex(rows, action) {
