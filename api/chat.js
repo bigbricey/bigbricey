@@ -203,7 +203,13 @@ export default async function handler(req, res) {
       });
     }
     if (sceneIntent.helpOnly) {
-      const reply = SCENES_HELP;
+      let seen = [];
+      try {
+        seen = await collectSeenScenes(session.email, historyMessages);
+      } catch {
+        seen = [];
+      }
+      const reply = buildScenesHelpReply(text, { seen });
       if (conversationId) {
         try {
           await appendMessage(session.email, conversationId, "assistant", reply);
@@ -1975,7 +1981,7 @@ function isSceneHelpOnly(t, applyTargets) {
   // Strong apply of a *specific* scene beats a list question in the same message
   // e.g. "what can you do? make it rain" → apply rain (handled by caller)
   const listAsk =
-    /\b(what('?s|\s+is|\s+are)?\s+(the\s+)?other|other\s+ones|which\s+ones|what\s+else|tell\s+me\s+(the\s+)?(other|rest|list)|list\s+(them|all|the\s+)?(ones|scenes|effects)?|what\s+(scenes|effects)|which\s+scenes|what\s+can\s+(i|you)\s+(pick|do|try)|pick\s+through|each\s+one|already\s+tried|we('?ve|\s+have)\s+(already\s+)?tried|how\s+(did|do|you|does)|explain|tell\s+me\s+about)\b/i.test(
+    /\b(what('?s|\s+is|\s+are)?\s+(the\s+)?other|other\s+ones|which\s+ones|what\s+else|tell\s+me\s+(the\s+)?(other|rest|list)|list\s+(them|all|the\s+)?(ones|scenes|effects)?|number(ed)?\s+list|haven'?t\s+seen|not\s+seen\s+yet|remaining|what\s+(scenes|effects)|which\s+scenes|what\s+can\s+(i|you)\s+(pick|do|try|change)|pick\s+through|each\s+one|already\s+tried|we('?ve|\s+have)\s+(already\s+)?tried|how\s+(did|do|you|does)|explain|tell\s+me\s+about|change\s+it\s+to)\b/i.test(
       t
     ) ||
     (/\?/.test(t) &&
@@ -2098,6 +2104,13 @@ async function persistUserScene(email, scene) {
   const prefs =
     profile?.prefs && typeof profile.prefs === "object" ? { ...profile.prefs } : {};
   prefs.scene = sceneId;
+  // Track which scenes this user has actually turned on (for “haven’t seen yet” lists)
+  if (sceneId !== "none") {
+    const prev = Array.isArray(prefs.scenes_seen) ? prefs.scenes_seen : [];
+    if (!prev.includes(sceneId)) {
+      prefs.scenes_seen = [...prev, sceneId].slice(-40);
+    }
+  }
   await sb("profiles", {
     method: "PATCH",
     query: { email: `eq.${String(email).toLowerCase()}` },
@@ -2111,13 +2124,117 @@ function isSceneChat(text) {
   const t = String(text || "").toLowerCase();
   if (!t.trim()) return false;
   if (resolveSceneIntent(t).scene || resolveSceneIntent(t).helpOnly) return true;
+  if (/\b(number(ed)?\s+list|haven'?t\s+seen|not\s+seen\s+yet|remaining)\b/.test(t)) {
+    return true;
+  }
   return /\b(scene|scenes|effect|effects|snow|rain|desert|sand|mud|ocean|matrix|stars|confetti|fireflies|aurora|mist|neon|weather|ambiance|ambient|particles|underwater|bubbles)\b/.test(
     t
   );
 }
 
-const SCENES_HELP =
-  "Scenes I can put on the screen: rain, snow, desert (sand/dust/mud vibe), ocean, matrix, stars, confetti, fireflies, aurora, mist, neon city — or “stop the snow” / “clear effects”. Try: “make it rain”, “let me see ocean”, “desert dust”, “show me stars”.";
+const SCENE_LIST_META = [
+  { id: "rain", label: "Rain", say: "make it rain" },
+  { id: "snow", label: "Snow", say: "make it snow" },
+  { id: "desert", label: "Desert / sand dust", say: "desert dust" },
+  { id: "ocean", label: "Ocean", say: "let me see ocean" },
+  { id: "matrix", label: "Matrix", say: "try matrix" },
+  { id: "stars", label: "Stars", say: "show me stars" },
+  { id: "confetti", label: "Confetti", say: "try confetti" },
+  { id: "fireflies", label: "Fireflies", say: "let’s do fireflies" },
+  { id: "aurora", label: "Aurora", say: "try aurora" },
+  { id: "mist", label: "Mist", say: "try mist" },
+  { id: "neon_city", label: "Neon city", say: "neon city" },
+];
+
+/** Prefer numbered lists; support “haven’t seen yet”. */
+function buildScenesHelpReply(userText, { seen = [] } = {}) {
+  const t = String(userText || "").toLowerCase();
+  const remainingOnly =
+    /\b(haven'?t\s+seen|not\s+seen|still\s+need|remaining|left\s+to\s+(try|see)|other\s+ones|ones?\s+i\s+haven'?t|haven'?t\s+tried)\b/.test(
+      t
+    );
+  // Always numbered so mobile chat doesn't squash into a comma blob
+  const wantNumbered = true;
+
+  const seenSet = new Set(
+    (seen || []).map((s) => normalizeSceneId(s) || s).filter(Boolean)
+  );
+  let items = SCENE_LIST_META.slice();
+  if (remainingOnly) {
+    items = items.filter((x) => !seenSet.has(x.id));
+  }
+
+  if (remainingOnly && items.length === 0) {
+    return "You’ve hit every scene I have right now: rain, snow, desert, ocean, matrix, stars, confetti, fireflies, aurora, mist, neon city. Say “clear effects” to turn them off, or pick a favorite again.";
+  }
+
+  const header = remainingOnly
+    ? seenSet.size
+      ? `Ones you haven’t turned on yet (${items.length}):`
+      : "Scenes you can pick (numbered):"
+    : "Scenes I can put on the screen:";
+
+  const lines = items.map((x, i) => {
+    const n = i + 1;
+    return wantNumbered
+      ? `${n}. ${x.label} — say “${x.say}”`
+      : `• ${x.label} — say “${x.say}”`;
+  });
+
+  const footer = remainingOnly
+    ? seenSet.size
+      ? `\nAlready tried: ${[...seenSet]
+          .map((id) => SCENE_LIST_META.find((m) => m.id === id)?.label || id)
+          .join(", ")}.`
+      : ""
+    : `\nOr “stop the snow” / “clear effects” to turn scenes off.`;
+
+  return `${header}\n${lines.join("\n")}${footer}`;
+}
+
+// Backward-compatible string for older call sites
+const SCENES_HELP = buildScenesHelpReply("list all scenes", { seen: [] });
+
+async function collectSeenScenes(email, historyMessages = []) {
+  const seen = new Set();
+  if (email && supabaseConfig().ok) {
+    try {
+      const profile = await getProfile(email);
+      const fromPrefs = profile?.prefs?.scenes_seen;
+      if (Array.isArray(fromPrefs)) {
+        for (const s of fromPrefs) {
+          const id = normalizeSceneId(s);
+          if (id && id !== "none") seen.add(id);
+        }
+      }
+      const current = normalizeSceneId(profile?.prefs?.scene);
+      if (current && current !== "none") seen.add(current);
+    } catch {
+      /* */
+    }
+  }
+  // Infer from this chat: user apply commands + known scene reply lines
+  const msgs = Array.isArray(historyMessages) ? historyMessages : [];
+  for (const m of msgs) {
+    const content = String(m?.content || m?.text || "");
+    if (!content) continue;
+    const intent = resolveSceneIntent(content);
+    if (intent.scene && intent.scene !== "none") seen.add(intent.scene);
+    // Assistant confirmations (exact apply replies only — not the help list text)
+    if (/ocean vibes up/i.test(content)) seen.add("ocean");
+    if (/let it snow|flakes are falling/i.test(content)) seen.add("snow");
+    if (/rain'?s on|rain’s on/i.test(content)) seen.add("rain");
+    if (/sand dust rolling in/i.test(content)) seen.add("desert");
+    if (/welcome to the matrix/i.test(content)) seen.add("matrix");
+    if (/starfield online/i.test(content)) seen.add("stars");
+    if (/confetti time/i.test(content)) seen.add("confetti");
+    if (/fireflies out/i.test(content)) seen.add("fireflies");
+    if (/aurora lights up/i.test(content)) seen.add("aurora");
+    if (/mist rolling in/i.test(content)) seen.add("mist");
+    if (/neon city online/i.test(content)) seen.add("neon_city");
+  }
+  return [...seen];
+}
 
 function isAbilitiesQuestion(text) {
   const t = String(text || "").toLowerCase();
