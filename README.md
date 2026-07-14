@@ -1,30 +1,43 @@
-# NutriTable (fitnessfixzone.com)
+# BigBricey
 
-Living nutrition table — type food, get amounts, sort columns, day totals.
+Private fitness / food / life data ledger with a chat coach (themes, layout, scenes, custom boxes).
 
-- **Live:** https://www.fitnessfixzone.com  
-- **Parse model:** DeepSeek V4 Flash via OpenRouter  
-- **Numbers:** USDA FoodData Central (+ custom HLTH Code)
+| | |
+|--|--|
+| **Live** | https://bigbricey.com |
+| **GitHub** | https://github.com/bigbricey/bigbricey |
+| **Local** | `Projects/nutri-table` (legacy folder name) |
+
+## For AIs / new humans
+
+**Start here:** [`docs/AI-HANDOFF.md`](docs/AI-HANDOFF.md)  
+Session continuity: [`docs/SESSION-LOG-2026-07-14.md`](docs/SESSION-LOG-2026-07-14.md)  
+Agent rules: [`AGENTS.md`](AGENTS.md)
+
+## Stack (short)
+
+- Static frontend: `public/`
+- Vercel serverless API: `api/`
+- Supabase: `supabase/`
+- LLM: OpenRouter (`OPENROUTER_API_KEY`, `OPENROUTER_MODEL` — default `z-ai/glm-5.2`)
 
 ## Local
 
 ```bash
-cp .env.example .env   # OPENROUTER_API_KEY + OPENROUTER_MODEL
+cp .env.example .env   # fill keys
 npm install
-npm run dev            # http://127.0.0.1:3847
+# use Vercel CLI / serverless locally as you prefer
 ```
 
-## Deploy (Vercel)
+## Deploy
 
-Env vars on Vercel project `fitnessfixzone`:
-
-- `OPENROUTER_API_KEY`
-- `OPENROUTER_MODEL=deepseek/deepseek-v4-flash`
+Vercel project **bigbricey** only:
 
 ```bash
-vercel --prod
+git push origin main
+npx vercel --prod --yes
 ```
 
-## Phone app
+## Note
 
-Safari/Chrome → open site → **Add to Home Screen**.
+Older docs may say NutriTable / FitnessFixZone — that branding is legacy. Product name is **BigBricey**.
