@@ -103,6 +103,38 @@ test("manual food buttons claim success only after a committed revision", async 
   assert.match(manualBlock, /Potassium is optional/);
 });
 
+test("chat food receipts come only from newly committed ledger rows", async () => {
+  const source = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const sendStart = source.indexOf("async function onSend");
+  const sendEnd = source.indexOf("function sortBy", sendStart);
+  const sendBlock = source.slice(sendStart, sendEnd);
+  const receiptStart = source.indexOf("function buildVerifiedLogReceipt");
+  const receiptEnd = source.indexOf("function pulseVerifiedLogUpdate", receiptStart);
+  const receiptBlock = source.slice(receiptStart, receiptEnd);
+
+  assert.match(sendBlock, /data\.changed === true && data\.ledger_committed === true/);
+  assert.match(sendBlock, /priorIds/);
+  assert.match(sendBlock, /!priorIds\.has\(String\(row\.id\)\)/);
+  assert.match(sendBlock, /sameDayContext[\s\S]{0,180}verifiedAddedRows/);
+  assert.match(sendBlock, /buildVerifiedLogReceipt\(receiptRows, requestDay\)/);
+  assert.match(sendBlock, /reply \|\| receipt/);
+  assert.doesNotMatch(receiptBlock, /innerHTML/);
+  assert.match(receiptBlock, /knownMetric\(row\?\.kcal\)/);
+  assert.match(receiptBlock, /textContent/);
+});
+
+test("layout controls stay inert and hidden until Customize mode", async () => {
+  const layout = await readFile(new URL("../public/layout.js", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
+  const html = await readFile(new URL("../public/app.html", import.meta.url), "utf8");
+
+  const pointerStart = layout.indexOf("function onPointerDown");
+  const pointerEnd = layout.indexOf("function onPointerMove", pointerStart);
+  assert.match(layout.slice(pointerStart, pointerEnd), /if \(!editMode\) return/);
+  assert.match(styles, /body:not\(\.layout-editing\) \.layout-panel-chrome/);
+  assert.match(html, /id="btnEditLayout">Customize</);
+});
+
 test("custom charts never turn missing metric days into fake zero measurements", async () => {
   const source = await readFile(new URL("../public/boxes.js", import.meta.url), "utf8");
   const pointsStart = source.indexOf("function seriesPoints");

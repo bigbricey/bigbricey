@@ -354,6 +354,7 @@
   }
 
   function onPointerDown(e) {
+    if (!editMode) return;
     // Grab handle OR the chrome strip (where the hand cursor shows)
     const grab = e.target.closest(".layout-drag, .layout-panel-chrome");
     if (!grab) return;
@@ -437,7 +438,7 @@
     b.addEventListener("click", (e) => {
       const sizeBtn = e.target.closest("[data-size-cycle]");
       if (!sizeBtn) return;
-      // Size only in edit mode (keeps normal use clean) OR always allow — always allow is fine
+      if (!editMode) return;
       const panel = sizeBtn.closest(".layout-panel");
       if (panel?.dataset.panel) {
         e.preventDefault();

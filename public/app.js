@@ -974,6 +974,111 @@ function displayUserName() {
   return name || "You";
 }
 
+function knownMetric(value) {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+/**
+ * Build a compact receipt from rows the server actually committed. This is
+ * presentation only: no model prose or browser-side nutrition guess becomes a
+ * receipt.
+ */
+function buildVerifiedLogReceipt(addedRows, dayKey = selectedDay) {
+  if (!Array.isArray(addedRows) || !addedRows.length) return null;
+  const dayLabel = dayKey === todayKey() ? "today" : String(dayKey || "this day");
+  const receipt = document.createElement("div");
+  receipt.className = "chat-receipt";
+  receipt.setAttribute("aria-label", "Verified food log receipt");
+
+  const head = document.createElement("div");
+  head.className = "chat-receipt-head";
+  const title = document.createElement("strong");
+  title.textContent =
+    addedRows.length === 1
+      ? `Added to ${dayLabel}`
+      : `${addedRows.length} foods added to ${dayLabel}`;
+  const verified = document.createElement("span");
+  verified.textContent = "✓ verified";
+  head.append(title, verified);
+  receipt.appendChild(head);
+
+  for (const row of addedRows.slice(0, 4)) {
+    const item = document.createElement("div");
+    item.className = "chat-receipt-item";
+    const label = document.createElement("span");
+    label.className = "chat-receipt-label";
+    label.textContent = String(row?.label || "Food");
+    const kcal = document.createElement("strong");
+    const kcalValue = knownMetric(row?.kcal);
+    kcal.textContent = kcalValue == null ? "— kcal" : `${fmt(kcalValue, 0)} kcal`;
+    item.append(label, kcal);
+
+    const macros = document.createElement("div");
+    macros.className = "chat-receipt-macros";
+    const macroBits = [
+      ["P", knownMetric(row?.protein)],
+      ["F", knownMetric(row?.fat)],
+      ["C", knownMetric(row?.carbs)],
+    ]
+      .filter(([, value]) => value != null)
+      .map(([labelText, value]) => `${labelText} ${fmt(value)}g`);
+    macros.textContent = macroBits.length ? macroBits.join(" · ") : "Macros unavailable";
+    item.appendChild(macros);
+    receipt.appendChild(item);
+  }
+
+  if (addedRows.length > 4) {
+    const more = document.createElement("div");
+    more.className = "chat-receipt-more";
+    more.textContent = `+${addedRows.length - 4} more`;
+    receipt.appendChild(more);
+  }
+
+  const day = totals();
+  const footer = document.createElement("div");
+  footer.className = "chat-receipt-total";
+  const totalBits = [];
+  const kcalGoal = knownMetric(dayGoals?.kcal);
+  totalBits.push(
+    kcalGoal && kcalGoal > 0
+      ? `${fmt(day.kcal, 0)} / ${fmt(kcalGoal, 0)} kcal ${dayLabel}`
+      : `${fmt(day.kcal, 0)} kcal ${dayLabel}`
+  );
+  const proteinGoal = knownMetric(dayGoals?.protein);
+  if (proteinGoal && proteinGoal > 0) {
+    const delta = proteinGoal - day.protein;
+    totalBits.push(
+      delta >= 0
+        ? `${fmt(delta)}g protein left`
+        : `${fmt(Math.abs(delta))}g protein over`
+    );
+  }
+  footer.textContent = totalBits.join(" · ");
+  receipt.appendChild(footer);
+  return receipt;
+}
+
+function pulseVerifiedLogUpdate(addedRows) {
+  const ids = new Set(
+    (Array.isArray(addedRows) ? addedRows : [])
+      .map((row) => String(row?.id || ""))
+      .filter(Boolean)
+  );
+  const targets = Array.from(document.querySelectorAll(".macro-row"));
+  foodCards?.querySelectorAll(".food-card[data-id]").forEach((card) => {
+    if (ids.has(String(card.dataset.id || ""))) {
+      card.classList.add("is-just-added");
+      targets.push(card);
+    }
+  });
+  targets.forEach((target) => target.classList.add("is-just-updated"));
+  setTimeout(() => {
+    targets.forEach((target) => target.classList.remove("is-just-updated", "is-just-added"));
+  }, 1900);
+}
+
 function appendChat(role, text, isError = false, options = {}) {
   if (!chatLog || text == null || String(text).trim() === "") return;
   chatLog.querySelector(".welcome, .chat-empty")?.remove();
@@ -997,6 +1102,7 @@ function appendChat(role, text, isError = false, options = {}) {
   }
   bubble.appendChild(who);
   bubble.appendChild(body);
+  if (options.receipt?.nodeType === 1) bubble.appendChild(options.receipt);
   chatLog.appendChild(bubble);
   if (options.scroll !== false) {
     if (window.BBChatFormat?.scrollChatToBottom) {
@@ -1522,6 +1628,7 @@ async function onSend() {
   appendChat("user", text);
   setThinking(true);
   try {
+    let verifiedAddedRows = [];
     const data = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1580,6 +1687,14 @@ async function onSend() {
         data.ledger_reloaded === true)
     ) {
       const committedRows = ensureUniqueIds(data.rows);
+      if (data.changed === true && data.ledger_committed === true) {
+        const priorIds = new Set(
+          requestRows.map((row) => String(row?.id || "")).filter(Boolean)
+        );
+        verifiedAddedRows = committedRows.filter(
+          (row) => row?.id != null && !priorIds.has(String(row.id))
+        );
+      }
       // The server either committed this exact day transactionally or reloaded
       // the newer authoritative snapshot after a conflict. Cache only.
       saveLocalRows(requestDay, committedRows, requestAccount);
@@ -1652,7 +1767,18 @@ async function onSend() {
       (typeof data.reply === "string" && data.reply.trim()) ||
       (Array.isArray(data.notes) && data.notes.filter(Boolean).join(" "));
     if (responseBelongsToVisibleConversation) {
-      if (reply) appendChat("bot", reply);
+      const receiptRows = sameDayContext(
+        requestAccount,
+        requestDay,
+        requestSelectionEpoch
+      )
+        ? verifiedAddedRows
+        : [];
+      const receipt = buildVerifiedLogReceipt(receiptRows, requestDay);
+      if (receiptRows.length) pulseVerifiedLogUpdate(receiptRows);
+      if (reply || receipt) {
+        appendChat("bot", reply || "Logged successfully.", false, { receipt });
+      }
       else appendChat("bot", "No response returned.", true);
     }
   } catch (e) {
