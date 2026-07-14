@@ -21,9 +21,12 @@
       label: "Snow",
       particles: "snow",
       palette: {
-        bg0: "#0c1220",
+        bg0: "#0a1528",
+        bg1: "#122038",
         accent: "#e2e8f0",
         ring_eaten: "#93c5fd",
+        text: "#f8fafc",
+        muted: "#94a3b8",
         glow1: "226,232,240",
         glow2: "147,197,253",
         glow3: "186,230,253",
@@ -183,7 +186,12 @@
     particles = [];
     mode = null;
     if (ctx && canvas) ctx.clearRect(0, 0, w, h);
-    document.body.dataset.scene = "none";
+    // Do NOT set body.dataset.scene here — applyScene owns that.
+    // CSS hides #sceneFx when data-scene="none", so clobbering breaks snow/rain.
+  }
+
+  function dpr() {
+    return window.devicePixelRatio || 1;
   }
 
   function spawn() {
@@ -194,22 +202,32 @@
         ? 40
         : mode === "stars"
           ? 80
-          : mode === "confetti"
-            ? 50
-            : mode === "mist"
-              ? 25
-              : 60;
+          : mode === "snow"
+            ? 120
+            : mode === "confetti"
+              ? 50
+              : mode === "mist"
+                ? 25
+                : 60;
     for (let i = 0; i < n; i++) particles.push(makeParticle(mode, true));
   }
 
   function makeParticle(type, randomY) {
+    const s = dpr();
     const x = Math.random() * w;
-    const y = randomY ? Math.random() * h : -20;
+    const y = randomY ? Math.random() * h : -20 * s;
     if (type === "rain") {
-      return { type, x, y, len: 10 + Math.random() * 14, vy: 6 + Math.random() * 8, vx: -0.6 };
+      return { type, x, y, len: (12 + Math.random() * 18) * s, vy: (7 + Math.random() * 10) * s, vx: -0.8 * s };
     }
     if (type === "snow") {
-      return { type, x, y, r: 1 + Math.random() * 2.2, vy: 0.35 + Math.random() * 0.8, vx: Math.sin(Math.random() * 6) * 0.35 };
+      return {
+        type,
+        x,
+        y,
+        r: (2 + Math.random() * 4) * s,
+        vy: (0.5 + Math.random() * 1.4) * s,
+        vx: Math.sin(Math.random() * 6) * 0.5 * s,
+      };
     }
     if (type === "dust") {
       return { type, x, y: Math.random() * h, r: 0.8 + Math.random() * 2, vx: 0.25 + Math.random() * 0.7, vy: (Math.random() - 0.5) * 0.25 };
@@ -257,7 +275,17 @@
     particles = [];
     if (!mode || mode === "none") return;
     const n =
-      mode === "matrix" ? 40 : mode === "stars" ? 90 : mode === "confetti" ? 55 : mode === "mist" ? 28 : 65;
+      mode === "matrix"
+        ? 40
+        : mode === "stars"
+          ? 90
+          : mode === "snow"
+            ? 130
+            : mode === "confetti"
+              ? 55
+              : mode === "mist"
+                ? 28
+                : 65;
     for (let i = 0; i < n; i++) particles.push(makeParticleFixed(mode, true, i));
   }
 
@@ -277,12 +305,21 @@
         p.x += p.vx;
         if (p.y > h) Object.assign(p, makeParticleFixed("rain", false, i));
       } else if (p.type === "snow") {
-        ctx.fillStyle = "rgba(255,255,255,0.7)";
+        // Soft flake + glow so it's obvious on dark UI
+        const grd = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r * 2);
+        grd.addColorStop(0, "rgba(255,255,255,0.95)");
+        grd.addColorStop(0.45, "rgba(226,232,240,0.75)");
+        grd.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = grd;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, p.r * 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "rgba(255,255,255,0.9)";
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r * 0.55, 0, Math.PI * 2);
         ctx.fill();
         p.y += p.vy;
-        p.x += p.vx;
+        p.x += p.vx + Math.sin((p.y + i * 12) * 0.01) * 0.3 * dpr();
         if (p.y > h) Object.assign(p, makeParticleFixed("snow", false, i));
       } else if (p.type === "dust") {
         ctx.fillStyle = "rgba(251,191,36,0.25)";
@@ -385,11 +422,13 @@
       clear: "none",
       off: "none",
       default: "none",
+      blizzard: "snow",
+      snowfall: "snow",
+      snowing: "snow",
     };
     if (aliases[key]) key = aliases[key];
     if (!SCENES[key]) key = "none";
     current = key;
-    document.body.dataset.scene = key;
 
     const scene = SCENES[key];
     if (theme && scene.palette && window.BBTheme?.patch) {
@@ -397,15 +436,21 @@
     }
 
     stop();
+    // Set AFTER stop so CSS display:none rule never hides a live scene
+    document.body.dataset.scene = key;
+
     if (key === "none" || !scene.particles) {
+      if (canvas && ctx) ctx.clearRect(0, 0, w, h);
       if (persist) saveLocal();
       syncUi();
       return current;
     }
 
     ensureCanvas();
+    canvas.style.display = "block";
     mode = scene.particles;
     spawnFixed();
+    if (raf) cancelAnimationFrame(raf);
     raf = requestAnimationFrame(tick);
     if (persist) saveLocal();
     syncUi();

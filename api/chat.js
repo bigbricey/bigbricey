@@ -196,7 +196,7 @@ export default async function handler(req, res) {
       });
     }
 
-    const intent = await interpretIntent(text, rows, {
+    let intent = await interpretIntent(text, rows, {
       email: session.email,
       name: session.name,
       person: personCtx,
@@ -208,9 +208,23 @@ export default async function handler(req, res) {
       conversationId,
     });
 
+    // Model often says "Let it snow!" with no set_scene — we force it from user text
+    const forcedScene = detectSceneFromText(text);
+
     if (intent?.error === "model_failed") {
-      // Questions / customization talk → never force food add
-      if (isAbilitiesQuestion(text) || isNonFoodUtterance(text)) {
+      // Still honor clear scene requests without the LLM
+      if (forcedScene) {
+        intent = {
+          reply:
+            forcedScene === "none"
+              ? "Scene cleared."
+              : forcedScene === "snow"
+                ? "Let it snow — flakes are falling. ❄️"
+                : `Scene set to ${forcedScene}.`,
+          actions: [{ type: "set_scene", scene: forcedScene }],
+        };
+      } else if (isAbilitiesQuestion(text) || isNonFoodUtterance(text)) {
+        // Questions / customization talk → never force food add
         return sendJson(res, 200, {
           reply: isAbilitiesQuestion(text)
             ? ABILITIES_REPLY
@@ -218,17 +232,34 @@ export default async function handler(req, res) {
           rows,
           changed: false,
         });
+      } else {
+        return await doAdd(
+          text,
+          rows,
+          res,
+          session.email,
+          "Couldn't fully parse that — tried as a food add."
+        );
       }
-      return await doAdd(
-        text,
-        rows,
-        res,
-        session.email,
-        "Couldn't fully parse that — tried as a food add."
-      );
     }
 
-    const actions = intent?.actions || [];
+    const actions = Array.isArray(intent?.actions) ? [...intent.actions] : [];
+    if (forcedScene) {
+      const hasScene = actions.some((a) => {
+        const t = String(a?.type || a?.action || "").toLowerCase();
+        return (
+          t === "set_scene" ||
+          t === "scene" ||
+          t === "set_effect" ||
+          t === "weather" ||
+          t === "ambiance"
+        );
+      });
+      if (!hasScene) {
+        actions.push({ type: "set_scene", scene: forcedScene });
+      }
+    }
+
     let goalsOut = null;
     let layoutOut = null;
     let themeOut = null;
@@ -1605,7 +1636,31 @@ export default async function handler(req, res) {
       }
     }
 
-    const reply = intent.reply || notes.join(" ");
+    let reply = intent.reply || notes.join(" ");
+    // Prefer a reply that matches the scene we actually applied
+    if (sceneOut && sceneOut !== "none") {
+      const saidScene =
+        new RegExp(sceneOut.replace(/_/g, "[ _]"), "i").test(reply || "") ||
+        /scene|snow|rain|look|ambient|effect|vibe/i.test(reply || "");
+      if (!reply || !saidScene) {
+        const labels = {
+          snow: "Let it snow — flakes are falling. ❄️",
+          rain: "Rain’s on. 🌧️",
+          desert: "Desert dust rolling in.",
+          ocean: "Ocean vibes up.",
+          matrix: "Welcome to the Matrix.",
+          stars: "Starfield online.",
+          confetti: "Confetti time.",
+          fireflies: "Fireflies out.",
+          aurora: "Aurora lights up.",
+          mist: "Mist rolling in.",
+          neon_city: "Neon city online.",
+        };
+        reply = labels[sceneOut] || `Scene set to ${sceneOut}.`;
+      }
+    } else if (sceneOut === "none" && (!reply || /snow|rain/i.test(reply))) {
+      reply = "Scene cleared.";
+    }
     if (conversationId && reply) {
       try {
         await appendMessage(session.email, conversationId, "assistant", reply);
@@ -1729,6 +1784,46 @@ async function doAdd(text, rows, res, email, prefix, conversationId) {
 }
 
 const ABILITIES_REPLY = abilitiesReplyText();
+
+/**
+ * Hard client-proof scene detection. Model is allowed to be witty;
+ * we still apply rain/snow when the user clearly asked for it.
+ */
+function detectSceneFromText(text) {
+  const t = String(text || "").toLowerCase().trim();
+  if (!t) return null;
+
+  if (
+    /\b(clear|stop|remove|turn off|no more|disable)\b/.test(t) &&
+    /\b(scene|effect|effects|rain|snow|weather|particles|ambiance|ambience)\b/.test(t)
+  ) {
+    return "none";
+  }
+
+  const wants =
+    /\b(make it|let it|set|switch|turn on|apply|show|put on|use|can you|could you|please|i want|change (it |the )?(to|into)|scene|effect|weather|vibe|background)\b/.test(
+      t
+    ) || /\b(snowing|raining)\b/.test(t);
+  if (!wants) return null;
+
+  const pairs = [
+    [/(\bsnow\b|snowing|snowfall|blizzard|let it snow)/, "snow"],
+    [/(\brain\b|raining|rainy|downpour)/, "rain"],
+    [/(\bdesert\b|dust storm|sandy)/, "desert"],
+    [/(\bocean\b|underwater|\bbubbles\b)/, "ocean"],
+    [/\bmatrix\b/, "matrix"],
+    [/(\bstars\b|starry|space scene)/, "stars"],
+    [/\bconfetti\b/, "confetti"],
+    [/\bfireflies\b/, "fireflies"],
+    [/(\baurora\b|northern lights)/, "aurora"],
+    [/(\bmist\b|\bfog\b)/, "mist"],
+    [/(\bneon( city)?\b|cyberpunk)/, "neon_city"],
+  ];
+  for (const [re, id] of pairs) {
+    if (re.test(t) && SCENE_IDS.includes(id)) return id;
+  }
+  return null;
+}
 
 function isAbilitiesQuestion(text) {
   const t = String(text || "").toLowerCase();
