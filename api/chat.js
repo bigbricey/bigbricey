@@ -1868,11 +1868,90 @@ function findSceneMentions(t) {
   });
 }
 
-/** User wants to turn a scene on/off (not just chat about it). */
-function hasSceneApplyIntent(t) {
-  return /\b(make(\s+it)?|let(\s+it)?|show(\s+me)?|let\s+me(\s+see)?|see|try|do|set|switch(\s+to)?|apply|use|turn\s+on|put(\s+on)?|start|enable|i\s+want|give\s+me|display|play|go\s+with|change(\s+it)?(\s+to)?|run|bring\s+up|pull\s+up)\b/i.test(
-    t
-  );
+const SCENE_WORD_ALT =
+  "snow|snowing|snowfall|blizzard|rain|raining|rainy|downpour|desert|sand|sandy|mud|muddy|dust|dusty|ocean|underwater|bubbles|sea|matrix|stars|starry|starfield|confetti|fireflies|aurora|northern\\s+lights|mist|foggy|fog|neon(?:\\s+city)?|cyberpunk";
+
+function wordToSceneId(word) {
+  const w = String(word || "")
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+  const map = {
+    snow: "snow",
+    snowing: "snow",
+    snowfall: "snow",
+    blizzard: "snow",
+    rain: "rain",
+    raining: "rain",
+    rainy: "rain",
+    downpour: "rain",
+    desert: "desert",
+    sand: "desert",
+    sandy: "desert",
+    mud: "desert",
+    muddy: "desert",
+    dust: "desert",
+    dusty: "desert",
+    ocean: "ocean",
+    underwater: "ocean",
+    bubbles: "ocean",
+    sea: "ocean",
+    matrix: "matrix",
+    stars: "stars",
+    starry: "stars",
+    starfield: "stars",
+    confetti: "confetti",
+    fireflies: "fireflies",
+    aurora: "aurora",
+    northern_lights: "aurora",
+    mist: "mist",
+    foggy: "mist",
+    fog: "mist",
+    neon: "neon_city",
+    neon_city: "neon_city",
+    cyberpunk: "neon_city",
+  };
+  return map[w] || normalizeSceneId(w);
+}
+
+/**
+ * Only scenes that are the *object* of an apply verb.
+ * "try matrix" ✓  |  "I'm going to try each one" + mention of snow ✗
+ * "we've already tried the snow" ✗  |  "let me see ocean" ✓
+ */
+function findApplySceneTargets(t) {
+  const hits = [];
+  const patterns = [
+    // make it (like) rain / let it snow
+    new RegExp(
+      `\\b(?:make(?:\\s+it)?|let(?:\\s+it)?)\\s+(?:like\\s+)?(?:the\\s+)?(${SCENE_WORD_ALT})\\b`,
+      "gi"
+    ),
+    // let me see ocean / show me rain / see ocean / display stars
+    new RegExp(
+      `\\b(?:let\\s+me\\s+see|show(?:\\s+me)?|see|display|pull\\s+up|bring\\s+up)\\s+(?:the\\s+)?(${SCENE_WORD_ALT})\\b`,
+      "gi"
+    ),
+    // try matrix / do sand / use rain / switch to ocean / apply snow / i want desert
+    new RegExp(
+      `\\b(?:try|do|use|set|apply|switch\\s+to|turn\\s+on|start|enable|i\\s+want|give\\s+me|go\\s+with|change(?:\\s+it)?(?:\\s+to)?|run)\\s+(?:like\\s+)?(?:the\\s+)?(?:a\\s+)?(${SCENE_WORD_ALT})\\b`,
+      "gi"
+    ),
+  ];
+  for (const re of patterns) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(t)) !== null) {
+      const id = wordToSceneId(m[1]);
+      if (id && id !== "none") hits.push({ id, at: m.index, word: m[1] });
+    }
+  }
+  hits.sort((a, b) => a.at - b.at);
+  const seen = new Set();
+  return hits.filter((h) => {
+    if (seen.has(h.id)) return false;
+    seen.add(h.id);
+    return true;
+  });
 }
 
 function wantsSceneClear(t) {
@@ -1888,28 +1967,35 @@ function wantsSceneClear(t) {
 }
 
 /**
- * Pure Q about scenes/how it works — answer with help, do not apply.
- * "how you made snow", "can you do mud?", "what scenes"
- * NOT pure Q: "can you make it rain?", "let me see ocean", "show rain"
+ * Listing / explaining — never apply a scene just because snow was *mentioned*.
+ * "what's the other ones… we tried snow, ocean"
+ * "tell me the other ones, going to try each one"
  */
-function isSceneHelpOnly(t, mentions) {
-  const explain =
-    /\b(how\s+(did|do|you|does|it)|what\s+else|tell\s+me\s+(about|how)|explain|how\s+(it|you)\s+(made|make|works?)|what\s+(scenes|effects)|which\s+scenes|list\s+(the\s+)?scenes|what\s+can\s+you\s+do)\b/i.test(
+function isSceneHelpOnly(t, applyTargets) {
+  // Strong apply of a *specific* scene beats a list question in the same message
+  // e.g. "what can you do? make it rain" → apply rain (handled by caller)
+  const listAsk =
+    /\b(what('?s|\s+is|\s+are)?\s+(the\s+)?other|other\s+ones|which\s+ones|what\s+else|tell\s+me\s+(the\s+)?(other|rest|list)|list\s+(them|all|the\s+)?(ones|scenes|effects)?|what\s+(scenes|effects)|which\s+scenes|what\s+can\s+(i|you)\s+(pick|do|try)|pick\s+through|each\s+one|already\s+tried|we('?ve|\s+have)\s+(already\s+)?tried|how\s+(did|do|you|does)|explain|tell\s+me\s+about)\b/i.test(
       t
-    );
+    ) ||
+    (/\?/.test(t) &&
+      /\b(other|ones|scenes|effects|options|choices|what|which)\b/i.test(t) &&
+      !applyTargets.length);
+
   const softCanYou =
     /\b(can\s+you|could\s+you)\b/i.test(t) &&
     !/\b(make(\s+it)?|let(\s+it)?|show|see|turn\s+on|i\s+want|let\s+me)\b/i.test(t);
 
-  // Strong apply always wins even if they also ask "what can you do"
-  if (hasSceneApplyIntent(t) && mentions.length) {
-    // "can you make it like rain or … what can you do" → apply
-    if (/\b(make(\s+it)?|let(\s+it)?|show(\s+me)?|let\s+me|see|turn\s+on|i\s+want)\b/i.test(t)) {
-      return false;
-    }
-  }
-
-  if (explain && !/\b(make(\s+it)?|let(\s+it)?|show(\s+me)?|let\s+me\s+see|turn\s+on)\b/i.test(t)) {
+  if (listAsk && !applyTargets.length) return true;
+  if (listAsk && applyTargets.length === 0) return true;
+  // "what's the other ones… tried snow" — listAsk true, may have zero applyTargets
+  if (
+    listAsk &&
+    applyTargets.length &&
+    !/\b(make(\s+it)?|let(\s+it)?|show(\s+me)?|let\s+me\s+see|turn\s+on)\b/i.test(t)
+  ) {
+    // "try each one" is not try+scene; if only weak targets from false positives, still help
+    // If they said "make it rain and what else" keep apply — make it is strong
     return true;
   }
   if (softCanYou && (/\?/.test(t) || /\b(mud|sand|rain|snow|ocean)\b/i.test(t))) {
@@ -1931,6 +2017,7 @@ function resolveSceneIntent(text) {
     .trim();
   if (!t) return {};
 
+  const applyTargets = findApplySceneTargets(t);
   const mentions = findSceneMentions(t);
   const clear = wantsSceneClear(t);
 
@@ -1941,41 +2028,56 @@ function resolveSceneIntent(text) {
     .trim();
   const bareId = normalizeSceneId(bare.replace(/\s+/g, "_")) || normalizeSceneId(bare);
 
-  if (isSceneHelpOnly(t, mentions)) {
-    return { helpOnly: true };
+  // List / explain questions first — do NOT apply snow just because it was named
+  if (isSceneHelpOnly(t, applyTargets)) {
+    // Exception: clear strong apply in same message with make/let/show
+    if (
+      applyTargets.length &&
+      /\b(make(\s+it)?|let(\s+it)?|show(\s+me)?|let\s+me\s+see|turn\s+on)\b/i.test(t)
+    ) {
+      // fall through to apply
+    } else {
+      return { helpOnly: true };
+    }
   }
 
-  // Filter out scenes they're rejecting ("don't want snow")
-  let picks = mentions.slice();
+  // Prefer verb→scene targets only (never "any mention + try somewhere")
+  let picks = applyTargets.slice();
   if (/\b(don'?t\s+want|do\s+not\s+want|stop|no\s+more|no)\b.{0,20}\bsnow\b/i.test(t)) {
     picks = picks.filter((m) => m.id !== "snow");
   }
 
-  // Clear + no replacement → none. Clear + "do sand/rain" → replacement.
-  if (clear && !(hasSceneApplyIntent(t) && picks.length)) {
+  // Clear + no replacement → none
+  if (clear && !picks.length) {
     return { scene: "none" };
   }
-
-  if (hasSceneApplyIntent(t) && picks.length) {
+  if (picks.length) {
     return { scene: picks[0].id };
   }
-  if (hasSceneApplyIntent(t) && mentions.length && !picks.length) {
-    // they rejected the only mentions (e.g. only said snow to stop it)
+  if (clear) {
     return { scene: "none" };
   }
 
-  // Short bare scene command
+  // Short bare scene command only (whole message is basically the name)
   if (bareId && bareId !== "none" && bare.length <= 24) {
     return { scene: bareId };
   }
 
-  // "ocean scene", "rain effect"
+  // "ocean scene", "rain effect" as whole-ish request
   const sceneNoun = t.match(
-    /\b(snow|rain|desert|sand|mud|ocean|matrix|stars|confetti|fireflies|aurora|mist|neon(?:\s+city)?)\s+(scene|effect|mode|vibe)\b/i
+    new RegExp(
+      `\\b(${SCENE_WORD_ALT})\\s+(scene|effect|mode|vibe)\\b`,
+      "i"
+    )
   );
-  if (sceneNoun) {
-    const id = normalizeSceneId(sceneNoun[1].replace(/\s+/g, "_"));
+  if (sceneNoun && t.length < 48) {
+    const id = wordToSceneId(sceneNoun[1]);
     if (id) return { scene: id };
+  }
+
+  // Scene-ish chat with no apply → help if they mentioned scenes at all
+  if (mentions.length && /\b(scene|effect|ones|pick|options|what)\b/i.test(t)) {
+    return { helpOnly: true };
   }
 
   return {};
