@@ -108,6 +108,8 @@ export default async function handler(req, res) {
 
     let personCtx = null;
     let themeSnap = null;
+    let sceneSnap = null;
+    let scenesSeenSnap = [];
     let memoryNotes = [];
     if (supabaseConfig().ok) {
       try {
@@ -119,6 +121,10 @@ export default async function handler(req, res) {
         personCtx = onboardingFromPrefs(profile?.prefs);
         if (profile?.prefs?.theme && typeof profile.prefs.theme === "object") {
           themeSnap = profile.prefs.theme;
+        }
+        sceneSnap = profile?.prefs?.scene || null;
+        if (Array.isArray(profile?.prefs?.scenes_seen)) {
+          scenesSeenSnap = profile.prefs.scenes_seen;
         }
         memoryNotes = await getMemoryNotes(session.email);
       } catch {
@@ -177,86 +183,8 @@ export default async function handler(req, res) {
       }
     }
 
-    // Small talk / "are you there?" — never dump abilities or food-log
-    if (isPresenceOrSmallTalk(text)) {
-      const reply = presenceReply();
-      if (conversationId) {
-        try {
-          await appendMessage(session.email, conversationId, "assistant", reply);
-        } catch {
-          /* */
-        }
-      }
-      return sendJson(res, 200, {
-        reply,
-        rows,
-        changed: false,
-        actions: [],
-        conversation_id: conversationId,
-      });
-    }
-
-    // ── Scenes are deterministic (regex), not LLM — model kept messing them up ──
-    const sceneIntent = resolveSceneIntent(text);
-    if (sceneIntent.scene) {
-      try {
-        await persistUserScene(session.email, sceneIntent.scene);
-      } catch {
-        /* still return client scene so UI applies */
-      }
-      const reply = sceneReplyFor(sceneIntent.scene);
-      if (conversationId) {
-        try {
-          await appendMessage(session.email, conversationId, "assistant", reply);
-        } catch {
-          /* */
-        }
-      }
-      return sendJson(res, 200, {
-        reply,
-        rows,
-        changed: false,
-        actions: [{ type: "set_scene", scene: sceneIntent.scene }],
-        scene: sceneIntent.scene,
-        conversation_id: conversationId,
-      });
-    }
-    if (sceneIntent.helpOnly) {
-      let seen = [];
-      try {
-        seen = await collectSeenScenes(session.email, historyMessages);
-      } catch {
-        seen = [];
-      }
-      // User can correct the list: "I've already seen rain, snow, desert, ocean"
-      const claimed = parseSeenClaimsFromText(text);
-      if (claimed.length) {
-        seen = [...new Set([...seen, ...claimed])];
-        try {
-          await persistScenesSeen(session.email, claimed);
-        } catch {
-          /* */
-        }
-      }
-      const reply = buildScenesHelpReply(text, { seen });
-      if (conversationId) {
-        try {
-          await appendMessage(session.email, conversationId, "assistant", reply);
-        } catch {
-          /* */
-        }
-      }
-      return sendJson(res, 200, {
-        reply,
-        rows,
-        changed: false,
-        actions: [],
-        conversation_id: conversationId,
-      });
-    }
-
-    // Fast path: "what can you do?" — never treat as food
-    if (isAbilitiesQuestion(text)) {
+    // Fast path: ONLY pure "what can you do?" — not normal chat
+    if (isAbilitiesQuestion(text) && !isPresenceOrSmallTalk(text) && !isSceneChat(text)) {
       const reply = ABILITIES_REPLY;
       if (conversationId) {
         try {
@@ -274,6 +202,7 @@ export default async function handler(req, res) {
       });
     }
 
+    // Let the LLM talk. Code only *executes* validated actions after.
     let intent = await interpretIntent(text, rows, {
       email: session.email,
       name: session.name,
@@ -282,23 +211,35 @@ export default async function handler(req, res) {
       history: historyMessages,
       chatSummary,
       theme: themeSnap,
+      scene: sceneSnap,
+      scenesSeen: scenesSeenSnap,
       memoryNotes,
       conversationId,
     });
 
     if (intent?.error === "model_failed") {
-      // Never food-add scene/theme/custom talk
-      if (isSceneChat(text)) {
-        let seen = [];
+      // Last-resort only — do not replace a working model with robots
+      const applyOnly = resolveSceneIntent(text);
+      if (applyOnly.scene) {
         try {
-          seen = await collectSeenScenes(session.email, historyMessages);
+          await persistUserScene(session.email, applyOnly.scene);
         } catch {
           /* */
         }
+        const reply = sceneReplyFor(applyOnly.scene);
+        if (conversationId) {
+          try {
+            await appendMessage(session.email, conversationId, "assistant", reply);
+          } catch {
+            /* */
+          }
+        }
         return sendJson(res, 200, {
-          reply: buildScenesHelpReply(text, { seen }),
+          reply,
           rows,
           changed: false,
+          actions: [{ type: "set_scene", scene: applyOnly.scene }],
+          scene: applyOnly.scene,
           conversation_id: conversationId,
         });
       }
@@ -310,7 +251,7 @@ export default async function handler(req, res) {
           conversation_id: conversationId,
         });
       }
-      if (isPresenceOrSmallTalk(text) || isNonFoodUtterance(text)) {
+      if (isPresenceOrSmallTalk(text) || isNonFoodUtterance(text) || isSceneChat(text)) {
         return sendJson(res, 200, {
           reply: isPresenceOrSmallTalk(text)
             ? presenceReply()
@@ -330,6 +271,24 @@ export default async function handler(req, res) {
     }
 
     const actions = Array.isArray(intent?.actions) ? [...intent.actions] : [];
+    // If user clearly asked to APPLY a scene and model forgot set_scene, inject it.
+    // Never inject for list/chat/help — the model owns that conversation.
+    const applyFallback = resolveSceneIntent(text);
+    if (applyFallback.scene) {
+      const hasScene = actions.some((a) => {
+        const ty = String(a?.type || a?.action || "").toLowerCase();
+        return (
+          ty === "set_scene" ||
+          ty === "scene" ||
+          ty === "set_effect" ||
+          ty === "weather" ||
+          ty === "ambiance"
+        );
+      });
+      if (!hasScene) {
+        actions.push({ type: "set_scene", scene: applyFallback.scene });
+      }
+    }
 
     let goalsOut = null;
     let layoutOut = null;
@@ -371,50 +330,29 @@ export default async function handler(req, res) {
       }
     }
 
-    if (!actions.length && intent?.reply) {
-      const reply = intent.reply;
-      if (conversationId) {
-        try {
-          await appendMessage(session.email, conversationId, "assistant", reply);
-        } catch {
-          /* */
-        }
-      }
-      return sendJson(res, 200, {
-        reply,
-        rows,
-        changed: false,
-        conversation_id: conversationId,
-      });
-    }
-
-    // Empty actions — never treat scene/theme/chat as food
+    // Empty actions — trust model reply; never robot-overwrite chat
     if (!actions.length) {
-      if (isSceneChat(text)) {
-        let seen = [];
-        try {
-          seen = await collectSeenScenes(session.email, historyMessages);
-        } catch {
-          /* */
+      if (intent?.reply) {
+        const reply = intent.reply;
+        if (conversationId) {
+          try {
+            await appendMessage(session.email, conversationId, "assistant", reply);
+          } catch {
+            /* */
+          }
         }
         return sendJson(res, 200, {
-          reply: buildScenesHelpReply(text, { seen }),
+          reply,
           rows,
           changed: false,
           conversation_id: conversationId,
         });
       }
-      if (isPresenceOrSmallTalk(text)) {
+      if (isPresenceOrSmallTalk(text) || isNonFoodUtterance(text) || isSceneChat(text)) {
         return sendJson(res, 200, {
-          reply: presenceReply(),
-          rows,
-          changed: false,
-          conversation_id: conversationId,
-        });
-      }
-      if (isNonFoodUtterance(text)) {
-        return sendJson(res, 200, {
-          reply: chatFallbackReply(text),
+          reply: isPresenceOrSmallTalk(text)
+            ? presenceReply()
+            : chatFallbackReply(text),
           rows,
           changed: false,
           conversation_id: conversationId,
@@ -1711,11 +1649,11 @@ export default async function handler(req, res) {
       }
     }
 
-    let reply = intent.reply || notes.join(" ");
-    // Prefer a reply that matches the scene we actually applied
-    if (sceneOut != null) {
-      const ok = sceneReplyMatches(reply, sceneOut);
-      if (!reply || !ok) reply = sceneReplyFor(sceneOut);
+    // Model owns the voice. Notes only fill in if model said nothing.
+    // If we applied a scene and model was silent, use a short confirm.
+    let reply = intent.reply || notes.join(" ") || "";
+    if (sceneOut != null && !String(reply).trim()) {
+      reply = sceneReplyFor(sceneOut);
     }
     if (conversationId && reply) {
       try {
@@ -2566,6 +2504,13 @@ async function interpretIntent(text, rows, ctx = {}) {
       })}`
     : `CURRENT THEME: default midnight (eaten ring #38bdf8)`;
 
+  const sceneNow = ctx.scene || "none";
+  const seenScenes = Array.isArray(ctx.scenesSeen) ? ctx.scenesSeen : [];
+  const sceneBlock = `CURRENT SCENE: ${sceneNow}
+SCENES USER HAS TRIED (if known): ${seenScenes.length ? seenScenes.join(", ") : "(unknown — use chat history)"}
+ALL SCENE IDS: rain, snow, desert, ocean, matrix, stars, confetti, fireflies, aurora, mist, neon_city, none
+When listing: use a numbered list in your reply. When applying: set_scene action. Talk like a human.`;
+
   const memNotes = Array.isArray(ctx.memoryNotes) ? ctx.memoryNotes : [];
   const memoryBlock = memNotes.length
     ? `PERMANENT USER NOTES (across all chats):\n${memNotes.map((n) => `- ${n}`).join("\n")}`
@@ -2675,8 +2620,10 @@ Rules:
 - Layout moves: "put chat at the bottom", "chat below food", "make protein half width", "put macros side by side", "reset layout" → set_layout (or reset_layout). Prefer put/before/after or chat:top|bottom for simple moves; full order+sizes when rearranging many boxes. Panel ids only: chat,kcal,pro,fat,carb,net,minerals,summary,food.
 - Look/theme: "make it neon", "pastel / My Little Pony vibe", "eaten rings pink", "make circles/goal yellow", "bigger text", "smaller text", "square corners", "round corners", "compact mode", "light mode", "reset theme" → set_theme (include ring_eaten/ring_left/ring_goal, font_scale, radius or shape).
 - "What can you do / abilities / what are you able to change" → empty actions + reply listing food logging, goals, layout, theme/colors/font/corners, custom boxes, charts, export. NEVER try to add food for capability questions.
-- Small talk / presence: “hey”, “are you there?”, “thanks” → empty actions + short human reply (“Yeah I’m here — what do you need?”). Do NOT paste the abilities list. Do NOT add food.
-- Scene lists: “what scenes”, “number list of ones I haven’t seen” → empty actions + numbered list of scene names.
+- YOU ARE A PERSON IN CHAT, not a script. Answer naturally. “are you there?” → “Yeah I’m here” — not a feature list.
+- Scenes available: rain, snow, desert, ocean, matrix, stars, confetti, fireflies, aurora, mist, neon_city, none.
+- When user wants a SCENE LOOK applied → set_scene with that id. When they want a LIST / favorites / “what’s left” → empty actions + your own numbered reply. Listen to corrections (“I already saw X”) and don’t re-list those. Do NOT food-add for scene talk.
+- Never invent scene ids outside the list. Never paste a robotic abilities dump for small talk.
 - Custom counters: "add a push-up box with goal 100", "track water 100oz" → add_box kind counter.
 - Charts/graphs: "show magnesium last 6 months", "graph protein 3 weeks", "pie of macros this week", "bar chart calories 90 days" → add_chart / add_box kind:chart with measures + days/weeks/months + chart line|bar|pie. Always create a box they can keep/move — don't only describe data in text if they asked for a graph.
 - remove_box to delete any custom box.
