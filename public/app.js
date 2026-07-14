@@ -1297,28 +1297,9 @@ async function onSend() {
       window.BBScenes.apply(data.scene, { persist: true, theme: !data.theme });
       window.__ntUser = window.__ntUser || {};
       window.__ntUser.scene = data.scene;
-    } else if (window.BBScenes && text) {
-      // Client safety net if API forgot scene field but user clearly asked
-      const tl = String(text).toLowerCase();
-      const sceneGuess =
-        /\b(make it|let it|can you|could you|please|set|switch)\b/.test(tl) ||
-        /\b(snowing|raining)\b/.test(tl)
-          ? /\bsnow\b|snowing|blizzard/.test(tl)
-            ? "snow"
-            : /\brain\b|raining/.test(tl)
-              ? "rain"
-              : /\bmatrix\b/.test(tl)
-                ? "matrix"
-                : /\bdesert\b/.test(tl)
-                  ? "desert"
-                  : null
-          : null;
-      if (sceneGuess) {
-        window.BBScenes.apply(sceneGuess, { persist: true, theme: true });
-        window.__ntUser = window.__ntUser || {};
-        window.__ntUser.scene = sceneGuess;
-      }
     }
+    // Do NOT guess scenes from chat text on the client — that re-applied snow
+    // whenever someone *mentioned* snow (e.g. "how you made snow").
     // Chat can add/update custom goal boxes
     if (Array.isArray(data.boxes) && window.BBBoxes) {
       window.BBBoxes.setBoxes(data.boxes, { persist: true });

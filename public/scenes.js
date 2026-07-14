@@ -425,6 +425,9 @@
       blizzard: "snow",
       snowfall: "snow",
       snowing: "snow",
+      sand: "desert",
+      muddy: "desert",
+      mud: "desert",
     };
     if (aliases[key]) key = aliases[key];
     if (!SCENES[key]) key = "none";

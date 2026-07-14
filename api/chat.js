@@ -212,17 +212,19 @@ export default async function handler(req, res) {
     const forcedScene = detectSceneFromText(text);
 
     if (intent?.error === "model_failed") {
-      // Still honor clear scene requests without the LLM
+      // Still honor clear scene *commands* without the LLM
       if (forcedScene) {
         intent = {
-          reply:
-            forcedScene === "none"
-              ? "Scene cleared."
-              : forcedScene === "snow"
-                ? "Let it snow — flakes are falling. ❄️"
-                : `Scene set to ${forcedScene}.`,
+          reply: sceneReplyFor(forcedScene),
           actions: [{ type: "set_scene", scene: forcedScene }],
         };
+      } else if (isSceneChat(text)) {
+        return sendJson(res, 200, {
+          reply: SCENES_HELP,
+          rows,
+          changed: false,
+          conversation_id: conversationId,
+        });
       } else if (isAbilitiesQuestion(text) || isNonFoodUtterance(text)) {
         // Questions / customization talk → never force food add
         return sendJson(res, 200, {
@@ -231,6 +233,7 @@ export default async function handler(req, res) {
             : "I can log food & life data, change goals, rearrange Today, restyle colors/text size/corners, add custom boxes & charts, and export packs. Ask “what can you do?” for the full list — or just say what you want (e.g. “make eaten rings pink”).",
           rows,
           changed: false,
+          conversation_id: conversationId,
         });
       } else {
         return await doAdd(
@@ -970,6 +973,10 @@ export default async function handler(req, res) {
             cats_and_dogs: "rain",
             dust: "desert",
             sandy: "desert",
+            sand: "desert",
+            mud: "desert",
+            muddy: "desert",
+            dust_storm: "desert",
             beach: "ocean",
             sea: "ocean",
             space: "stars",
@@ -1638,28 +1645,9 @@ export default async function handler(req, res) {
 
     let reply = intent.reply || notes.join(" ");
     // Prefer a reply that matches the scene we actually applied
-    if (sceneOut && sceneOut !== "none") {
-      const saidScene =
-        new RegExp(sceneOut.replace(/_/g, "[ _]"), "i").test(reply || "") ||
-        /scene|snow|rain|look|ambient|effect|vibe/i.test(reply || "");
-      if (!reply || !saidScene) {
-        const labels = {
-          snow: "Let it snow — flakes are falling. ❄️",
-          rain: "Rain’s on. 🌧️",
-          desert: "Desert dust rolling in.",
-          ocean: "Ocean vibes up.",
-          matrix: "Welcome to the Matrix.",
-          stars: "Starfield online.",
-          confetti: "Confetti time.",
-          fireflies: "Fireflies out.",
-          aurora: "Aurora lights up.",
-          mist: "Mist rolling in.",
-          neon_city: "Neon city online.",
-        };
-        reply = labels[sceneOut] || `Scene set to ${sceneOut}.`;
-      }
-    } else if (sceneOut === "none" && (!reply || /snow|rain/i.test(reply))) {
-      reply = "Scene cleared.";
+    if (sceneOut != null) {
+      const ok = sceneReplyMatches(reply, sceneOut);
+      if (!reply || !ok) reply = sceneReplyFor(sceneOut);
     }
     if (conversationId && reply) {
       try {
@@ -1785,45 +1773,145 @@ async function doAdd(text, rows, res, email, prefix, conversationId) {
 
 const ABILITIES_REPLY = abilitiesReplyText();
 
+function sceneReplyFor(scene) {
+  if (scene === "none") return "Scene cleared.";
+  const labels = {
+    snow: "Let it snow — flakes are falling. ❄️",
+    rain: "Rain’s on. 🌧️",
+    desert: "Desert / sand dust rolling in.",
+    ocean: "Ocean vibes up.",
+    matrix: "Welcome to the Matrix.",
+    stars: "Starfield online.",
+    confetti: "Confetti time.",
+    fireflies: "Fireflies out.",
+    aurora: "Aurora lights up.",
+    mist: "Mist rolling in.",
+    neon_city: "Neon city online.",
+  };
+  return labels[scene] || `Scene set to ${scene}.`;
+}
+
+function sceneReplyMatches(reply, scene) {
+  if (!reply) return false;
+  if (scene === "none") return /clear|stop|off|none/i.test(reply);
+  return (
+    new RegExp(String(scene).replace(/_/g, "[ _]"), "i").test(reply) ||
+    (scene === "desert" && /\b(sand|dust|mud|desert)\b/i.test(reply)) ||
+    /scene|look up|ambient|effect|vibe|falling|rolling/i.test(reply)
+  );
+}
+
 /**
- * Hard client-proof scene detection. Model is allowed to be witty;
- * we still apply rain/snow when the user clearly asked for it.
+ * Only force a scene on clear *commands* — never on "how did you make snow?"
+ * or "can you do mud?" (those are questions, not apply requests).
  */
 function detectSceneFromText(text) {
   const t = String(text || "").toLowerCase().trim();
   if (!t) return null;
 
+  // Capability / how-it-works questions — never force a scene
+  // "how you made snow", "can you do like mud?", "what else can you do?"
+  // Still allow "can you make it snow?" (has make it / let it).
   if (
-    /\b(clear|stop|remove|turn off|no more|disable)\b/.test(t) &&
-    /\b(scene|effect|effects|rain|snow|weather|particles|ambiance|ambience)\b/.test(t)
-  ) {
-    return "none";
-  }
-
-  const wants =
-    /\b(make it|let it|set|switch|turn on|apply|show|put on|use|can you|could you|please|i want|change (it |the )?(to|into)|scene|effect|weather|vibe|background)\b/.test(
+    /\b(how (did|do|you|does|it)|what else|tell me (about|how)|explain|how (it|you) (made|make|works?))\b/.test(
       t
-    ) || /\b(snowing|raining)\b/.test(t);
-  if (!wants) return null;
-
-  const pairs = [
-    [/(\bsnow\b|snowing|snowfall|blizzard|let it snow)/, "snow"],
-    [/(\brain\b|raining|rainy|downpour)/, "rain"],
-    [/(\bdesert\b|dust storm|sandy)/, "desert"],
-    [/(\bocean\b|underwater|\bbubbles\b)/, "ocean"],
-    [/\bmatrix\b/, "matrix"],
-    [/(\bstars\b|starry|space scene)/, "stars"],
-    [/\bconfetti\b/, "confetti"],
-    [/\bfireflies\b/, "fireflies"],
-    [/(\baurora\b|northern lights)/, "aurora"],
-    [/(\bmist\b|\bfog\b)/, "mist"],
-    [/(\bneon( city)?\b|cyberpunk)/, "neon_city"],
-  ];
-  for (const [re, id] of pairs) {
-    if (re.test(t) && SCENE_IDS.includes(id)) return id;
+    )
+  ) {
+    // unless they also issue a clear apply after ("… and make it rain")
+    if (!/\b(make it|let it)\s+(snow|rain)\b|\b(do|apply|set|switch to)\s+(the\s+)?(sand|rain|snow|desert|mud)\b/.test(t)) {
+      return null;
+    }
   }
+  if (
+    /\b(can you|could you)\b/.test(t) &&
+    (/\?/.test(t) || /\b(do like|do mud|do sand)\b/.test(t)) &&
+    !/\b(make it|let it)\b/.test(t) &&
+    !/\b(i want|please (make|set|turn)|switch to|turn on)\b/.test(t)
+  ) {
+    return null;
+  }
+
+  // Imperative apply patterns (must look like a request, not a mention)
+  // Order matters: first match wins among alternatives in one message.
+  const applyPatterns = [
+    [
+      /\b(make it|let it)\s+snow\b|\b(start|enable|turn on)\s+(the\s+)?snow\b|\b(do|apply|set|switch to|use)\s+(the\s+)?snow\b|\bsnow\s+scene\b|\bsnowing\b(?!\s+(on|was|is)\b)/,
+      "snow",
+    ],
+    [
+      /\b(make it|let it)\s+rain\b|\b(start|enable|turn on)\s+(the\s+)?rain\b|\b(do|apply|set|switch to|use|try)\s+(the\s+)?rain\b|\brain\s+scene\b|\braining\b/,
+      "rain",
+    ],
+    [
+      /\b(make it|do|apply|set|switch to|use|try)\s+(like\s+)?(the\s+)?(sand|desert|dust|mud|dusty)\b|\bdesert\s+(dust|scene)\b|\bsand\s+scene\b|\bmud\s+scene\b/,
+      "desert",
+    ],
+    [
+      /\b(make it|do|apply|set|switch to|use|try)\s+(the\s+)?(ocean|underwater|bubbles)\b|\bocean\s+scene\b/,
+      "ocean",
+    ],
+    [/\b(make it|do|apply|set|switch to|use|try)\s+(the\s+)?matrix\b|\bmatrix\s+(rain|scene)\b/, "matrix"],
+    [
+      /\b(make it|do|apply|set|switch to|use|try)\s+(the\s+)?(stars|starry|space)\b|\bstars?\s+scene\b/,
+      "stars",
+    ],
+    [/\b(make it|do|apply|set|switch to|use|try)\s+(the\s+)?confetti\b/, "confetti"],
+    [/\b(make it|do|apply|set|switch to|use|try)\s+(the\s+)?fireflies\b/, "fireflies"],
+    [
+      /\b(make it|do|apply|set|switch to|use|try)\s+(the\s+)?(aurora|northern lights)\b/,
+      "aurora",
+    ],
+    [/\b(make it|do|apply|set|switch to|use|try)\s+(the\s+)?(mist|fog)\b/, "mist"],
+    [
+      /\b(make it|do|apply|set|switch to|use|try)\s+(the\s+)?(neon( city)?|cyberpunk)\b/,
+      "neon_city",
+    ],
+  ];
+
+  // "I don't want snow — do sand or rain" → apply alternate, don't clear-only
+  // Pick earliest match in the message so "sand or rain" prefers sand.
+  const applied = [];
+  for (const [re, id] of applyPatterns) {
+    if (!SCENE_IDS.includes(id)) continue;
+    const m = t.match(re);
+    if (m && m.index != null) applied.push({ id, at: m.index });
+  }
+  applied.sort((a, b) => a.at - b.at);
+
+  // Explicit stop/clear (no alternate apply in same message)
+  const wantsClear =
+    /\b(stop|clear|turn off|disable|no more|get rid of)\b.{0,24}\b(the\s+)?(scene|effect|effects|rain|snow|weather|sand|desert|matrix|particles|ambiance)\b/.test(
+      t
+    ) ||
+    /\b(stop|clear)\s+(the\s+)?(snow|rain|effects?|scene)\b/.test(t) ||
+    (/\b(don'?t want|do not want|no more)\b.{0,16}\b(snow|rain|effects?|scene)\b/.test(t) &&
+      !applied.length);
+
+  if (wantsClear && !applied.length) return "none";
+  if (applied.length) {
+    // Prefer non-snow if they also said they don't want snow
+    if (/\b(don'?t want|do not want|no|stop|not)\b.{0,20}\bsnow\b/.test(t)) {
+      const other = applied.find((x) => x.id !== "snow");
+      if (other) return other.id;
+    }
+    return applied[0].id;
+  }
+
   return null;
 }
+
+/** Scene-related talk that is NOT a hard apply command (answer, don't food-log). */
+function isSceneChat(text) {
+  const t = String(text || "").toLowerCase();
+  if (!t.trim()) return false;
+  if (detectSceneFromText(t)) return true;
+  return /\b(scene|scenes|effect|effects|snow|rain|desert|sand|mud|matrix|stars|confetti|fireflies|aurora|mist|neon|weather|ambiance|ambient|particles|how you made|what else can you)\b/.test(
+    t
+  );
+}
+
+const SCENES_HELP =
+  "Scenes I can put on the screen: rain, snow, desert (sand/dust/mud vibe), ocean, matrix, stars, confetti, fireflies, aurora, mist, neon city — or “stop the snow” / “clear effects”. Say e.g. “make it rain” or “desert dust”. No freeform mud physics yet — desert is the sandy one.";
 
 function isAbilitiesQuestion(text) {
   const t = String(text || "").toLowerCase();
