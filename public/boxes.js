@@ -712,8 +712,8 @@
     requestAnimationFrame(refreshCharts);
   }
 
-  function setBoxes(list, { persist = false, cloud = false } = {}) {
-    boxes = normalizeList(list);
+  function setBoxes(boxList, { persist = false, cloud = false } = {}) {
+    boxes = normalizeList(boxList);
     if (persist) saveLocal();
     if (cloud) scheduleCloud();
     render();

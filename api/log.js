@@ -19,6 +19,8 @@ import {
   saveOnboarding,
   computeGoalsFromOnboarding,
   dayTotalsForMeasures,
+  latestDailyMeasureSeries,
+  measureUsesLatestDailyValue,
   summarizeLlmUsage,
 } from "./_supabase.js";
 import { buildStatsReport } from "./_report.js";
@@ -403,15 +405,17 @@ async function handleHistory(req, res, user, url) {
   if (measureList.length) {
     const byMeasure = {};
     for (const m of measureList) {
-      const rows = await sb("day_totals", {
-        query: {
-          select: "day_key,measure_id,total,unit",
-          user_email: `eq.${email}`,
-          measure_id: `eq.${m}`,
-          day_key: `gte.${from}`,
-          order: "day_key.asc",
-        },
-      });
+      const rows = measureUsesLatestDailyValue(m)
+        ? await latestDailyMeasureSeries(email, m, from, to)
+        : await sb("day_totals", {
+            query: {
+              select: "day_key,measure_id,total,unit",
+              user_email: `eq.${email}`,
+              measure_id: `eq.${m}`,
+              day_key: `gte.${from}`,
+              order: "day_key.asc",
+            },
+          });
       byMeasure[m] = (rows || []).filter(
         (r) => r.day_key >= from && r.day_key <= to
       );

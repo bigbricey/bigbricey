@@ -115,4 +115,5 @@ test("custom charts never turn missing metric days into fake zero measurements",
   assert.match(source, /observedMin/);
   assert.match(source, /No recorded points yet[^\n]{0,100}start this chart/);
   assert.match(source, /role="img"[^\n]{0,100}aria-label/);
+  assert.doesNotMatch(source, /function setBoxes\(list,/);
 });

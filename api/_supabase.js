@@ -1176,7 +1176,68 @@ export async function deleteWatchTarget(email, id) {
   return { ok: true };
 }
 
-/** Rolling average of a measure from day_totals over last N days (incl today). */
+const LATEST_DAILY_VALUE_MEASURES = new Set([
+  "weight_lb",
+  "body_fat_pct",
+  "waist_in",
+  "hip_in",
+  "chest_in",
+  "neck_in",
+  "glucose_mg_dl",
+  "blood_pressure_systolic",
+  "blood_pressure_diastolic",
+  "resting_heart_rate",
+  "temperature_f",
+]);
+
+/** Body-state readings use the latest measurement of a day, never a sum. */
+export function measureUsesLatestDailyValue(measureId) {
+  return LATEST_DAILY_VALUE_MEASURES.has(
+    String(measureId || "").toLowerCase().replace(/[^a-z0-9_]/g, "")
+  );
+}
+
+export async function latestDailyMeasureSeries(email, measureId, from, to) {
+  const e = String(email || "").toLowerCase();
+  const mid = String(measureId || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, "");
+  if (!e || !mid || !/^\d{4}-\d{2}-\d{2}$/.test(String(from || ""))) return [];
+  const rows =
+    (await sb("event_measures", {
+      query: {
+        select:
+          "event_id,day_key,measure_id,value,unit,created_at,events!inner(deleted_at,occurred_at)",
+        user_email: `eq.${e}`,
+        measure_id: `eq.${mid}`,
+        day_key: `gte.${from}`,
+        "events.deleted_at": "is.null",
+        order: "day_key.asc,created_at.asc",
+        limit: "5000",
+      },
+    })) || [];
+  const latestByDay = new Map();
+  for (const row of rows) {
+    if (!row?.day_key || row.events?.deleted_at || (to && row.day_key > to)) continue;
+    const occurredAt = String(row.events?.occurred_at || row.created_at || "");
+    const previous = latestByDay.get(row.day_key);
+    if (!previous || occurredAt >= previous.occurred_at) {
+      latestByDay.set(row.day_key, {
+        day_key: row.day_key,
+        measure_id: mid,
+        total: Number(row.value),
+        unit: String(row.unit || ""),
+        occurred_at: occurredAt,
+      });
+    }
+  }
+  return Array.from(latestByDay.values())
+    .filter((row) => Number.isFinite(row.total))
+    .sort((left, right) => String(left.day_key).localeCompare(String(right.day_key)))
+    .map(({ occurred_at, ...row }) => row);
+}
+
+/** Rolling average over the applicable daily aggregate for this measurement. */
 export async function rollingAverage(email, measureId, windowDays = 7) {
   const e = String(email).toLowerCase();
   const to = dayKeyFor();
@@ -1184,23 +1245,26 @@ export async function rollingAverage(email, measureId, windowDays = 7) {
   fromDate.setDate(fromDate.getDate() - (Number(windowDays) || 7) + 1);
   const from = dayKeyFor(fromDate);
 
-  const rows =
-    (await sb("day_totals", {
-      query: {
-        select: "day_key,total,unit",
-        user_email: `eq.${e}`,
-        measure_id: `eq.${measureId}`,
-        day_key: `gte.${from}`,
-        order: "day_key.asc",
-      },
-    })) || [];
+  const latestValue = measureUsesLatestDailyValue(measureId);
+  const rows = latestValue
+    ? await latestDailyMeasureSeries(e, measureId, from, to)
+    : (await sb("day_totals", {
+        query: {
+          select: "day_key,total,unit",
+          user_email: `eq.${e}`,
+          measure_id: `eq.${measureId}`,
+          day_key: `gte.${from}`,
+          order: "day_key.asc",
+        },
+      })) || [];
 
   const filtered = rows.filter((r) => r.day_key <= to);
   const daysWithData = filtered.length;
   const sum = filtered.reduce((a, r) => a + (Number(r.total) || 0), 0);
-  // Average over window days (missing days count as 0) — honest "daily average intake"
+  // Additive intake/activity averages include missing zero days. Body-state
+  // readings average only days that were actually measured.
   const win = Number(windowDays) || 7;
-  const avg = sum / win;
+  const avg = sum / (latestValue ? Math.max(1, daysWithData) : win);
   return {
     measure_id: measureId,
     from,
@@ -1532,7 +1596,7 @@ export async function saveUserBoxes(email, list = []) {
   return boxes;
 }
 
-/** Today totals for a list of measure ids (from day_totals). */
+/** Today values: additive totals, plus latest reading for body-state metrics. */
 export async function dayTotalsForMeasures(email, measureIds, dayKey) {
   const e = String(email || "").toLowerCase();
   const day = dayKey || dayKeyFor();
@@ -1541,20 +1605,31 @@ export async function dayTotalsForMeasures(email, measureIds, dayKey) {
     .filter(Boolean)
     .slice(0, 30);
   if (!ids.length) return {};
-  const rows =
-    (await sb("day_totals", {
-      query: {
-        select: "measure_id,total,unit",
-        user_email: `eq.${e}`,
-        day_key: `eq.${day}`,
-        measure_id: `in.(${ids.join(",")})`,
-      },
-    })) || [];
+  const latestIds = ids.filter(measureUsesLatestDailyValue);
+  const additiveIds = ids.filter((id) => !measureUsesLatestDailyValue(id));
+  const rows = additiveIds.length
+    ? (await sb("day_totals", {
+        query: {
+          select: "measure_id,total,unit",
+          user_email: `eq.${e}`,
+          day_key: `eq.${day}`,
+          measure_id: `in.(${additiveIds.join(",")})`,
+        },
+      })) || []
+    : [];
   const out = {};
   for (const id of ids) out[id] = 0;
   for (const r of rows) {
     if (r.measure_id) out[r.measure_id] = Number(r.total) || 0;
   }
+  const latestSeries = await Promise.all(
+    latestIds.map((id) => latestDailyMeasureSeries(e, id, day, day))
+  );
+  latestIds.forEach((id, index) => {
+    if (latestSeries[index]?.[0]) {
+      out[id] = Number(latestSeries[index][0].total) || 0;
+    }
+  });
   return out;
 }
 

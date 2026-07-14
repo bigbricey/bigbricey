@@ -67,6 +67,11 @@ When he asks whether work is saved for other AIs — **write docs + git push**, 
   confirmation-gated removal. Weight charts use recorded `weight_lb` points,
   never zero-fill missing days, use a focused trend scale, and expose a plain-text
   latest/change summary.
+- First production retest created the real panel but exposed two follow-up bugs:
+  a `setBoxes(list)` name collision raised “list is not a function,” and the
+  daily rollup summed 220 + 215 into a fake 435 lb. The client collision was
+  removed, and body-state chart/counter/watch reads now select the latest daily
+  reading while additive measures keep sum semantics.
 - Added semantic food-match rejection and exact quantity-basis rules. Ambiguous
   fillets/teaspoons/servings now ask for label weight instead of silently guessing.
 - Aligned long-chat excerpting to the actual 24-message model window and kept

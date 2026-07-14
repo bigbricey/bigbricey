@@ -70,7 +70,9 @@ Native tools now include `set_tracker` / confirmation-gated `remove_tracker`.
 They connect the LLM to the existing custom counter/chart renderer, so requests
 such as “make a 30-day weight chart” create a real persisted dashboard panel.
 Missing measurement days remain missing (never fake zeroes), and charts show a
-text summary of recorded points as well as the canvas visualization.
+text summary of recorded points as well as the canvas visualization. Body-state
+metrics such as `weight_lb` use the latest reading for each day; additive
+measures such as steps, reps, and nutrients still use daily totals.
 
 Do not restore pseudo-JSON action prompting or regex/menu interceptors. Regex scene handling is outage-only fallback, never the normal conversation path.
 
