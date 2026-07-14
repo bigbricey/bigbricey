@@ -2037,13 +2037,14 @@ function isSceneHelpOnly(t, applyTargets) {
   // Strong apply of a *specific* scene beats a list question in the same message
   // e.g. "what can you do? make it rain" → apply rain (handled by caller)
   const listAsk =
-    /\b(what('?s|\s+is|\s+are)?\s+(the\s+)?other|other\s+ones|which\s+ones|what\s+else|tell\s+me\s+(the\s+)?(other|rest|list)|list\s+(them|all|the\s+)?(ones|scenes|effects)?|number(ed)?\s+list|haven'?t\s+(seen|looked|tried)|not\s+seen\s+yet|remaining|already\s+(seen|tried)|don'?t\s+put|what\s+(scenes|effects)|which\s+scenes|what\s+can\s+(i|you)\s+(pick|do|try|change)|pick\s+through|each\s+one|already\s+tried|we('?ve|\s+have)\s+(already\s+)?tried|how\s+(did|do|you|does)|explain|tell\s+me\s+about|change\s+it\s+to)\b/i.test(
+    sceneListMode(t).mode != null &&
+    (/\b(list|number|every|all|top|favorite|favourite|best|background|scene|haven'?t|remaining|already\s+seen|don'?t\s+put)\b/i.test(
       t
     ) ||
-    parseSeenClaimsFromText(t).length > 0 ||
-    (/\?/.test(t) &&
-      /\b(other|ones|scenes|effects|options|choices|what|which)\b/i.test(t) &&
-      !applyTargets.length);
+      parseSeenClaimsFromText(t).length > 0) ||
+    /\b(what\s+else|what\s+(scenes|effects)|which\s+scenes|how\s+(did|do|you)|explain|tell\s+me\s+about)\b/i.test(
+      t
+    );
 
   const softCanYou =
     /\b(can\s+you|could\s+you)\b/i.test(t) &&
@@ -2206,9 +2207,10 @@ async function persistScenesSeen(email, ids) {
 }
 
 /**
+ * ONLY when user clearly marks scenes done WITH names:
  * “I've already seen rain, snow, desert and ocean”
- * “don't put rain/snow on there”
- * Pulls scene names the user claims are done.
+ * NOT: “what do you mean skipping what I've already seen”
+ * NOT: “I didn't see any”
  */
 function parseSeenClaimsFromText(text) {
   const t = String(text || "")
@@ -2217,14 +2219,31 @@ function parseSeenClaimsFromText(text) {
     .trim();
   if (!t) return [];
 
-  const claimy =
-    /\b(already\s+(seen|tried|looked|did|done)|i('?ve| have)\s+(already\s+)?(seen|tried|looked|done)|don'?t\s+put|remove\s+those|skip\s+those|except|without|not\s+those|we\s+(already\s+)?(tried|saw|seen)|i\s+saw|i\s+tried)\b/i.test(
+  // Negations / meta complaints — never treat as claims
+  if (
+    /\b(didn'?t\s+see|did\s+not\s+see|never\s+seen|i\s+didn'?t|what do you mean|why (are you|did you)|skipping what)\b/i.test(
       t
-    );
-  if (!claimy) return [];
+    )
+  ) {
+    return [];
+  }
 
-  // Collect every scene keyword mentioned in a claim sentence
-  const hits = findSceneMentions(t).map((h) => h.id);
+  // Must look like an affirmative claim + at least one scene name nearby
+  const claimRe =
+    /\b(?:i(?:'ve| have)?\s+)?(?:already\s+)?(?:seen|tried|looked at|did)\s+([^.!?\n]{2,120})/i;
+  const dontPutRe =
+    /\bdon'?t\s+put\s+([^.!?\n]{2,120})/i;
+  const chunks = [];
+  let m;
+  if ((m = t.match(claimRe))) chunks.push(m[1]);
+  if ((m = t.match(dontPutRe))) chunks.push(m[1]);
+  // “rain, snow, desert, and ocean” after already seen
+  if (!chunks.length) return [];
+
+  const hits = [];
+  for (const chunk of chunks) {
+    for (const h of findSceneMentions(chunk)) hits.push(h.id);
+  }
   return [...new Set(hits)];
 }
 
@@ -2234,11 +2253,14 @@ function isSceneChat(text) {
   if (!t.trim()) return false;
   if (resolveSceneIntent(t).scene || resolveSceneIntent(t).helpOnly) return true;
   if (
-    /\b(number(ed)?\s+list|haven'?t\s+(seen|looked|tried)|not\s+seen\s+yet|remaining|already\s+seen|don'?t\s+put)\b/.test(
+    /\b(number(ed)?\s+list|list\s+(all|every|the)|top\s+\d|favorite|haven'?t\s+(seen|looked|tried)|backgrounds?|scenes?)\b/.test(
       t
     )
   ) {
-    return true;
+    // "list" alone is too broad; require scene-ish context or top-N
+    if (/\b(top\s+\d|favorite|background|scene|rain|snow|ocean|matrix)\b/.test(t)) return true;
+    if (/\b(list|number).{0,40}(scene|background|effect)/.test(t)) return true;
+    if (/\b(scene|background|effect).{0,40}(list|number)/.test(t)) return true;
   }
   return /\b(scene|scenes|effect|effects|snow|rain|desert|sand|mud|ocean|matrix|stars|confetti|fireflies|aurora|mist|neon|weather|ambiance|ambient|particles|underwater|bubbles)\b/.test(
     t
@@ -2259,46 +2281,102 @@ const SCENE_LIST_META = [
   { id: "neon_city", label: "Neon city", say: "neon city" },
 ];
 
-/** Prefer numbered lists; support “haven’t seen yet”. */
+// Fixed “top favorites” when user asks for top N (not tracked state)
+const SCENE_FAVORITES = ["ocean", "aurora", "matrix", "stars", "fireflies", "rain"];
+
+/**
+ * Modes:
+ *  - all: full catalog (default for “list every / all backgrounds”)
+ *  - remaining: only when user asks what they haven’t seen, or explicitly marks seen + names
+ *  - top: “top 3 favorites”
+ */
+function sceneListMode(userText) {
+  const t = String(userText || "").toLowerCase();
+
+  const topM = t.match(/\b(?:top|favorite|best|favourite)\s*(\d{1,2})\b/) ||
+    t.match(/\b(\d{1,2})\s*(?:top|favorite|best|favourites?|faves?)\b/) ||
+    (/\b(top|favorite|best)\b/.test(t) && /\b(three|3)\b/.test(t) ? ["", "3"] : null);
+  if (topM) {
+    const n = Math.min(11, Math.max(1, parseInt(topM[1] || "3", 10) || 3));
+    return { mode: "top", n };
+  }
+  if (/\b(only\s+list|just\s+list).{0,20}\b(top|favorite|best|three|3)\b/.test(t)) {
+    return { mode: "top", n: 3 };
+  }
+
+  // Explicit full list wins over remaining
+  if (
+    /\b(every|all|full\s+list|entire|complete)\b/.test(t) &&
+    /\b(scene|background|effect|one|list)\b/.test(t)
+  ) {
+    return { mode: "all" };
+  }
+  if (/\b(list|number).{0,30}\b(every|all)\b/.test(t)) return { mode: "all" };
+  if (/\b(every|all).{0,30}\b(background|scene|effect)\b/.test(t)) return { mode: "all" };
+
+  // Remaining only if clearly asked
+  if (
+    /\b(haven'?t\s+(seen|looked|tried)|not\s+(seen|tried)|still\s+need|remaining|left\s+to\s+(try|see)|ones?\s+i\s+haven'?t)\b/.test(
+      t
+    )
+  ) {
+    return { mode: "remaining" };
+  }
+  // Explicit claim with names → show remaining after save
+  if (parseSeenClaimsFromText(t).length) return { mode: "remaining" };
+
+  // Default list requests → full catalog
+  if (/\b(list|number|which|what).{0,40}\b(scene|background|effect)\b/.test(t)) {
+    return { mode: "all" };
+  }
+  if (/\b(scene|background|effect).{0,40}\b(list|can you|options)\b/.test(t)) {
+    return { mode: "all" };
+  }
+
+  return { mode: "all" };
+}
+
 function buildScenesHelpReply(userText, { seen = [] } = {}) {
   const t = String(userText || "").toLowerCase();
   const claimedNow = parseSeenClaimsFromText(t);
-  const remainingOnly =
-    claimedNow.length > 0 ||
-    /\b(haven'?t\s+(seen|looked|tried)|not\s+seen|still\s+need|remaining|left\s+to\s+(try|see)|other\s+ones|ones?\s+i\s+haven'?t|haven'?t\s+tried|which\s+(ones|scenes).{0,40}(haven'?t|not)|number(ed)?\s+list)\b/.test(
-      t
-    ) ||
-    // If we know they’ve seen some and they’re asking for a list, skip those
-    ((seen || []).length > 0 &&
-      /\b(list|which|what|other|remaining|rest|scenes)\b/.test(t));
+  const { mode, n } = sceneListMode(t);
+
+  if (mode === "top") {
+    const picks = SCENE_FAVORITES.slice(0, n || 3)
+      .map((id) => SCENE_LIST_META.find((m) => m.id === id))
+      .filter(Boolean);
+    const lines = picks.map((x, i) => `${i + 1}. ${x.label} — say “${x.say}”`);
+    return `My top ${picks.length} right now:\n${lines.join("\n")}\nSay one of those (or “list all scenes” for the full set).`;
+  }
 
   const seenSet = new Set(
-    [...(seen || []), ...claimedNow]
+    [...(mode === "remaining" ? seen || [] : []), ...claimedNow]
       .map((s) => normalizeSceneId(s) || s)
       .filter((s) => s && s !== "none")
   );
+
   let items = SCENE_LIST_META.slice();
-  if (remainingOnly && seenSet.size) {
+  if (mode === "remaining" && seenSet.size) {
     items = items.filter((x) => !seenSet.has(x.id));
   }
 
-  if (remainingOnly && seenSet.size && items.length === 0) {
-    return "You’ve hit every scene I have right now: rain, snow, desert, ocean, matrix, stars, confetti, fireflies, aurora, mist, neon city. Say “clear effects” to turn them off, or pick a favorite again.";
+  if (mode === "remaining" && seenSet.size && items.length === 0) {
+    return "You’ve hit every scene I have. Say “list all scenes” to see them again, or “clear effects” to turn them off.";
   }
 
   const header =
-    remainingOnly && seenSet.size
-      ? `Got it — skipping what you’ve already seen. Left to try (${items.length}):`
-      : "Scenes I can put on the screen:";
+    mode === "remaining" && seenSet.size
+      ? `Left to try (${items.length}):`
+      : `All backgrounds I can do (${items.length}):`;
 
   const lines = items.map((x, i) => `${i + 1}. ${x.label} — say “${x.say}”`);
 
   const footer =
-    remainingOnly && seenSet.size
-      ? `\nAlready tried: ${[...seenSet]
+    mode === "remaining" && seenSet.size
+      ? `\nSkipping: ${[...seenSet]
           .map((id) => SCENE_LIST_META.find((m) => m.id === id)?.label || id)
-          .join(", ")}.`
-      : `\nOr “clear effects” to turn scenes off.`;
+          .join(", ")}.\nSay “list all scenes” if you want the full set anyway.`
+      : `\nSay the name to switch (e.g. “make it rain”). “Clear effects” turns them off.`;
 
   return `${header}\n${lines.join("\n")}${footer}`;
 }
