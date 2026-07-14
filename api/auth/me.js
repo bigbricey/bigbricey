@@ -7,6 +7,7 @@ import {
   onboardingFromPrefs,
   saveUserLayout,
   saveUserTheme,
+  saveUserWorld,
   saveUserBoxes,
   supabaseConfig,
 } from "../_supabase.js";
@@ -35,11 +36,15 @@ export default async function handler(req, res) {
         const theme = await saveUserTheme(session.email, body.theme);
         return sendJson(res, 200, { ok: true, theme });
       }
+      if (body?.world && typeof body.world === "object") {
+        const world = await saveUserWorld(session.email, body.world);
+        return sendJson(res, 200, { ok: true, world });
+      }
       if (Array.isArray(body?.boxes)) {
         const boxes = await saveUserBoxes(session.email, body.boxes);
         return sendJson(res, 200, { ok: true, boxes });
       }
-      return sendJson(res, 400, { error: "layout, theme, or boxes required" });
+      return sendJson(res, 400, { error: "layout, theme, world, or boxes required" });
     } catch (e) {
       return sendJson(res, 500, { error: String(e.message || e) });
     }
@@ -77,6 +82,8 @@ export default async function handler(req, res) {
     prefs.theme && typeof prefs.theme === "object" ? prefs.theme : null;
   const boxes = Array.isArray(prefs.boxes) ? prefs.boxes : [];
   const scene = prefs.scene || null;
+  const world =
+    prefs.world && typeof prefs.world === "object" ? prefs.world : null;
 
   return sendJson(res, 200, {
     authenticated: true,
@@ -94,5 +101,6 @@ export default async function handler(req, res) {
     theme,
     boxes,
     scene,
+    world,
   });
 }

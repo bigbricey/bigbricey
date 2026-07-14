@@ -177,6 +177,7 @@ async function init() {
   if (window.BBScenes) {
     window.BBScenes.init();
   }
+  if (window.BBWorld) window.BBWorld.init();
   if (window.BBLayout) window.BBLayout.init();
   if (window.BBBoxes) window.BBBoxes.init();
   wireChatHistoryUi();
@@ -1008,6 +1009,7 @@ function appendChat(role, text, isError = false, options = {}) {
   return bubble;
 }
 function setThinking(on) {
+  if (window.BBWorld) window.BBWorld.setMood(on ? "thinking" : "idle");
   if (!chatLog) return;
   chatLog.setAttribute("aria-busy", on ? "true" : "false");
   const status = document.getElementById("chatStatus");
@@ -1622,6 +1624,11 @@ async function onSend() {
       window.__ntUser = window.__ntUser || {};
       window.__ntUser.theme = data.theme;
     }
+    if (storageAccount === requestAccount && data.world && window.BBWorld) {
+      window.BBWorld.apply(data.world, { persist: true });
+      window.__ntUser = window.__ntUser || {};
+      window.__ntUser.world = data.world;
+    }
     if (storageAccount === requestAccount && data.scene != null && window.BBScenes) {
       window.BBScenes.apply(data.scene, { persist: true, theme: !data.theme });
       window.__ntUser = window.__ntUser || {};
@@ -1719,6 +1726,13 @@ function render() {
   setText("tNa", fmt(t.sodium, 0));
   setText("tFoodCount", String(rows.length));
   setText("tFoodCount2", String(rows.length));
+  if (window.BBWorld) {
+    window.BBWorld.renderFoods(rows, {
+      totals: t,
+      goals: dayGoals,
+      day: selectedDay === todayKey() ? "Today" : selectedDay,
+    });
+  }
 }
 
 function setText(id, v) {

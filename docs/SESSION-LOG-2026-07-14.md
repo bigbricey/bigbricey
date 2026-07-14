@@ -76,3 +76,23 @@ When he asks whether work is saved for other AIs — **write docs + git push**, 
   fillets/teaspoons/servings now ask for label weight instead of silently guessing.
 - Aligned long-chat excerpting to the actual 24-message model window and kept
   the most recent excluded context in the bounded prompt.
+
+## Living World signature experience
+
+- Product direction was corrected from commodity tracker polish to a reason
+  someone would choose BigBricey: **talk, and your persistent personal world
+  visibly changes**.
+- Added a real Living World directly under chat. Logged foods appear as animated,
+  clickable objects; the companion reacts; the card shows the day's energy and
+  food count; and a Remix control turns a world request back into natural chat.
+- Added the bounded native `set_world` tool and account persistence for skies,
+  landscapes, companions, outfits, tones, effects, and validated colors. The
+  model can translate requests such as a magical pony-like kingdom into an
+  original rainbow meadow/unicorn world without copying a branded preset.
+- Added mobile-first polish so chat and the Living World both appear quickly,
+  while layout editing chrome stays out of the way until Customize is selected.
+- Rewrote the sign-in page around the actual differentiator and added a visible
+  world preview where food appears beside the buddy.
+- Automated coverage is now 144 passing tests, including tool validation,
+  persistence wiring, food-object mapping, layout placement, and motion/accessibility
+  hooks.

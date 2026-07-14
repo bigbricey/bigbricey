@@ -55,6 +55,18 @@ export const CAPABILITY_CATALOG = [
     kind: "tool",
   },
   {
+    id: "living_world",
+    title: "Living World",
+    summary:
+      "Rebuild your persistent AI home, background, buddy form, outfit, atmosphere, and colors; foods appear there as you log them.",
+    examples: [
+      "make my world a rainbow pony kingdom",
+      "put my buddy in a spacesuit",
+      "surprise me with a new world",
+    ],
+    kind: "tool",
+  },
+  {
     id: "theme",
     title: "Colors, fonts, corners",
     summary: "Presets, ring colors, text size, square/round corners, density.",
@@ -99,7 +111,7 @@ SCENES you may set: none, rain, snow, desert, ocean, matrix, stars, confetti, fi
 UI-ONLY: Chat history is managed with the History/New controls; do not claim a tool changed conversations.
 If user asks "what can you do / abilities", reply with the full friendly list — empty actions.
 Conversation remains broad: answer ordinary questions, jokes, explanations, and casual chat naturally.
-You do NOT invent freeform website code. You pick named themes/scenes/actions we already support.`;
+You do NOT invent freeform website code. You use the bounded Living World builder or pick named themes/scenes/actions we support.`;
 }
 
 /** Full user-facing abilities text */
@@ -117,9 +129,9 @@ ${body}
 
 Chat history is controlled with the History/New buttons in the app; it is not a chat command.
 
-I cannot (yet): upload photos as live wallpaper, invent unlimited freeform 3D games, browse the open web, or diagnose medical conditions.
+I cannot (yet): use uploaded photos as live wallpaper, build arbitrary 3D games, browse the open web, or diagnose medical conditions. I can build many original Living Worlds from safe visual pieces.
 
-Try: “make me a 30-day weight chart”, “make it rain”, “log 1 lb bacon”, or “remember that I prefer short answers”.`;
+Try: “make my world a rainbow pony kingdom”, “put my buddy in a spacesuit”, “log 1 lb bacon”, or “make me a 30-day weight chart”.`;
 }
 
 export const SCENE_IDS = [

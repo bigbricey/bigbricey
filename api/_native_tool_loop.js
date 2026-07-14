@@ -106,6 +106,9 @@ export function actionFromValidatedToolCall(call) {
     case "set_theme":
       action = { type: "set_theme", ...args };
       break;
+    case "set_world":
+      action = { type: "set_world", ...args };
+      break;
     case "set_scene":
       action = { type: "set_scene", ...args };
       break;
@@ -182,6 +185,7 @@ const MUTATING_NATIVE_TOOLS = new Set([
   "set_tracker",
   "remove_tracker",
   "set_theme",
+  "set_world",
   "set_scene",
   "set_layout",
   "remember",

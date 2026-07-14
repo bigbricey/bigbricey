@@ -112,6 +112,26 @@ test("read and customization calls retain only canonical validated arguments", (
       __tool_name: "set_theme",
     }
   );
+
+  assert.deepEqual(
+    actionFromValidatedToolCall(
+      validated("set_world", {
+        title: "Rainbow Meadow",
+        sky: "pastel",
+        companion: "unicorn",
+        outfit: "crown",
+      })
+    ),
+    {
+      type: "set_world",
+      title: "Rainbow Meadow",
+      sky: "pastel",
+      companion: "unicorn",
+      outfit: "crown",
+      __tool_call_id: "call_set_world",
+      __tool_name: "set_world",
+    }
+  );
 });
 
 test("confirmation-gated and invalid calls never become executable actions", () => {

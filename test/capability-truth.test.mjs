@@ -24,6 +24,7 @@ test("system and user capability copy claim only supported product abilities", (
     assert.match(copy, /steps/i);
     assert.match(copy, /metric/i);
     assert.match(copy, /tracker|chart/i);
+    assert.match(copy, /living world|buddy|persistent AI home/i);
     assert.match(copy, /theme|color/i);
     assert.match(copy, /scene/i);
     assert.match(copy, /layout/i);
@@ -42,6 +43,7 @@ test("catalog distinguishes native actions from UI-only chat history", () => {
     "activity",
     "trackers",
     "layout",
+    "living_world",
     "theme",
     "scenes",
     "memory",
