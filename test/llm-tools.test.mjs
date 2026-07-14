@@ -25,12 +25,15 @@ test("llmChat forwards native tools and returns the complete assistant message",
                 content: null,
                 tool_calls: [
                   {
+                    index: 0,
                     id: "call_1",
                     type: "function",
                     function: {
                       name: "get_today_summary",
                       arguments: "{}",
+                      provider_only: true,
                     },
+                    provider_only: true,
                   },
                 ],
               },
@@ -67,6 +70,16 @@ test("llmChat forwards native tools and returns the complete assistant message",
     assert.equal(requestBody.max_tokens, 900);
     assert.equal(out.content, "");
     assert.deepEqual(out.toolCalls, out.message.tool_calls);
+    assert.deepEqual(out.toolCalls, [
+      {
+        id: "call_1",
+        type: "function",
+        function: {
+          name: "get_today_summary",
+          arguments: "{}",
+        },
+      },
+    ]);
     assert.equal(out.message.role, "assistant");
   } finally {
     globalThis.fetch = priorFetch;

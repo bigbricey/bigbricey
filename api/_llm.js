@@ -130,8 +130,18 @@ async function openRouterChat({
     throw err;
   }
   const providerMessage = data.choices?.[0]?.message || {};
+  // OpenRouter/provider responses may add transport metadata such as `index`
+  // to otherwise valid tool calls. Canonicalize at the provider boundary so
+  // the strict app validator sees only the documented call envelope.
   const toolCalls = Array.isArray(providerMessage.tool_calls)
-    ? providerMessage.tool_calls
+    ? providerMessage.tool_calls.map((call) => ({
+        id: call?.id,
+        type: call?.type,
+        function: {
+          name: call?.function?.name,
+          arguments: call?.function?.arguments,
+        },
+      }))
     : [];
   const content =
     typeof providerMessage.content === "string" ? providerMessage.content : "";
@@ -139,6 +149,7 @@ async function openRouterChat({
     ...providerMessage,
     role: providerMessage.role || "assistant",
     content: providerMessage.content ?? null,
+    ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
   };
   const u = data.usage || {};
   const prompt_tokens = Number(u.prompt_tokens ?? u.input_tokens ?? 0) || 0;
