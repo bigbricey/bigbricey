@@ -177,6 +177,25 @@ export default async function handler(req, res) {
       }
     }
 
+    // Small talk / "are you there?" — never dump abilities or food-log
+    if (isPresenceOrSmallTalk(text)) {
+      const reply = presenceReply();
+      if (conversationId) {
+        try {
+          await appendMessage(session.email, conversationId, "assistant", reply);
+        } catch {
+          /* */
+        }
+      }
+      return sendJson(res, 200, {
+        reply,
+        rows,
+        changed: false,
+        actions: [],
+        conversation_id: conversationId,
+      });
+    }
+
     // ── Scenes are deterministic (regex), not LLM — model kept messing them up ──
     const sceneIntent = resolveSceneIntent(text);
     if (sceneIntent.scene) {
@@ -260,18 +279,32 @@ export default async function handler(req, res) {
     if (intent?.error === "model_failed") {
       // Never food-add scene/theme/custom talk
       if (isSceneChat(text)) {
+        let seen = [];
+        try {
+          seen = await collectSeenScenes(session.email, historyMessages);
+        } catch {
+          /* */
+        }
         return sendJson(res, 200, {
-          reply: SCENES_HELP,
+          reply: buildScenesHelpReply(text, { seen }),
           rows,
           changed: false,
           conversation_id: conversationId,
         });
       }
-      if (isAbilitiesQuestion(text) || isNonFoodUtterance(text)) {
+      if (isAbilitiesQuestion(text)) {
         return sendJson(res, 200, {
-          reply: isAbilitiesQuestion(text)
-            ? ABILITIES_REPLY
-            : "I can log food & life data, change goals, rearrange Today, restyle colors/text size/corners, add custom boxes & charts, and export packs. Ask “what can you do?” for the full list — or just say what you want (e.g. “make eaten rings pink”).",
+          reply: ABILITIES_REPLY,
+          rows,
+          changed: false,
+          conversation_id: conversationId,
+        });
+      }
+      if (isPresenceOrSmallTalk(text) || isNonFoodUtterance(text)) {
+        return sendJson(res, 200, {
+          reply: isPresenceOrSmallTalk(text)
+            ? presenceReply()
+            : chatFallbackReply(text),
           rows,
           changed: false,
           conversation_id: conversationId,
@@ -345,11 +378,25 @@ export default async function handler(req, res) {
       });
     }
 
-    // Empty actions — never treat scene/theme talk as food
+    // Empty actions — never treat scene/theme/chat as food
     if (!actions.length) {
       if (isSceneChat(text)) {
+        let seen = [];
+        try {
+          seen = await collectSeenScenes(session.email, historyMessages);
+        } catch {
+          /* */
+        }
         return sendJson(res, 200, {
-          reply: SCENES_HELP,
+          reply: buildScenesHelpReply(text, { seen }),
+          rows,
+          changed: false,
+          conversation_id: conversationId,
+        });
+      }
+      if (isPresenceOrSmallTalk(text)) {
+        return sendJson(res, 200, {
+          reply: presenceReply(),
           rows,
           changed: false,
           conversation_id: conversationId,
@@ -357,8 +404,7 @@ export default async function handler(req, res) {
       }
       if (isNonFoodUtterance(text)) {
         return sendJson(res, 200, {
-          reply:
-            "I can log food & life data, change goals, rearrange Today, restyle colors/text size/corners, add custom boxes & charts, scenes (rain/snow/ocean…), and export packs. What do you want?",
+          reply: chatFallbackReply(text),
           rows,
           changed: false,
           conversation_id: conversationId,
@@ -2269,9 +2315,46 @@ function isAbilitiesQuestion(text) {
   return false;
 }
 
+function isPresenceOrSmallTalk(text) {
+  const t = String(text || "")
+    .toLowerCase()
+    .replace(/[.!?,]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t) return false;
+  // "hey", "hi dude", "yo"
+  if (/^(hey|hi|hello|yo|sup|howdy)(\s+(dude|man|bro|there))?$/.test(t)) return true;
+  // "are you there?", "hey dude are you there", "you there", "still there?"
+  if (
+    /\b(are you (there|here|awake|listening|online)|you there|still there|can you hear me|you awake)\b/.test(
+      t
+    )
+  ) {
+    return true;
+  }
+  // thanks / ok
+  if (/^(thanks|thank you|thx|ok|okay|cool|nice|got it|sounds good)$/.test(t)) return true;
+  return false;
+}
+
+function presenceReply() {
+  return "Yeah, I'm here. What do you need — food log, scene, goals, layout, or something else?";
+}
+
+/** Short chat fallback — NOT the full abilities dump. */
+function chatFallbackReply(text) {
+  const t = String(text || "").toLowerCase();
+  if (isPresenceOrSmallTalk(t)) return presenceReply();
+  if (/\b(how are you|what'?s up|whats up)\b/.test(t)) {
+    return "I'm good — ready when you are. Log food, change a scene, tweak goals, whatever you need.";
+  }
+  return "I'm with you. Tell me what you want (log food, switch scene, change colors/goals/layout) — or just ask a question.";
+}
+
 function isNonFoodUtterance(text) {
   const t = String(text || "").toLowerCase().trim();
   if (!t) return true;
+  if (isPresenceOrSmallTalk(t)) return true;
   if (/^(hi|hello|hey|thanks|thank you|ok|okay)\b/.test(t)) return true;
   if (isSceneChat(t)) return true;
   if (
@@ -2449,6 +2532,8 @@ Rules:
 - Layout moves: "put chat at the bottom", "chat below food", "make protein half width", "put macros side by side", "reset layout" → set_layout (or reset_layout). Prefer put/before/after or chat:top|bottom for simple moves; full order+sizes when rearranging many boxes. Panel ids only: chat,kcal,pro,fat,carb,net,minerals,summary,food.
 - Look/theme: "make it neon", "pastel / My Little Pony vibe", "eaten rings pink", "make circles/goal yellow", "bigger text", "smaller text", "square corners", "round corners", "compact mode", "light mode", "reset theme" → set_theme (include ring_eaten/ring_left/ring_goal, font_scale, radius or shape).
 - "What can you do / abilities / what are you able to change" → empty actions + reply listing food logging, goals, layout, theme/colors/font/corners, custom boxes, charts, export. NEVER try to add food for capability questions.
+- Small talk / presence: “hey”, “are you there?”, “thanks” → empty actions + short human reply (“Yeah I’m here — what do you need?”). Do NOT paste the abilities list. Do NOT add food.
+- Scene lists: “what scenes”, “number list of ones I haven’t seen” → empty actions + numbered list of scene names.
 - Custom counters: "add a push-up box with goal 100", "track water 100oz" → add_box kind counter.
 - Charts/graphs: "show magnesium last 6 months", "graph protein 3 weeks", "pie of macros this week", "bar chart calories 90 days" → add_chart / add_box kind:chart with measures + days/weeks/months + chart line|bar|pie. Always create a box they can keep/move — don't only describe data in text if they asked for a graph.
 - remove_box to delete any custom box.
