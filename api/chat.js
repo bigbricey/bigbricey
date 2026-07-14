@@ -32,7 +32,6 @@ import {
   updateUserGoals,
   saveUserLayout,
   saveUserTheme,
-  saveUserWorld,
   saveUserBoxes,
   listConversations,
   getConversation,
@@ -189,7 +188,6 @@ export default async function handler(req, res) {
     let layoutSnap = null;
     let boxesSnap = [];
     let sceneSnap = null;
-    let worldSnap = null;
     let scenesSeenSnap = [];
     let memoryNotes = [];
     let profileSnapshotLoaded = false;
@@ -212,9 +210,6 @@ export default async function handler(req, res) {
           boxesSnap = profile.prefs.boxes.slice(0, 20);
         }
         sceneSnap = profile?.prefs?.scene || null;
-        if (profile?.prefs?.world && typeof profile.prefs.world === "object") {
-          worldSnap = profile.prefs.world;
-        }
         if (Array.isArray(profile?.prefs?.scenes_seen)) {
           scenesSeenSnap = profile.prefs.scenes_seen;
         }
@@ -321,7 +316,6 @@ export default async function handler(req, res) {
       history: historyMessages,
       chatSummary,
       theme: themeSnap,
-      world: worldSnap,
       scene: sceneSnap,
       scenesSeen: scenesSeenSnap,
       memoryNotes,
@@ -418,7 +412,6 @@ export default async function handler(req, res) {
     let boxesOut = null;
     let suggestionsOut = null;
     let sceneOut = null;
-    let worldOut = null;
 
     // Export / print stats for doctor or other AI agents
     for (const action of actions) {
@@ -635,7 +628,6 @@ export default async function handler(req, res) {
             data.home = {
               scene: sceneOut ?? sceneSnap ?? "none",
               theme: themeOut ?? themeSnap ?? null,
-              world: worldOut ?? worldSnap ?? null,
               layout: layoutOut ?? layoutSnap ?? null,
               trackers: boxesOut ?? boxesSnap,
             };
@@ -1444,30 +1436,6 @@ export default async function handler(req, res) {
       }
 
       if (
-        type === "set_world" ||
-        type === "update_world" ||
-        type === "build_world" ||
-        type === "dress_buddy"
-      ) {
-        try {
-          worldOut = await saveUserWorld(session.email, action);
-          toolData = { world: worldOut };
-          const details = [
-            worldOut.sky,
-            worldOut.landscape,
-            worldOut.companion,
-            worldOut.outfit !== "none" ? worldOut.outfit : null,
-          ].filter(Boolean);
-          notes.push(
-            `Living World rebuilt as “${worldOut.title}”${details.length ? ` · ${details.join(" · ")}` : ""}.`
-          );
-        } catch {
-          notes.push("Couldn't rebuild the Living World right now.");
-        }
-        continue;
-      }
-
-      if (
         type === "set_scene" ||
         type === "scene" ||
         type === "set_effect" ||
@@ -1821,7 +1789,6 @@ export default async function handler(req, res) {
           }
           const PANEL_IDS = [
             "chat",
-            "world",
             "kcal",
             "pro",
             "fat",
@@ -1837,7 +1804,6 @@ export default async function handler(req, res) {
             : PANEL_IDS.slice();
           let sizes = {
             chat: "full",
-            world: "full",
             kcal: "full",
             pro: "full",
             fat: "full",
@@ -2339,7 +2305,6 @@ export default async function handler(req, res) {
               : {}),
             ...(goalsOut ? { goals: goalsOut } : {}),
             ...(themeOut ? { theme: themeOut } : {}),
-            ...(worldOut ? { world: worldOut } : {}),
             ...(layoutOut ? { layout: layoutOut } : {}),
             ...(boxesOut ? { trackers: boxesOut } : {}),
             ...(sceneOut != null ? { scene: sceneOut } : {}),
@@ -2423,7 +2388,6 @@ export default async function handler(req, res) {
       eating_style: goalsOut?.eating_style || null,
       layout: layoutOut,
       theme: themeOut,
-      world: worldOut,
       boxes: boxesOut,
       suggestions: suggestionsOut,
       scene: sceneOut,
@@ -3347,7 +3311,6 @@ async function interpretIntent(text, rows, ctx = {}) {
     scene: ctx.scene,
     scenesSeen: ctx.scenesSeen,
     theme: ctx.theme,
-    world: ctx.world,
     memoryNotes: ctx.memoryNotes,
     chatSummary: ctx.chatSummary,
     currentLog: buildCurrentLogContext(rows),

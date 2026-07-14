@@ -4,7 +4,6 @@
 (function () {
   const CORE_PANEL_IDS = [
     "chat",
-    "world",
     "kcal",
     "pro",
     "fat",
@@ -27,7 +26,6 @@
     order: CORE_PANEL_IDS.slice(),
     sizes: {
       chat: "full",
-      world: "full",
       kcal: "full",
       pro: "full",
       fat: "full",
@@ -129,13 +127,6 @@
       if (!isAllowedId(key) || seen.has(key)) continue;
       seen.add(key);
       order.push(key);
-    }
-    if (incoming.length && !seen.has("world")) {
-      const chatIndex = order.indexOf("chat");
-      if (chatIndex >= 0) {
-        order.splice(chatIndex + 1, 0, "world");
-        seen.add("world");
-      }
     }
     for (const id of known) {
       if (!seen.has(id)) order.push(id);

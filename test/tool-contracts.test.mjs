@@ -38,7 +38,6 @@ const EXPECTED_TOOLS = [
   "set_tracker",
   "remove_tracker",
   "set_theme",
-  "set_world",
   "set_scene",
   "set_layout",
   "remember",
@@ -499,46 +498,11 @@ test("theme and scene contracts reject arbitrary CSS and nonexistent scenes", ()
   );
 });
 
-test("Living World accepts expressive bounded recipes and rejects injected visuals", () => {
-  const world = validateNativeToolCall(
-    call("set_world", {
-      title: "Rainbow Meadow",
-      sky: "pastel",
-      landscape: "meadow",
-      companion: "unicorn",
-      outfit: "crown",
-      tone: "magical",
-      effects: ["rainbows", "sparkles", "hearts"],
-      accent: "#f472b6",
-      secondary: "#a78bfa",
-      surface: "#24113f",
-    })
-  );
-  assert.equal(world.ok, true);
-
-  assert.equal(
-    validateNativeToolCall(call("set_world", {})).error.code,
-    "REQUIRED_FIELD"
-  );
-  assert.equal(
-    validateNativeToolCall(
-      call("set_world", { landscape: "javascript", accent: "url(evil)" })
-    ).error.code,
-    "INVALID_VALUE"
-  );
-  assert.equal(
-    validateNativeToolCall(
-      call("set_world", { effects: ["stars", "stars"] })
-    ).error.code,
-    "INVALID_VALUE"
-  );
-});
-
 test("layout accepts known panels and sizes while rejecting duplicates or nested unknowns", () => {
   const valid = validateNativeToolCall(
     call("set_layout", {
-      order: ["chat", "world", "kcal", "pro", "food"],
-      sizes: { chat: "full", world: "full", pro: "half", food: "full" },
+      order: ["chat", "kcal", "pro", "food"],
+      sizes: { chat: "full", pro: "half", food: "full" },
     })
   );
   assert.equal(valid.ok, true);

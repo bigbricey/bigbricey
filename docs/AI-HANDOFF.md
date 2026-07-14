@@ -16,7 +16,6 @@ Private multi-user **fitness / food / life data ledger** with a chat coach that 
 
 - Log food (real lookup — never invent macros)
 - Goals, layout, themes, custom boxes/charts
-- A reactive **Living World** where logged foods appear, the buddy reacts, and chat can rebuild the home, companion, outfit, atmosphere, and effects
 - Ambient **scenes** (rain, snow, desert, ocean, matrix, stars, confetti, fireflies, aurora, mist, neon_city)
 - Chat history (multi-conversation), permanent memory notes, token metering
 - Google OAuth + invite gate
@@ -51,7 +50,6 @@ Key files:
 - `public/app.js` — main UI  
 - `public/boxes.js` — real metric-backed counters/charts
 - `public/scenes.js` — particle scenes  
-- `public/world.js` — persistent Living World, companion, outfit, effects, and reactive food objects
 - `public/theme.js`, `layout.js`, `boxes.js`  
 - `supabase/migration_*.sql`
 
@@ -75,14 +73,6 @@ Missing measurement days remain missing (never fake zeroes), and charts show a
 text summary of recorded points as well as the canvas visualization. Body-state
 metrics such as `weight_lb` use the latest reading for each day; additive
 measures such as steps, reps, and nutrients still use daily totals.
-
-The native `set_world` tool is the signature product layer. It accepts only
-bounded visual ingredients (sky, landscape, companion, outfit, tone, effects,
-and validated colors), persists the result in account preferences, and lets the
-model compose many original homes without accepting CSS, HTML, JavaScript, or
-unlicensed branded presets. A successful food log automatically appears as a
-clickable object in the Living World; the buddy reacts while chat is thinking
-and when new food arrives.
 
 Do not restore pseudo-JSON action prompting or regex/menu interceptors. Regex scene handling is outage-only fallback, never the normal conversation path.
 
@@ -137,10 +127,10 @@ Implemented in migrations 009/010 and the matching API/frontend release:
 
 1. This is adult-only today. Do not market or onboard it as a child product until consent, privacy, and age-appropriate goal logic are designed.
 2. “Change my goals today” still changes the baseline profile; per-day goal overrides are a future feature.
-3. Living World now supports composed backgrounds, companions, outfits, atmosphere, effects, and reactive food objects. It does not yet generate arbitrary images or accept user uploads/HTML/CSS/JS.
+3. Home customization is curated themes/scenes/layout today, not arbitrary generated backgrounds, avatar outfits, or user HTML/CSS/JS.
 4. Billing, self-serve signup, account deletion/export policy, support operations, and production monitoring still need a deliberate commercial launch pass.
 
-**Product direction:** deepen Living World with earned reactions, workouts that visibly affect the space, and more original visual layers. Never ship an MLP trademark preset; translate those requests into an original pastel/unicorn aesthetic.
+**Product direction:** Buddy Home (room, avatar, outfits) as curated layers — not MLP trademark preset; original pastel aesthetic if needed.
 
 **Brice said:** privacy hotfix when he orders it — don’t only lecture.
 
@@ -153,7 +143,7 @@ Production database status on 2026-07-14:
 - Migrations 009 and 010 are applied.
 - All previously published invite codes are disabled. The active private beta code is stored in the Mac Keychain under `BigBricey Private Beta Invite`, never in Git.
 - Post-migration verification preserved 47 events and 394 measures, rebuilt 10 total rows, found all 7 required RPCs, and confirmed browser roles cannot execute them or read saved foods.
-- The full automated suite passes: 144 tests.
+- The full automated suite passes: 131 tests.
 
 For a fresh database, preserve this order: migration 009, private invite creation outside Git, then migration 010. Deploy only to the Vercel project named `bigbricey` and smoke-test the signed-in app after every server release.
 

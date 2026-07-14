@@ -15,7 +15,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
   <title>BigBricey</title>
-  <link rel="stylesheet" href="/styles.css?v=20260714e" />
+  <link rel="stylesheet" href="/styles.css?v=20260714b" />
 </head>
 <body class="tab-today">
   <div class="app-shell">
@@ -51,7 +51,7 @@
     <!-- TODAY: movable layout board -->
     <main class="panel panel-today" id="panelToday">
       <div class="layout-toolbar" id="layoutToolbar">
-        <button type="button" class="pill" id="btnEditLayout">Customize</button>
+        <button type="button" class="pill" id="btnEditLayout">Edit layout</button>
         <button type="button" class="pill" id="btnDoneLayout" hidden>Done</button>
         <button type="button" class="text-btn" id="btnResetLayout" hidden>Reset layout</button>
         <span class="layout-hint" id="layoutHint">Grab the ⠿ bar (hand cursor) · drop outline shows where it lands</span>
@@ -97,62 +97,6 @@
         </div>
         <p id="addMsg" class="msg" hidden></p>
       </section>
-      </div>
-
-      <!-- LIVING WORLD: the signature reactive home -->
-      <div class="layout-panel" data-panel="world" data-size="full" id="panelWorld">
-        <div class="layout-panel-chrome">
-          <span class="layout-drag" title="Drag">⠿</span>
-          <span class="layout-panel-title">Your World</span>
-          <button type="button" class="layout-size-btn" data-size-cycle>Full</button>
-        </div>
-        <section class="living-world" id="livingWorld" data-sky="midnight" data-landscape="loft" data-tone="focused" data-mood="idle" aria-labelledby="worldTitle">
-          <div class="world-atmosphere" aria-hidden="true">
-            <div class="world-orbit world-orbit-a"></div>
-            <div class="world-orbit world-orbit-b"></div>
-            <div class="world-effects" id="worldEffects"></div>
-            <div class="world-horizon" id="worldHorizon"></div>
-          </div>
-          <div class="world-head">
-            <div>
-              <span class="world-kicker">Your living world</span>
-              <h2 id="worldTitle">Midnight Loft</h2>
-            </div>
-            <span class="world-live" id="worldLiveLabel">orb · hoodie</span>
-          </div>
-          <div class="world-stage">
-            <div class="world-buddy-wrap">
-              <div class="world-buddy" aria-label="Your BigBricey companion">
-                <span class="world-buddy-pulse" aria-hidden="true"></span>
-                <span class="world-buddy-icon" id="worldBuddyIcon" aria-hidden="true">✦</span>
-                <span class="world-outfit-icon" id="worldOutfitIcon" aria-hidden="true">🎧</span>
-              </div>
-              <div class="world-buddy-copy">
-                <strong>BigBricey</strong>
-                <span id="worldBuddyMood">Say it once. I’ll build the day here.</span>
-              </div>
-            </div>
-            <div class="world-table">
-              <div class="world-plate" aria-label="Foods logged today">
-                <div class="world-foods" id="worldFoods"></div>
-                <div class="world-empty" id="worldEmpty">
-                  <span aria-hidden="true">✦</span>
-                  Your food appears here when you log it.
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="world-foot">
-            <div class="world-stats" aria-label="Living World day summary">
-              <span id="worldDay">Today</span>
-              <strong id="worldFoodCount">0 foods</strong>
-              <span id="worldEnergy">0 energy</span>
-            </div>
-            <button type="button" class="world-remix" id="worldRemix" data-prompt="Surprise me — rebuild my Living World into something completely different.">
-              <span aria-hidden="true">✦</span> Remix my world
-            </button>
-          </div>
-        </section>
       </div>
 
       <!-- CALORIES panel -->
@@ -688,11 +632,10 @@
   <script src="/account-storage.js?v=20260714a"></script>
   <script src="/theme.js?v=20260714a"></script>
   <script src="/scenes.js?v=20260713c"></script>
-  <script src="/world.js?v=20260714b"></script>
-  <script src="/layout.js?v=20260714d"></script>
+  <script src="/layout.js?v=20260713c"></script>
   <script src="/boxes.js?v=20260713c"></script>
   <script src="/food-storage.js?v=20260714a"></script>
   <script src="/chat-format.js?v=20260714b"></script>
-  <script src="/app.js?v=20260714d"></script>
+  <script src="/app.js?v=20260714b"></script>
 </body>
 </html>

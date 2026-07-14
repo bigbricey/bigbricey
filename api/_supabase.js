@@ -1448,7 +1448,6 @@ export async function updateUserGoals(email, patch = {}) {
 
 const LAYOUT_CORE_IDS = [
   "chat",
-  "world",
   "kcal",
   "pro",
   "fat",
@@ -1480,15 +1479,6 @@ export async function saveUserLayout(email, raw = {}) {
     seen.add(key);
     order.push(key);
   }
-  // Introduce the signature Living World directly after chat for existing
-  // saved layouts instead of burying the new panel at the bottom.
-  if (incoming.length && !seen.has("world")) {
-    const chatIndex = order.indexOf("chat");
-    if (chatIndex >= 0) {
-      order.splice(chatIndex + 1, 0, "world");
-      seen.add("world");
-    }
-  }
   for (const id of LAYOUT_CORE_IDS) {
     if (!seen.has(id)) order.push(id);
   }
@@ -1503,7 +1493,6 @@ export async function saveUserLayout(email, raw = {}) {
   if (rs.minerals == null && sizes.minerals) sizes.minerals = sizes.minerals;
   if (rs.minerals == null) sizes.minerals = "half";
   if (rs.summary == null) sizes.summary = "half";
-  if (rs.world == null) sizes.world = "full";
 
   const layout = { order, sizes, updated_at: new Date().toISOString() };
 
@@ -1736,80 +1725,6 @@ export async function saveUserTheme(email, raw = {}) {
 
   await mergeProfilePrefs(e, { theme });
   return theme;
-}
-
-const WORLD_DEFAULT = Object.freeze({
-  title: "Midnight Loft",
-  sky: "midnight",
-  landscape: "loft",
-  companion: "orb",
-  outfit: "hoodie",
-  tone: "focused",
-  effects: ["stars"],
-  accent: "#38bdf8",
-  secondary: "#a78bfa",
-  surface: "#08101f",
-});
-const WORLD_VALUES = Object.freeze({
-  sky: new Set(["midnight", "daybreak", "sunset", "pastel", "space", "aurora", "storm", "ocean"]),
-  landscape: new Set(["loft", "meadow", "clouds", "forest", "mountains", "ocean", "city", "desert", "space", "dojo"]),
-  companion: new Set(["orb", "coach", "cat", "dog", "fox", "dragon", "robot", "unicorn", "astronaut", "wizard"]),
-  outfit: new Set(["none", "hoodie", "cape", "crown", "armor", "spacesuit", "wizard", "workout", "ninja"]),
-  tone: new Set(["cozy", "bold", "calm", "magical", "focused", "playful", "epic"]),
-  effects: new Set(["sparkles", "stars", "clouds", "rainbows", "hearts", "fireflies", "bubbles", "snow", "rain", "confetti", "embers", "comets"]),
-});
-
-/** Normalize the bounded procedural Living World recipe. */
-export function normalizeUserWorld(raw = {}) {
-  const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-  const world = { ...WORLD_DEFAULT };
-  const title = String(source.title || "")
-    .normalize("NFKC")
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 48);
-  if (title) world.title = title;
-  for (const key of ["sky", "landscape", "companion", "outfit", "tone"]) {
-    const value = String(source[key] || "").toLowerCase().trim();
-    if (WORLD_VALUES[key].has(value)) world[key] = value;
-  }
-  if (Array.isArray(source.effects)) {
-    world.effects = Array.from(
-      new Set(
-        source.effects
-          .map((effect) => String(effect || "").toLowerCase().trim())
-          .filter((effect) => WORLD_VALUES.effects.has(effect))
-      )
-    ).slice(0, 3);
-  }
-  for (const key of ["accent", "secondary", "surface"]) {
-    const value = String(source[key] || "").trim();
-    if (/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(value)) world[key] = value;
-  }
-  return world;
-}
-
-/** Persist one user's interactive background, companion, and food-stage world. */
-export async function saveUserWorld(email, raw = {}) {
-  const e = String(email || "").trim().toLowerCase();
-  if (!e) throw new Error("email required");
-  let current = null;
-  try {
-    const profile = await getProfile(e);
-    current =
-      profile?.prefs?.world && typeof profile.prefs.world === "object"
-        ? profile.prefs.world
-        : null;
-  } catch {
-    current = null;
-  }
-  const world = {
-    ...normalizeUserWorld({ ...(current || {}), ...(raw || {}) }),
-    updated_at: new Date().toISOString(),
-  };
-  await mergeProfilePrefs(e, { world });
-  return world;
 }
 
 /** Seed sensible default watches for Brice if none exist. */

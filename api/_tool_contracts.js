@@ -12,19 +12,13 @@ const SCENES = [
   "neon_city",
   "none",
 ];
-const PANELS = ["chat", "world", "kcal", "pro", "fat", "carb", "net", "minerals", "summary", "food"];
+const PANELS = ["chat", "kcal", "pro", "fat", "carb", "net", "minerals", "summary", "food"];
 const PANEL_SIZES = ["full", "half", "third"];
 const TRACKER_KINDS = ["counter", "chart"];
 const TRACKER_MODES = ["floor", "ceiling"];
 const CHART_TYPES = ["line", "bar", "pie"];
 const THEME_PRESETS = ["midnight", "light", "neon", "forest", "pink", "terminal", "pastel", "sunset"];
 const INCLUDE_SECTIONS = ["food", "totals", "workouts", "metrics", "home"];
-const WORLD_SKIES = ["midnight", "daybreak", "sunset", "pastel", "space", "aurora", "storm", "ocean"];
-const WORLD_LANDSCAPES = ["loft", "meadow", "clouds", "forest", "mountains", "ocean", "city", "desert", "space", "dojo"];
-const WORLD_COMPANIONS = ["orb", "coach", "cat", "dog", "fox", "dragon", "robot", "unicorn", "astronaut", "wizard"];
-const WORLD_OUTFITS = ["none", "hoodie", "cape", "crown", "armor", "spacesuit", "wizard", "workout", "ninja"];
-const WORLD_TONES = ["cozy", "bold", "calm", "magical", "focused", "playful", "epic"];
-const WORLD_EFFECTS = ["sparkles", "stars", "clouds", "rainbows", "hearts", "fireflies", "bubbles", "snow", "rain", "confetti", "embers", "comets"];
 
 const string = (description, extra = {}) => ({ type: "string", description, ...extra });
 const number = (description, extra = {}) => ({ type: "number", description, ...extra });
@@ -139,18 +133,6 @@ const DEFINITIONS = [
     radius: number("Corner radius from 0 to 32."),
     density: string("Layout density.", { enum: ["cozy", "compact"] }),
     shape: string("Corner shape.", { enum: ["square", "round"] }),
-  })],
-  ["set_world", "Rebuild the user's persistent Living World: its background, landscape, AI companion, outfit, atmosphere, and colors. Use this for room, background, dress-up, fandom-like vibe, or surprise-me requests; combine safe visual pieces into an original interpretation.", objectSchema({
-    title: string("Short name for this world."),
-    sky: string("Background sky style.", { enum: WORLD_SKIES }),
-    landscape: string("World setting.", { enum: WORLD_LANDSCAPES }),
-    companion: string("AI buddy form.", { enum: WORLD_COMPANIONS }),
-    outfit: string("AI buddy outfit.", { enum: WORLD_OUTFITS }),
-    tone: string("Overall emotional tone.", { enum: WORLD_TONES }),
-    effects: array("One to three ambient visual motifs.", { type: "string", enum: WORLD_EFFECTS }, { maxItems: 3, uniqueItems: true }),
-    accent: string("Primary world color as hex."),
-    secondary: string("Secondary world color as hex."),
-    surface: string("Deep surface color as hex."),
   })],
   ["set_scene", "Set a supported ambient background scene.", objectSchema({ scene: string("Scene id.", { enum: SCENES }) }, ["scene"])],
   ["set_layout", "Reorder or resize known Today panels, or reset the layout.", objectSchema({
@@ -288,7 +270,6 @@ function validateArguments(name, input) {
     id: { max: 48, pattern: /^c_[a-z0-9_]+$/ }, unit: { max: 32 }, title: { max: 160 }, category: { max: 60, pattern: /^[a-z0-9_ -]+$/i },
     notes: { max: 500 }, measure_id: { max: 80, pattern: /^[a-z0-9_]+$/ }, label: { max: 120 }, style: { max: 60, pattern: /^[a-z0-9_ -]+$/i },
     note: { max: 300 }, match: { max: 300 }, kind: { max: 16 }, mode: { max: 16 }, chart: { max: 16 }, color: { max: 9 }, icon: { max: 8 },
-    sky: { max: 24 }, landscape: { max: 24 }, companion: { max: 24 }, outfit: { max: 24 }, tone: { max: 24 },
   };
   for (const [key, rules] of Object.entries(textRules)) {
     const error = stringField(args, key, rules);
@@ -383,42 +364,6 @@ function validateArguments(name, input) {
     }
     if (args.density != null && !["cozy", "compact"].includes(args.density)) return validationError("INVALID_VALUE", "Unknown density.", "function.arguments.density");
     if (args.shape != null && !["square", "round"].includes(args.shape)) return validationError("INVALID_VALUE", "Unknown shape.", "function.arguments.shape");
-  }
-  if (name === "set_world") {
-    if (!allowed.some((key) => args[key] != null)) {
-      return validationError(
-        "REQUIRED_FIELD",
-        "At least one Living World change is required.",
-        "function.arguments"
-      );
-    }
-    const titleError = stringField(args, "title", { min: 1, max: 48 });
-    if (titleError) return titleError;
-    for (const [key, values] of Object.entries({
-      sky: WORLD_SKIES,
-      landscape: WORLD_LANDSCAPES,
-      companion: WORLD_COMPANIONS,
-      outfit: WORLD_OUTFITS,
-      tone: WORLD_TONES,
-    })) {
-      if (args[key] != null && !values.includes(args[key])) {
-        return validationError("INVALID_VALUE", `Unknown world ${key}.`, `function.arguments.${key}`);
-      }
-    }
-    if (
-      args.effects != null &&
-      (!Array.isArray(args.effects) ||
-        args.effects.length > 3 ||
-        new Set(args.effects).size !== args.effects.length ||
-        args.effects.some((effect) => typeof effect !== "string" || !WORLD_EFFECTS.includes(effect)))
-    ) {
-      return validationError("INVALID_VALUE", "World effects are invalid.", "function.arguments.effects");
-    }
-    for (const key of ["accent", "secondary", "surface"]) {
-      if (args[key] != null && !/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(args[key])) {
-        return validationError("INVALID_VALUE", `"${key}" must be a hex color.`, `function.arguments.${key}`);
-      }
-    }
   }
   if (name === "set_tracker") {
     if (!TRACKER_KINDS.includes(args.kind)) {
