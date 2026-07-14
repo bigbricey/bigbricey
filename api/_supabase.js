@@ -161,6 +161,7 @@ export function onboardingFromPrefs(prefs) {
     consent_marketing: Boolean(o.consent_marketing),
     consented_at: o.consented_at || null,
     first_name: o.first_name || null,
+    preferred_name: o.preferred_name || o.first_name || null,
     primary_goal: primary,
     lose_rate_lb_week:
       o.lose_rate_lb_week != null ? Number(o.lose_rate_lb_week) : null,
