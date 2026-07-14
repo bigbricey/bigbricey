@@ -2,7 +2,9 @@
  * BigBricey look customization — presets, colors, rings, font, corners.
  */
 (function () {
-  const LS_KEY = "bigbricey-theme-v1";
+  const LEGACY_LS_KEY = "bigbricey-theme-v1";
+  const LS_PREFIX = "bigbricey-theme-v2-";
+  const QUARANTINE_KEY = "bigbricey-unassigned-theme-v1";
 
   const PRESETS = {
     midnight: {
@@ -197,6 +199,26 @@
   let theme = { ...DEFAULT_THEME };
   let saveTimer = null;
 
+  function storageKey() {
+    try {
+      return window.BBAccountStorage?.key(LS_PREFIX, window.__ntUser?.email) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function quarantineLegacyPreference() {
+    try {
+      window.BBAccountStorage?.quarantineLegacyKey(
+        localStorage,
+        LEGACY_LS_KEY,
+        QUARANTINE_KEY
+      );
+    } catch {
+      /* local storage may be unavailable */
+    }
+  }
+
   function hexOk(v) {
     return typeof v === "string" && /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(v.trim());
   }
@@ -326,7 +348,8 @@
 
   function saveLocal() {
     try {
-      localStorage.setItem(LS_KEY, JSON.stringify(theme));
+      const key = storageKey();
+      if (key) localStorage.setItem(key, JSON.stringify(theme));
     } catch {
       /* */
     }
@@ -334,7 +357,9 @@
 
   function loadLocal() {
     try {
-      const raw = localStorage.getItem(LS_KEY);
+      const key = storageKey();
+      if (!key) return null;
+      const raw = localStorage.getItem(key);
       if (!raw) return null;
       return normalizeTheme(JSON.parse(raw));
     } catch {
@@ -494,6 +519,7 @@
   }
 
   function initTheme() {
+    quarantineLegacyPreference();
     const cloud = window.__ntUser?.theme;
     const local = loadLocal();
     applyTheme(cloud || local || DEFAULT_THEME, { persist: false });

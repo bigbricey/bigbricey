@@ -1,8 +1,9 @@
 import { requireUser, sendJson } from "./_auth.js";
 import { readBody } from "./_lib.js";
+import { validateFoodDaySyncRequest } from "./_ledger_safety.js";
 import {
   dayKeyFor,
-  loadFoodDay,
+  loadFoodDaySnapshot,
   syncFoodDay,
   ensureProfile,
   logEvent,
@@ -44,9 +45,7 @@ import {
  */
 export default async function handler(req, res) {
   if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Allow", "GET, POST, OPTIONS");
     return res.status(204).end();
   }
 
@@ -178,8 +177,13 @@ export default async function handler(req, res) {
     }
     if (req.method === "GET") {
       const day = url.searchParams.get("date") || dayKeyFor();
-      const rows = await loadFoodDay(user.email, day);
-      return sendJson(res, 200, { day, rows, source: "supabase" });
+      const snapshot = await loadFoodDaySnapshot(user.email, day);
+      return sendJson(res, 200, {
+        day,
+        rows: snapshot.rows,
+        revision: snapshot.revision,
+        source: "supabase",
+      });
     }
 
     if (req.method === "POST") {
@@ -355,18 +359,28 @@ export default async function handler(req, res) {
       }
 
       const day = body.date || dayKeyFor();
-      const rows = Array.isArray(body.rows) ? body.rows : [];
+      const { rows, allowClear } = validateFoodDaySyncRequest(body);
+      const expectedRevision = Number(body.expected_revision);
+      if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+        const error = new Error("Reload the food day before changing it.");
+        error.code = "food_day_revision_required";
+        error.status = 409;
+        throw error;
+      }
       const result = await syncFoodDay(user.email, day, rows, {
         rawText: body.rawText || null,
+        allowClear,
+        expectedRevision,
       });
       return sendJson(res, 200, result);
     }
 
     return sendJson(res, 405, { error: "GET or POST only" });
   } catch (e) {
-    return sendJson(res, 500, {
-      error: String(e.message || e),
-      detail: e.detail || null,
+    const status = Number(e.status) >= 400 && Number(e.status) < 600 ? Number(e.status) : 500;
+    return sendJson(res, status, {
+      error: e.code || (status === 500 ? "internal_error" : "request_failed"),
+      message: status === 500 ? "Request failed." : String(e.message || e),
     });
   }
 }

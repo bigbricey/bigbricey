@@ -5,7 +5,7 @@
 **Not:** a landscaping/sod website. This is a private lifelong health/food/training ledger.
 
 ## What it does today (keep the brain, rethink the face)
-- Google sign-in, invite-only (`BRICESFAMILY`)
+- Google sign-in, invite-only (active codes are stored outside the repository)
 - Conversational coach chat: log food, workouts, steps, watches
 - Day calendar strip + date picker
 - Macro totals (kcal, protein, fat, carbs, fiber, K, Mg, Na)

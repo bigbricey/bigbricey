@@ -18,7 +18,9 @@
   let extraIds = []; // custom box panel ids (c_*)
   const SIZES = ["full", "half", "third"];
   const SIZE_LABEL = { full: "Full", half: "Half", third: "1/3" };
-  const LS_KEY = "bigbricey-layout-v1";
+  const LEGACY_LS_KEY = "bigbricey-layout-v1";
+  const LS_PREFIX = "bigbricey-layout-v2-";
+  const QUARANTINE_KEY = "bigbricey-unassigned-layout-v1";
 
   const DEFAULT_LAYOUT = {
     order: CORE_PANEL_IDS.slice(),
@@ -38,6 +40,26 @@
   let layout = cloneLayout(DEFAULT_LAYOUT);
   let editMode = false;
   let saveTimer = null;
+
+  function storageKey() {
+    try {
+      return window.BBAccountStorage?.key(LS_PREFIX, window.__ntUser?.email) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function quarantineLegacyPreference() {
+    try {
+      window.BBAccountStorage?.quarantineLegacyKey(
+        localStorage,
+        LEGACY_LS_KEY,
+        QUARANTINE_KEY
+      );
+    } catch {
+      /* local storage may be unavailable */
+    }
+  }
 
   function allPanelIds() {
     const set = new Set(CORE_PANEL_IDS);
@@ -168,7 +190,8 @@
 
   function saveLocal() {
     try {
-      localStorage.setItem(LS_KEY, JSON.stringify(layout));
+      const key = storageKey();
+      if (key) localStorage.setItem(key, JSON.stringify(layout));
     } catch {
       /* quota */
     }
@@ -176,7 +199,9 @@
 
   function loadLocal() {
     try {
-      const raw = localStorage.getItem(LS_KEY);
+      const key = storageKey();
+      if (!key) return null;
+      const raw = localStorage.getItem(key);
       if (!raw) return null;
       return normalizeLayout(JSON.parse(raw));
     } catch {
@@ -496,6 +521,7 @@
   }
 
   function initLayout() {
+    quarantineLegacyPreference();
     wireBoard();
     wireToolbar();
 

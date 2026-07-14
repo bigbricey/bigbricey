@@ -39,9 +39,9 @@ ALTER TABLE allowed_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE product_feedback ENABLE ROW LEVEL SECURITY;
 
 -- Seed owner + default invite (shared with a few friends/family)
-INSERT INTO invite_codes (code, label, max_uses, created_by)
-VALUES ('FITZONE-JOIN', 'Brice beta invite', 50, 'bigbricey@gmail.com')
-ON CONFLICT (code) DO NOTHING;
+INSERT INTO invite_codes (code, label, max_uses, active, created_by)
+VALUES ('FITZONE-JOIN', 'Retired public beta invite', 0, false, 'bigbricey@gmail.com')
+ON CONFLICT (code) DO UPDATE SET active = false;
 
 INSERT INTO allowed_users (email, name, role)
 VALUES ('bigbricey@gmail.com', 'Brice Wilkinson', 'admin')

@@ -139,6 +139,37 @@ export function toGrams(amount, unit) {
   }
 }
 
+/**
+ * Exact mass conversion for rescaling an already-recorded food row.
+ * Household measures and generic servings need a verified food-specific basis,
+ * so they intentionally return null here instead of inventing one.
+ */
+export function toConvertibleGrams(amount, unit) {
+  const value = Number(amount);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  switch (String(unit || "").trim().toLowerCase()) {
+    case "g":
+    case "gram":
+    case "grams":
+      return value;
+    case "oz":
+    case "ounce":
+    case "ounces":
+      return value * 28.3495;
+    case "lb":
+    case "lbs":
+    case "pound":
+    case "pounds":
+      return value * 453.592;
+    case "kg":
+    case "kilogram":
+    case "kilograms":
+      return value * 1000;
+    default:
+      return null;
+  }
+}
+
 export function expandQuery(q) {
   const t = q.toLowerCase().trim();
   if (t === "bacon" || t === "pork bacon") return "Pork, cured, bacon, unprepared";
@@ -210,16 +241,19 @@ export function pickNutrients(list) {
   for (const n of list) {
     const id = n.nutrientId || n.nutrientNumber;
     const name = (n.nutrientName || n.nutrient || "").toLowerCase();
-    const val = n.value ?? n.amount ?? 0;
+    const raw = n.value ?? n.amount;
+    if (raw == null || raw === "") continue;
+    const val = Number(raw);
+    if (!Number.isFinite(val)) continue;
     if (id != null) byId[id] = val;
-    byName[name] = val;
+    if (name) byName[name] = val;
   }
   const get = (...keys) => {
     for (const k of keys) {
       if (byId[k] != null) return byId[k];
       if (byName[k] != null) return byName[k];
     }
-    return 0;
+    return null;
   };
   return {
     kcal: get(1008, "energy", "energy (kcal)"),
@@ -281,22 +315,37 @@ export function scoreFood(query, f) {
 /** Normalize Open Food Facts nutriments → per-100g macros */
 export function offNutrients(n) {
   n = n || {};
-  let kcal =
-    Number(n["energy-kcal_100g"] ?? n.energy_kcal_100g ?? n["energy-kcal"] ?? 0) || 0;
-  if (!kcal) {
-    const kj = Number(n["energy-kj_100g"] ?? n.energy_100g ?? n["energy-kj"] ?? 0) || 0;
-    if (kj > 0) kcal = kj / 4.184;
+  const finiteOrNull = (...values) => {
+    for (const raw of values) {
+      if (raw == null || raw === "") continue;
+      const value = Number(raw);
+      if (Number.isFinite(value)) return value;
+    }
+    return null;
+  };
+  let kcal = finiteOrNull(
+    n["energy-kcal_100g"],
+    n.energy_kcal_100g,
+    n["energy-kcal"]
+  );
+  if (kcal == null) {
+    const kj = finiteOrNull(
+      n["energy-kj_100g"],
+      n.energy_100g,
+      n["energy-kj"]
+    );
+    if (kj != null) kcal = kj / 4.184;
   }
   const nutrients = {
     kcal,
-    protein: Number(n.proteins_100g ?? n.proteins ?? 0) || 0,
-    fat: Number(n.fat_100g ?? n.fat ?? 0) || 0,
-    carbs: Number(n.carbohydrates_100g ?? n.carbohydrates ?? 0) || 0,
-    fiber: Number(n.fiber_100g ?? n.fiber ?? 0) || 0,
-    sugars: Number(n.sugars_100g ?? n.sugars ?? 0) || 0,
-    potassium: Number(n.potassium_100g ?? n.potassium ?? 0) || 0,
-    magnesium: Number(n.magnesium_100g ?? n.magnesium ?? 0) || 0,
-    sodium: Number(n.sodium_100g ?? n.sodium ?? 0) || 0,
+    protein: finiteOrNull(n.proteins_100g, n.proteins),
+    fat: finiteOrNull(n.fat_100g, n.fat),
+    carbs: finiteOrNull(n.carbohydrates_100g, n.carbohydrates),
+    fiber: finiteOrNull(n.fiber_100g, n.fiber),
+    sugars: finiteOrNull(n.sugars_100g, n.sugars),
+    potassium: finiteOrNull(n.potassium_100g, n.potassium),
+    magnesium: finiteOrNull(n.magnesium_100g, n.magnesium),
+    sodium: finiteOrNull(n.sodium_100g, n.sodium),
   };
   // OFF often stores minerals in grams when value is small (< ~5)
   for (const k of ["potassium", "magnesium", "sodium"]) {
@@ -331,6 +380,7 @@ export async function parseFood(text) {
     const out = await llmChat({
       temperature: 0,
       title: "BigBricey-ParseFood",
+      maxTokens: 250,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: text },
@@ -580,25 +630,34 @@ export async function resolveFood(text, opts = {}) {
     100;
   const scale = grams / 100;
   const n = best.nutrients || {};
+  const scaledNutrient = (value) => {
+    if (value == null || value === "") return undefined;
+    const number = Number(value);
+    return Number.isFinite(number) ? round(number * scale) : undefined;
+  };
   const row = {
     id: crypto.randomUUID(),
     label: `${formatAmount(parsed)} ${best.description}`.trim(),
     source: best._src || best.dataType || "lookup",
     fdcId: best.fdcId,
     grams,
-    kcal: round((Number(n.kcal) || 0) * scale),
-    protein: round((Number(n.protein) || 0) * scale),
-    fat: round((Number(n.fat) || 0) * scale),
-    carbs: round((Number(n.carbs) || 0) * scale),
-    fiber: round((Number(n.fiber) || 0) * scale),
-    sugars: round((Number(n.sugars) || 0) * scale),
-    potassium: round((Number(n.potassium) || 0) * scale),
-    magnesium: round((Number(n.magnesium) || 0) * scale),
-    sodium: round((Number(n.sodium) || 0) * scale),
+    kcal: scaledNutrient(n.kcal),
+    protein: scaledNutrient(n.protein),
+    fat: scaledNutrient(n.fat),
+    carbs: scaledNutrient(n.carbs),
+    fiber: scaledNutrient(n.fiber),
+    sugars: scaledNutrient(n.sugars),
+    potassium: scaledNutrient(n.potassium),
+    magnesium: scaledNutrient(n.magnesium),
+    sodium: scaledNutrient(n.sodium),
   };
 
   // Never ship a blank-calorie row if we can avoid it
-  if (row.kcal <= 0 && row.protein <= 0 && row.fat <= 0) {
+  if (
+    (Number(row.kcal) || 0) <= 0 &&
+    (Number(row.protein) || 0) <= 0 &&
+    (Number(row.fat) || 0) <= 0
+  ) {
     return {
       parsed,
       match: best,
@@ -618,7 +677,9 @@ function formatAmount(parsed) {
 export function sendJson(res, status, body) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json");
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cache-Control", "private, no-store, max-age=0");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Vary", "Cookie");
   res.end(JSON.stringify(body));
 }
 

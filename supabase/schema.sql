@@ -138,19 +138,31 @@ CREATE INDEX IF NOT EXISTS day_totals_user_measure_idx
   ON day_totals (user_email, measure_id, day_key);
 
 -- ---------------------------------------------------------------------------
--- Chat transcript (optional context for the AI over years)
+-- Multi-conversation chat transcript (optional context for the AI over years)
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS chat_messages (
+CREATE TABLE IF NOT EXISTS chat_conversations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_email TEXT NOT NULL REFERENCES profiles(email) ON DELETE CASCADE,
-  role TEXT NOT NULL, -- user | assistant | system
+  title TEXT NOT NULL DEFAULT 'Chat',
+  summary TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS chat_conversations_user_updated_idx
+  ON chat_conversations (user_email, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  conversation_id UUID NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  user_email TEXT NOT NULL REFERENCES profiles(email) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
   content TEXT NOT NULL,
-  meta JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS chat_messages_user_created_idx
-  ON chat_messages (user_email, created_at DESC);
+CREATE INDEX IF NOT EXISTS chat_messages_conv_created_idx
+  ON chat_messages (conversation_id, created_at ASC);
 
 -- ---------------------------------------------------------------------------
 -- Helpers: ensure category / measure exists (called from API)
@@ -230,6 +242,7 @@ ALTER TABLE measures ENABLE ROW LEVEL SECURITY;
 ALTER TABLE events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE event_measures ENABLE ROW LEVEL SECURITY;
 ALTER TABLE day_totals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chat_conversations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_messages ENABLE ROW LEVEL SECURITY;
 
 -- No public policies: only service_role (bypasses RLS) via our API.

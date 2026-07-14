@@ -2,7 +2,9 @@
  * Ambient scenes / effects — bot picks a named scene, we run the visuals.
  */
 (function () {
-  const LS_KEY = "bigbricey-scene-v1";
+  const LEGACY_LS_KEY = "bigbricey-scene-v1";
+  const LS_PREFIX = "bigbricey-scene-v2-";
+  const QUARANTINE_KEY = "bigbricey-unassigned-scene-v1";
   const SCENES = {
     none: { label: "None", bg: null, particles: null },
     rain: {
@@ -153,6 +155,26 @@
   let mode = null;
   let w = 0;
   let h = 0;
+
+  function storageKey() {
+    try {
+      return window.BBAccountStorage?.key(LS_PREFIX, window.__ntUser?.email) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function quarantineLegacyPreference() {
+    try {
+      window.BBAccountStorage?.quarantineLegacyKey(
+        localStorage,
+        LEGACY_LS_KEY,
+        QUARANTINE_KEY
+      );
+    } catch {
+      /* local storage may be unavailable */
+    }
+  }
 
   function ensureCanvas() {
     let el = document.getElementById("sceneFx");
@@ -462,7 +484,8 @@
 
   function saveLocal() {
     try {
-      localStorage.setItem(LS_KEY, current);
+      const key = storageKey();
+      if (key) localStorage.setItem(key, current);
     } catch {
       /* */
     }
@@ -470,7 +493,8 @@
 
   function loadLocal() {
     try {
-      return localStorage.getItem(LS_KEY) || "none";
+      const key = storageKey();
+      return key ? localStorage.getItem(key) || "none" : "none";
     } catch {
       return "none";
     }
@@ -515,6 +539,7 @@
   }
 
   function initScenes() {
+    quarantineLegacyPreference();
     const cloud = window.__ntUser?.scene;
     applyScene(cloud || loadLocal() || "none", { persist: false, theme: false });
     wireUi();

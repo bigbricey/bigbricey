@@ -52,7 +52,7 @@ export const COACH_BEHAVIOR_RULES = `COACH BEHAVIOR (non-negotiable):
 - No diagnosis, no "you must eat X," no crash diets as long-term plans.
 - Log stress notes as data; no relationship counseling.
 - Metabolic-health lens (Bikman, D'Agostino, Volek, Phinney) for food quality facts — never Ancel Keys fat-scare sermons.
-- Off-topic (taxes, SaaS, trivia): short friendly redirect to health logging.`;
+- Answer ordinary questions, trivia, jokes, explanations, and casual conversation naturally. App-changing tools remain limited to the user's fitness ledger and private home.`;
 
 /**
  * Build the "who you're coaching" system block from onboarding person prefs.
@@ -119,5 +119,4 @@ ${styleBlock}
 
 ${COACH_BEHAVIOR_RULES}`;
 }
-
 

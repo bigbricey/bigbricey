@@ -1,11 +1,9 @@
-const KEY_PREFIX = "bigbricey-day-";
-
 let selectedDay = todayKey();
-let rows = loadLocal(selectedDay);
+let rows = [];
+let storageAccount = null;
 let sortKey = null;
 let sortDesc = true;
 let cloudReady = false;
-let syncTimer = null;
 let calendarDays = [];
 let activeTab = "today";
 
@@ -44,17 +42,19 @@ let dayGoals = { ...DEFAULT_GOALS };
 let pendingDeleteId = null;
 let sending = false;
 let conversationId = null;
-try {
-  conversationId = localStorage.getItem("bigbricey-conversation-id") || null;
-} catch {
-  conversationId = null;
-}
+let pendingToolConfirmation = null;
+let daySelectionEpoch = 0;
+let conversationEpoch = 0;
+let conversationLoadEpoch = 0;
+const dayRevisions = new Map();
 
 init();
 
 async function init() {
   const ok = await requireAuth();
   if (!ok) return;
+  configureAccountStorage(window.__ntUser?.email);
+  rows = loadLocal(selectedDay);
 
   document.querySelectorAll("th.sortable").forEach((th) => {
     th.addEventListener("click", () => sortBy(th.dataset.key, th.dataset.type));
@@ -82,12 +82,30 @@ async function init() {
   window.__growFoodInput();
 
   const clear = async () => {
-    if (!confirm(`Clear all food for ${selectedDay}? This cannot be undone.`)) return;
+    const day = selectedDay;
+    if (!confirm(`Clear all food for ${day}? This cannot be undone.`)) return;
+    const account = storageAccount;
+    const selectionEpoch = daySelectionEpoch;
+    const expectedRevision = getDayRevision(day, account);
+    const previousRows = rows.map((row) => ({ ...row }));
     rows = [];
-    save();
+    saveLocalRows(day, rows, account);
     render();
-    appendChat("bot", `Cleared ${selectedDay}.`);
-    await syncCloud(true);
+    const result = await syncCloud(true, {
+      allowClear: true,
+      day,
+      rows: [],
+      expectedRevision,
+    });
+    if (!sameDayContext(account, day, selectionEpoch)) return;
+    if (result?.ok) {
+      appendChat("bot", `Cleared ${day}.`);
+    } else if (!result?.conflict) {
+      rows = previousRows;
+      saveLocalRows(day, rows, account);
+      render();
+      appendChat("bot", `I couldn't safely clear ${day}, so nothing changed.`, true);
+    }
     loadCharts();
   };
   document.getElementById("clearDay")?.addEventListener("click", clear);
@@ -154,16 +172,9 @@ async function init() {
 
   checkApi();
   updateDayLabel();
-  personalizeWelcome();
+  const justOnboarded = personalizeWelcome();
   if (window.BBTheme) window.BBTheme.init();
   if (window.BBScenes) {
-    if (window.__ntUser?.scene) {
-      try {
-        localStorage.setItem("bigbricey-scene-v1", window.__ntUser.scene);
-      } catch {
-        /* */
-      }
-    }
     window.BBScenes.init();
   }
   if (window.BBLayout) window.BBLayout.init();
@@ -172,7 +183,7 @@ async function init() {
   await loadFromCloud(selectedDay);
   render();
   if (window.BBBoxes) window.BBBoxes.loadValuesForDay(selectedDay);
-  await restoreConversation();
+  if (!justOnboarded) await restoreConversation();
   loadWatches();
   loadAlerts();
   loadCharts();
@@ -181,7 +192,9 @@ async function init() {
 
 function personalizeWelcome() {
   const u = window.__ntUser;
-  if (!u) return;
+  if (!u) return false;
+  const justOnboarded = new URLSearchParams(location.search).has("welcome");
+  if (!justOnboarded) return false;
   const o = u.onboarding || {};
   const name = o.first_name || (u.name || "").split(/\s+/)[0] || "";
   const goalMap = {
@@ -192,29 +205,23 @@ function personalizeWelcome() {
   };
   const goal = goalMap[o.primary_goal] || null;
   const g = u.goals || o.goals || {};
-  const welcome = document.querySelector("#chatLog .welcome .chat-text");
-  if (!welcome) return;
-  const justOnboarded = new URLSearchParams(location.search).has("welcome");
-  if (justOnboarded) {
-    history.replaceState({}, "", "/app.html");
-    const bits = [];
-    if (name) bits.push(`You’re set, ${name}.`);
-    else bits.push("You’re set.");
-    if (goal) bits.push(`Primary goal: ${goal}.`);
-    if (g.kcal) {
-      bits.push(
-        `I sized your day around ~${g.kcal} kcal and ${g.protein || "—"}g protein.`
-      );
-    }
+  history.replaceState({}, "", "/app.html");
+  setConversationId(null);
+  const bits = [];
+  if (name) bits.push(`You’re set, ${name}.`);
+  else bits.push("You’re set.");
+  if (goal) bits.push(`Primary goal: ${goal}.`);
+  if (g.kcal) {
     bits.push(
-      "Tell me what you ate or did — e.g. “3 eggs and bacon”, “40 push-ups”, “210 lb weigh-in”."
+      `I sized your day around ~${g.kcal} kcal and ${g.protein || "—"}g protein.`
     );
-    welcome.textContent = bits.join(" ");
-    const who = document.querySelector("#chatLog .welcome .chat-who");
-    if (who) who.textContent = "BigBricey";
-  } else if (name) {
-    welcome.textContent = `Hey ${name} — tell me what you ate, a workout, steps, or a goal. I’ll log real numbers and keep your forever ledger.`;
   }
+  bits.push(
+    "Tell me what you ate or did — e.g. “3 eggs and bacon”, “40 push-ups”, “210 lb weigh-in”."
+  );
+  const bubble = appendChat("bot", bits.join(" "), false, { scroll: false });
+  bubble?.classList.add("welcome");
+  return true;
 }
 
 function setTab(tab) {
@@ -257,6 +264,33 @@ function shiftDay(dayKey, delta) {
   return dt.toISOString().slice(0, 10);
 }
 
+function dayRevisionKey(account, day) {
+  const owner = String(account || "").trim().toLowerCase();
+  const date = String(day || "").trim();
+  return owner && date ? `${owner}\u0000${date}` : null;
+}
+
+function getDayRevision(day, account = storageAccount) {
+  const key = dayRevisionKey(account, day);
+  return key && dayRevisions.has(key) ? dayRevisions.get(key) : null;
+}
+
+function setDayRevision(day, revision, account = storageAccount) {
+  const key = dayRevisionKey(account, day);
+  const number = Number(revision);
+  if (key && Number.isInteger(number) && number >= 0) {
+    dayRevisions.set(key, number);
+  }
+}
+
+function sameDayContext(account, day, selectionEpoch = daySelectionEpoch) {
+  return (
+    storageAccount === account &&
+    selectedDay === day &&
+    daySelectionEpoch === selectionEpoch
+  );
+}
+
 function updateDayLabel() {
   const el = document.getElementById("dayLabel");
   if (el) {
@@ -274,44 +308,55 @@ async function selectDay(day) {
     updateDayLabel();
     return;
   }
-  await syncCloud(true);
+  const selectionEpoch = ++daySelectionEpoch;
+  const account = storageAccount;
+  const priorDay = selectedDay;
+  const priorRows = rows.map((row) => ({ ...row }));
+  await syncCloud(true, {
+    day: priorDay,
+    rows: priorRows,
+    expectedRevision: getDayRevision(priorDay, account),
+  });
+  if (storageAccount !== account || daySelectionEpoch !== selectionEpoch) return;
   selectedDay = day;
+  pendingToolConfirmation = null;
   rows = loadLocal(selectedDay);
   updateDayLabel();
-  await loadFromCloud(selectedDay);
+  await loadFromCloud(selectedDay, { selectionEpoch });
+  if (!sameDayContext(account, day, selectionEpoch)) return;
   render();
   if (window.BBBoxes) window.BBBoxes.loadValuesForDay(selectedDay);
 }
 
-async function loadFromCloud(day) {
+async function loadFromCloud(
+  day,
+  { selectionEpoch = daySelectionEpoch } = {}
+) {
+  const requestDay = day || selectedDay;
+  const requestAccount = storageAccount;
   try {
-    const r = await fetch("/api/log?date=" + encodeURIComponent(day || selectedDay));
+    const r = await fetch("/api/log?date=" + encodeURIComponent(requestDay));
     if (r.status === 503) {
-      cloudReady = false;
-      return;
+      if (storageAccount === requestAccount) cloudReady = false;
+      return { ok: false, unavailable: true };
     }
-    if (!r.ok) return;
+    if (!r.ok) return { ok: false, status: r.status };
     const d = await r.json();
-    cloudReady = true;
-    if (!Array.isArray(d.rows)) return;
-
-    // Cloud is source of truth when it has rows. Never merge local + cloud
-    // (that doubled items on every refresh).
-    if (d.rows.length > 0) {
-      rows = ensureUniqueIds(d.rows);
-      saveLocal(selectedDay);
-      return;
+    if (!Array.isArray(d.rows) || !Number.isInteger(Number(d.revision))) {
+      return { ok: false, invalid: true };
     }
-    // Cloud empty, local has food for today → push local up once
-    if (rows.length) {
-      rows = ensureUniqueIds(rows);
-      await syncCloud(true);
-    } else {
-      rows = [];
-      saveLocal(selectedDay);
+    const cloudRows = ensureUniqueIds(d.rows);
+    const revision = Number(d.revision);
+    setDayRevision(requestDay, revision, requestAccount);
+    saveLocalRows(requestDay, cloudRows, requestAccount);
+    if (storageAccount === requestAccount) cloudReady = true;
+    if (sameDayContext(requestAccount, requestDay, selectionEpoch)) {
+      rows = cloudRows;
     }
+    return { ok: true, rows: cloudRows, revision };
   } catch {
-    cloudReady = false;
+    if (storageAccount === requestAccount) cloudReady = false;
+    return { ok: false, unavailable: true };
   }
 }
 
@@ -355,44 +400,108 @@ function closeConfirm() {
   if (modal) modal.hidden = true;
 }
 
-function confirmDelete() {
+async function confirmDelete() {
   const id = pendingDeleteId;
   closeConfirm();
   if (!id) return;
-  const before = rows.length;
-  rows = rows.filter((r) => String(r.id) !== String(id));
-  if (rows.length === before) return;
-  save();
+  const day = selectedDay;
+  const account = storageAccount;
+  const selectionEpoch = daySelectionEpoch;
+  const expectedRevision = getDayRevision(day, account);
+  const previousRows = rows.map((row) => ({ ...row }));
+  const removed = previousRows.find((row) => String(row.id) === String(id));
+  const nextRows = previousRows.filter((row) => String(row.id) !== String(id));
+  if (nextRows.length === previousRows.length) return;
+  rows = nextRows;
+  saveLocalRows(day, rows, account);
   render();
-  scheduleSync();
+  const result = await syncCloud(true, {
+    allowClear: nextRows.length === 0,
+    day,
+    rows: nextRows,
+    expectedRevision,
+  });
+  if (!sameDayContext(account, day, selectionEpoch)) return;
+  if (result?.ok) {
+    appendChat("bot", `Removed: ${removed?.label || "food entry"}.`);
+  } else if (!result?.conflict) {
+    rows = previousRows;
+    saveLocalRows(day, rows, account);
+    render();
+    appendChat("bot", "I couldn't safely remove that entry, so nothing changed.", true);
+  }
 }
 
-function addManualFood() {
+async function addManualFood() {
   const name = document.getElementById("mName")?.value?.trim();
   if (!name) return;
+  const readAmount = (id, { required = false } = {}) => {
+    const raw = String(document.getElementById(id)?.value ?? "").trim();
+    if (!raw) return required ? { error: "required" } : { value: undefined };
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < 0 || value > 1_000_000_000) {
+      return { error: "invalid" };
+    }
+    return { value };
+  };
+  const inputs = {
+    kcal: readAmount("mKcal", { required: true }),
+    protein: readAmount("mPro", { required: true }),
+    fat: readAmount("mFat", { required: true }),
+    carbs: readAmount("mCarb", { required: true }),
+    potassium: readAmount("mK"),
+  };
+  if (Object.values(inputs).some((input) => input.error)) {
+    appendChat(
+      "bot",
+      "For a manual food, enter non-negative calories, protein, fat, and carbs. Potassium is optional.",
+      true
+    );
+    return;
+  }
   const row = {
     id: newId(),
     label: name,
-    kcal: Number(document.getElementById("mKcal")?.value) || 0,
-    protein: Number(document.getElementById("mPro")?.value) || 0,
-    fat: Number(document.getElementById("mFat")?.value) || 0,
-    carbs: Number(document.getElementById("mCarb")?.value) || 0,
-    fiber: 0,
-    potassium: Number(document.getElementById("mK")?.value) || 0,
-    magnesium: 0,
-    sodium: 0,
+    kcal: inputs.kcal.value,
+    protein: inputs.protein.value,
+    fat: inputs.fat.value,
+    carbs: inputs.carbs.value,
+    ...(inputs.potassium.value !== undefined
+      ? { potassium: inputs.potassium.value }
+      : {}),
   };
-  rows = ensureUniqueIds([...rows, row]);
-  save();
+  const day = selectedDay;
+  const account = storageAccount;
+  const selectionEpoch = daySelectionEpoch;
+  const expectedRevision = getDayRevision(day, account);
+  const previousRows = rows.map((item) => ({ ...item }));
+  const nextRows = ensureUniqueIds([...previousRows, row]);
+  const button = document.getElementById("manualOk");
+  if (button) button.disabled = true;
+  rows = nextRows;
+  saveLocalRows(day, rows, account);
   render();
-  scheduleSync();
-  const m = document.getElementById("manualModal");
-  if (m) m.hidden = true;
-  ["mName", "mKcal", "mPro", "mFat", "mCarb", "mK"].forEach((id) => {
-    const el = document.getElementById(id);
-    if (el) el.value = "";
+  const result = await syncCloud(true, {
+    day,
+    rows: nextRows,
+    expectedRevision,
   });
-  appendChat("bot", `Added manually: ${name}`);
+  if (button) button.disabled = false;
+  if (!sameDayContext(account, day, selectionEpoch)) return;
+  if (result?.ok) {
+    const m = document.getElementById("manualModal");
+    if (m) m.hidden = true;
+    ["mName", "mKcal", "mPro", "mFat", "mCarb", "mK"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.value = "";
+    });
+    appendChat("bot", `Added manually: ${name}.`);
+  } else if (!result?.conflict) {
+    rows = previousRows;
+    saveLocalRows(day, rows, account);
+    render();
+    appendChat("bot", "I couldn't safely save that manual food, so nothing changed.", true);
+  }
 }
 
 /**
@@ -545,39 +654,102 @@ function pickGoalNums(g) {
   return out;
 }
 
-function localKey(day) {
-  return KEY_PREFIX + (day || selectedDay);
+function configureAccountStorage(account) {
+  const nextAccount = String(account || "").trim().toLowerCase() || null;
+  if (storageAccount && storageAccount !== nextAccount) {
+    daySelectionEpoch += 1;
+    conversationEpoch += 1;
+    conversationLoadEpoch += 1;
+    dayRevisions.clear();
+  }
+  storageAccount = nextAccount;
+  if (!storageAccount) return;
+  try {
+    window.BBFoodStorage?.quarantineLegacyDays(localStorage);
+    const legacyConversation = localStorage.getItem("bigbricey-conversation-id");
+    if (legacyConversation) {
+      if (!localStorage.getItem("bigbricey-unassigned-conversation-id")) {
+        localStorage.setItem("bigbricey-unassigned-conversation-id", legacyConversation);
+      }
+      localStorage.removeItem("bigbricey-conversation-id");
+    }
+    conversationId = localStorage.getItem(conversationStorageKey()) || null;
+  } catch {
+    conversationId = null;
+  }
+}
+function conversationStorageKey() {
+  if (!storageAccount) throw new Error("account required for chat storage");
+  return "bigbricey-conversation-v2-" + encodeURIComponent(storageAccount);
 }
 function loadLocal(day) {
+  if (!storageAccount || !window.BBFoodStorage) return [];
   try {
-    return JSON.parse(localStorage.getItem(localKey(day)) || "[]");
+    return window.BBFoodStorage.load(localStorage, storageAccount, day);
   } catch {
     return [];
   }
 }
+function saveLocalRows(day, list, account = storageAccount) {
+  if (!account || !window.BBFoodStorage || !Array.isArray(list)) return;
+  window.BBFoodStorage.save(localStorage, account, day || selectedDay, list);
+}
 function saveLocal(day) {
-  localStorage.setItem(localKey(day || selectedDay), JSON.stringify(rows));
+  saveLocalRows(day || selectedDay, rows, storageAccount);
 }
-function scheduleSync() {
-  if (syncTimer) clearTimeout(syncTimer);
-  syncTimer = setTimeout(() => syncCloud(false), 400);
-}
-async function syncCloud(immediate) {
+async function syncCloud(
+  immediate,
+  {
+    allowClear = false,
+    day = selectedDay,
+    rows: syncRows = rows,
+    expectedRevision = getDayRevision(day),
+  } = {}
+) {
+  const requestAccount = storageAccount;
   if (!cloudReady && !immediate) return;
+  if (!Array.isArray(syncRows) || (syncRows.length === 0 && !allowClear)) return;
   try {
     const r = await fetch("/api/log", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date: selectedDay, rows }),
+      body: JSON.stringify({
+        date: day,
+        rows: syncRows,
+        clear: allowClear,
+        expected_revision:
+          Number.isInteger(Number(expectedRevision)) && Number(expectedRevision) >= 0
+            ? Number(expectedRevision)
+            : null,
+      }),
     });
+    const data = await r.json().catch(() => ({}));
+    if (r.status === 409) {
+      const selectionEpoch = daySelectionEpoch;
+      const refreshed = await loadFromCloud(day, { selectionEpoch });
+      if (sameDayContext(requestAccount, day, selectionEpoch)) {
+        if (refreshed?.ok) {
+          render();
+          window.BBBoxes?.loadValuesForDay(day);
+        }
+        appendChat(
+          "bot",
+          `The saved log for ${day} changed somewhere else, so I reloaded the latest version instead of overwriting it.`
+        );
+      }
+      return { ok: false, conflict: true };
+    }
     if (r.ok) {
-      cloudReady = true;
+      if (storageAccount === requestAccount) cloudReady = true;
+      setDayRevision(day, data.revision, requestAccount);
       loadWatches();
       loadAlerts();
       loadCharts();
+      return { ok: true, revision: getDayRevision(day, requestAccount) };
     }
+    return { ok: false, status: r.status };
   } catch {
-    /* offline */
+    return { ok: false, unavailable: true };
   }
 }
 
@@ -802,34 +974,47 @@ function displayUserName() {
   return name || "You";
 }
 
-function appendChat(role, text, isError) {
-  if (!chatLog || !text) return;
-  const welcome = chatLog.querySelector(".welcome");
-  if (welcome) welcome.remove();
+function appendChat(role, text, isError = false, options = {}) {
+  if (!chatLog || text == null || String(text).trim() === "") return;
+  chatLog.querySelector(".welcome, .chat-empty")?.remove();
   const bubble = document.createElement("div");
   bubble.className =
     "chat-bubble " +
     (role === "user" ? "user" : "bot") +
     (isError ? " err" : "") +
-    (text === "Working…" ? " thinking" : "");
+    (options.thinking ? " thinking" : "");
+  if (options.thinking) bubble.setAttribute("aria-hidden", "true");
   const who = document.createElement("div");
   who.className = "chat-who";
   who.textContent =
     role === "user" ? displayUserName() : isError ? "Error" : "BigBricey";
   const body = document.createElement("div");
   body.className = "chat-text";
-  body.textContent = text;
+  if (window.BBChatFormat?.renderChatText) {
+    window.BBChatFormat.renderChatText(body, text);
+  } else {
+    body.textContent = text;
+  }
   bubble.appendChild(who);
   bubble.appendChild(body);
   chatLog.appendChild(bubble);
-  chatLog.scrollTop = chatLog.scrollHeight;
+  if (options.scroll !== false) {
+    if (window.BBChatFormat?.scrollChatToBottom) {
+      window.BBChatFormat.scrollChatToBottom(chatLog);
+    } else {
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+  }
   return bubble;
 }
 function setThinking(on) {
   if (!chatLog) return;
+  chatLog.setAttribute("aria-busy", on ? "true" : "false");
+  const status = document.getElementById("chatStatus");
+  if (status) status.textContent = on ? "BigBricey is thinking." : "";
   const existing = chatLog.querySelector(".thinking");
   if (on) {
-    if (!existing) appendChat("bot", "Working…");
+    if (!existing) appendChat("bot", "Thinking…", false, { thinking: true });
   } else if (existing) existing.remove();
 }
 
@@ -1110,25 +1295,30 @@ async function checkApi() {
 }
 
 function setConversationId(id) {
-  conversationId = id || null;
+  const next = id || null;
+  if (conversationId !== next) {
+    conversationEpoch += 1;
+    conversationLoadEpoch += 1;
+  }
+  conversationId = next;
+  pendingToolConfirmation = null;
   try {
-    if (conversationId) localStorage.setItem("bigbricey-conversation-id", conversationId);
-    else localStorage.removeItem("bigbricey-conversation-id");
+    const key = conversationStorageKey();
+    if (conversationId) localStorage.setItem(key, conversationId);
+    else localStorage.removeItem(key);
   } catch {
     /* */
   }
 }
 
-function clearChatUi(welcomeText) {
+function clearChatUi() {
   if (!chatLog) return;
-  chatLog.innerHTML = "";
-  const bubble = document.createElement("div");
-  bubble.className = "chat-bubble bot welcome";
-  bubble.innerHTML = `<div class="chat-who">BigBricey</div><div class="chat-text"></div>`;
-  bubble.querySelector(".chat-text").textContent =
-    welcomeText ||
-    "New chat. I still know your saved foods, theme, and permanent notes — this thread is fresh.";
-  chatLog.appendChild(bubble);
+  chatLog.replaceChildren();
+  chatLog.setAttribute("aria-busy", "false");
+  const empty = document.createElement("div");
+  empty.className = "chat-empty";
+  empty.textContent = "New conversation";
+  chatLog.appendChild(empty);
 }
 
 function renderMessagesFromServer(messages) {
@@ -1140,20 +1330,40 @@ function renderMessagesFromServer(messages) {
   }
   for (const m of messages) {
     const role = m.role === "user" ? "user" : "bot";
-    appendChat(role === "user" ? "user" : "bot", m.content);
+    appendChat(role === "user" ? "user" : "bot", m.content, false, { scroll: false });
   }
+  window.BBChatFormat?.scrollChatToBottom?.(chatLog);
 }
 
 async function restoreConversation() {
   if (!conversationId) return;
+  const requestedId = conversationId;
+  const requestAccount = storageAccount;
+  const requestConversationEpoch = conversationEpoch;
+  const requestLoadEpoch = ++conversationLoadEpoch;
   try {
-    const r = await fetch("/api/chat?id=" + encodeURIComponent(conversationId));
+    const r = await fetch("/api/chat?id=" + encodeURIComponent(requestedId));
     if (!r.ok) {
-      setConversationId(null);
+      if (
+        r.status === 404 &&
+        storageAccount === requestAccount &&
+        conversationId === requestedId &&
+        conversationEpoch === requestConversationEpoch &&
+        conversationLoadEpoch === requestLoadEpoch
+      ) {
+        setConversationId(null);
+      }
       return;
     }
     const d = await r.json();
-    if (Array.isArray(d.messages) && d.messages.length) {
+    if (
+      storageAccount === requestAccount &&
+      conversationId === requestedId &&
+      conversationEpoch === requestConversationEpoch &&
+      conversationLoadEpoch === requestLoadEpoch &&
+      Array.isArray(d.messages) &&
+      d.messages.length
+    ) {
       renderMessagesFromServer(d.messages);
     }
   } catch {
@@ -1187,14 +1397,40 @@ async function loadConversationList() {
     list.querySelectorAll("[data-conv]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const id = btn.getAttribute("data-conv");
-        setConversationId(id);
-        const r2 = await fetch("/api/chat?id=" + encodeURIComponent(id));
-        if (r2.ok) {
+        if (!id) return;
+        const requestAccount = storageAccount;
+        const requestLoadEpoch = ++conversationLoadEpoch;
+        btn.disabled = true;
+        try {
+          const r2 = await fetch("/api/chat?id=" + encodeURIComponent(id));
+          if (!r2.ok) throw new Error("conversation_load_failed");
           const d2 = await r2.json();
+          if (
+            storageAccount !== requestAccount ||
+            conversationLoadEpoch !== requestLoadEpoch
+          ) {
+            return;
+          }
+          setConversationId(id);
           renderMessagesFromServer(d2.messages || []);
+          const panel = document.getElementById("chatHistoryPanel");
+          if (panel) panel.hidden = true;
+        } catch {
+          if (
+            storageAccount === requestAccount &&
+            conversationLoadEpoch === requestLoadEpoch
+          ) {
+            const prior = list.querySelector(".chat-history-load-error");
+            prior?.remove();
+            const message = document.createElement("div");
+            message.className = "alert-empty chat-history-load-error";
+            message.textContent =
+              "Couldn’t open that conversation. Your current chat is unchanged.";
+            list.prepend(message);
+          }
+        } finally {
+          btn.disabled = false;
         }
-        const panel = document.getElementById("chatHistoryPanel");
-        if (panel) panel.hidden = true;
       });
     });
   } catch {
@@ -1214,6 +1450,10 @@ function wireChatHistoryUi() {
     if (panel) panel.hidden = true;
   });
   document.getElementById("btnChatNew")?.addEventListener("click", async () => {
+    const requestAccount = storageAccount;
+    const priorConversationId = conversationId;
+    const priorConversationEpoch = conversationEpoch;
+    const requestLoadEpoch = ++conversationLoadEpoch;
     try {
       const r = await fetch("/api/chat", {
         method: "POST",
@@ -1221,20 +1461,56 @@ function wireChatHistoryUi() {
         body: JSON.stringify({ op: "new_conversation" }),
       });
       const d = await r.json().catch(() => ({}));
-      if (d.conversation?.id) setConversationId(d.conversation.id);
-      else setConversationId(null);
+      if (!r.ok || !d.conversation?.id) throw new Error("conversation_create_failed");
+      if (
+        storageAccount !== requestAccount ||
+        conversationId !== priorConversationId ||
+        conversationEpoch !== priorConversationEpoch ||
+        conversationLoadEpoch !== requestLoadEpoch
+      ) {
+        return;
+      }
+      setConversationId(d.conversation.id);
+      clearChatUi();
+      const panel = document.getElementById("chatHistoryPanel");
+      if (panel) panel.hidden = true;
     } catch {
-      setConversationId(null);
+      if (
+        storageAccount === requestAccount &&
+        conversationId === priorConversationId &&
+        conversationEpoch === priorConversationEpoch &&
+        conversationLoadEpoch === requestLoadEpoch
+      ) {
+        appendChat(
+          "bot",
+          "I couldn’t start a new conversation, so I left this chat exactly where it was.",
+          true
+        );
+      }
     }
-    clearChatUi();
-    const panel = document.getElementById("chatHistoryPanel");
-    if (panel) panel.hidden = true;
   });
 }
 
 async function onSend() {
   const text = foodInput.value.trim();
   if (!text || sending) return;
+  conversationLoadEpoch += 1;
+  const requestId = newId();
+  const requestAccount = storageAccount;
+  const requestDay = selectedDay;
+  const requestRows = rows.map((row) => ({ ...row }));
+  const requestSelectionEpoch = daySelectionEpoch;
+  const requestConversationId = conversationId;
+  const requestConversationEpoch = conversationEpoch;
+  const confirmsPending =
+    pendingToolConfirmation &&
+    /^(?:yes|yep|yeah|confirm|confirmed|do it|go ahead|please do|yes,? do it)[.!\s]*$/i.test(text);
+  const cancelsPending =
+    pendingToolConfirmation &&
+    /^(?:no|nope|cancel|never mind|nevermind|don'?t|do not)[.!\s]*$/i.test(text);
+  const cancellation = Boolean(cancelsPending);
+  const confirmation = confirmsPending ? pendingToolConfirmation : null;
+  if (pendingToolConfirmation && !confirmsPending) pendingToolConfirmation = null;
   sending = true;
   addBtn.disabled = true;
   foodInput.value = "";
@@ -1249,22 +1525,75 @@ async function onSend() {
     const data = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, rows, conversation_id: conversationId }),
+      body: JSON.stringify(
+        cancellation
+          ? {
+              op: "cancel_tool",
+              text,
+              date: requestDay,
+              rows: requestRows,
+              conversation_id: requestConversationId,
+              request_id: requestId,
+            }
+          : confirmation
+          ? {
+              op: "confirm_tool",
+              confirmation_token: confirmation.token,
+              text,
+              date: requestDay,
+              rows: requestRows,
+              conversation_id: requestConversationId,
+              request_id: requestId,
+            }
+          : {
+              text,
+              date: requestDay,
+              rows: requestRows,
+              conversation_id: requestConversationId,
+              request_id: requestId,
+            }
+      ),
     }).then(async (r) => {
       const j = await r.json().catch(() => ({}));
-      if (!r.ok && j.error) throw new Error(j.error);
+      if (!r.ok) throw new Error(j.message || "The request failed. Please try again.");
       return j;
     });
     setThinking(false);
-    if (data.conversation_id) setConversationId(data.conversation_id);
-    if (Array.isArray(data.rows)) {
-      rows = ensureUniqueIds(data.rows);
-      save();
-      render();
-      await syncCloud(true);
+    const conversationStillCurrent =
+      storageAccount === requestAccount &&
+      conversationEpoch === requestConversationEpoch &&
+      conversationId === requestConversationId;
+    if (conversationStillCurrent && data.conversation_id) {
+      setConversationId(data.conversation_id);
+    }
+    const responseBelongsToVisibleConversation = conversationStillCurrent;
+    pendingToolConfirmation =
+      responseBelongsToVisibleConversation &&
+      sameDayContext(requestAccount, requestDay, requestSelectionEpoch) &&
+      data.pending_confirmation?.token
+        ? data.pending_confirmation
+        : null;
+    setDayRevision(requestDay, data.day_revision, requestAccount);
+    if (
+      Array.isArray(data.rows) &&
+      ((data.changed === true && data.ledger_committed === true) ||
+        data.ledger_reloaded === true)
+    ) {
+      const committedRows = ensureUniqueIds(data.rows);
+      // The server either committed this exact day transactionally or reloaded
+      // the newer authoritative snapshot after a conflict. Cache only.
+      saveLocalRows(requestDay, committedRows, requestAccount);
+      if (sameDayContext(requestAccount, requestDay, requestSelectionEpoch)) {
+        rows = committedRows;
+        render();
+      }
     }
     // Chat can change daily targets (diet/macros) — refresh rings
-    if (data.goals && typeof data.goals === "object") {
+    if (
+      storageAccount === requestAccount &&
+      data.goals &&
+      typeof data.goals === "object"
+    ) {
       window.__ntUser = window.__ntUser || {};
       window.__ntUser.goals = { ...(window.__ntUser.goals || {}), ...data.goals };
       if (window.__ntUser.onboarding) {
@@ -1282,18 +1611,18 @@ async function onSend() {
       }
     }
     // Chat can rearrange Today layout
-    if (data.layout && window.BBLayout) {
+    if (storageAccount === requestAccount && data.layout && window.BBLayout) {
       window.BBLayout.apply(data.layout, { persist: true });
       window.__ntUser = window.__ntUser || {};
       window.__ntUser.layout = data.layout;
     }
     // Chat can restyle the whole look
-    if (data.theme && window.BBTheme) {
+    if (storageAccount === requestAccount && data.theme && window.BBTheme) {
       window.BBTheme.apply(data.theme, { persist: true });
       window.__ntUser = window.__ntUser || {};
       window.__ntUser.theme = data.theme;
     }
-    if (data.scene != null && window.BBScenes) {
+    if (storageAccount === requestAccount && data.scene != null && window.BBScenes) {
       window.BBScenes.apply(data.scene, { persist: true, theme: !data.theme });
       window.__ntUser = window.__ntUser || {};
       window.__ntUser.scene = data.scene;
@@ -1301,22 +1630,40 @@ async function onSend() {
     // Do NOT guess scenes from chat text on the client — that re-applied snow
     // whenever someone *mentioned* snow (e.g. "how you made snow").
     // Chat can add/update custom goal boxes
-    if (Array.isArray(data.boxes) && window.BBBoxes) {
+    if (storageAccount === requestAccount && Array.isArray(data.boxes) && window.BBBoxes) {
       window.BBBoxes.setBoxes(data.boxes, { persist: true });
       window.__ntUser = window.__ntUser || {};
       window.__ntUser.boxes = data.boxes;
       window.BBBoxes.loadValuesForDay(selectedDay);
     }
-    if (Array.isArray(data.watchStatuses)) renderWatches(data.watchStatuses);
-    else loadWatches();
+    if (storageAccount === requestAccount) {
+      if (Array.isArray(data.watchStatuses)) renderWatches(data.watchStatuses);
+      else loadWatches();
+    }
     // Refresh custom box totals after logging
-    if (window.BBBoxes && (data.changed || data.sideEvents?.length || data.boxes)) {
+    if (
+      storageAccount === requestAccount &&
+      window.BBBoxes &&
+      (data.changed || data.sideEvents?.length || data.boxes)
+    ) {
       window.BBBoxes.loadValuesForDay(selectedDay);
     }
-    appendChat("bot", data.reply || data.notes?.join(" ") || "Done.");
+    const reply =
+      (typeof data.reply === "string" && data.reply.trim()) ||
+      (Array.isArray(data.notes) && data.notes.filter(Boolean).join(" "));
+    if (responseBelongsToVisibleConversation) {
+      if (reply) appendChat("bot", reply);
+      else appendChat("bot", "No response returned.", true);
+    }
   } catch (e) {
     setThinking(false);
-    appendChat("bot", e.message || String(e), true);
+    if (
+      storageAccount === requestAccount &&
+      conversationEpoch === requestConversationEpoch &&
+      conversationId === requestConversationId
+    ) {
+      appendChat("bot", e.message || "The request failed. Please try again.", true);
+    }
   } finally {
     sending = false;
     addBtn.disabled = false;
@@ -1348,7 +1695,6 @@ function sortBy(key, type) {
     sortStatus.textContent = `Sorted by ${key} (${sortDesc ? "high→low" : "low→high"})`;
   }
   render();
-  save();
 }
 
 function render() {
@@ -1479,10 +1825,6 @@ function totals() {
   return t;
 }
 
-function save() {
-  saveLocal(selectedDay);
-  scheduleSync();
-}
 function fmt(n, d = 1) {
   const x = Number(n) || 0;
   return d === 0 ? String(Math.round(x)) : x.toFixed(d).replace(/\.0$/, "");

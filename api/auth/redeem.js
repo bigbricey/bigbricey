@@ -1,4 +1,8 @@
-import { getSession, sendJson } from "../_auth.js";
+import {
+  getSession,
+  requirePrivateJsonMutation,
+  sendJson,
+} from "../_auth.js";
 import { redeemInvite, getMembership } from "../_members.js";
 import { readBody } from "../_lib.js";
 
@@ -8,12 +12,11 @@ import { readBody } from "../_lib.js";
  */
 export default async function handler(req, res) {
   if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Allow", "POST, OPTIONS");
     return res.status(204).end();
   }
   if (req.method !== "POST") return sendJson(res, 405, { error: "POST only" });
+  if (!requirePrivateJsonMutation(req, res)) return;
 
   const session = getSession(req);
   if (!session?.email) {
@@ -40,10 +43,17 @@ export default async function handler(req, res) {
     });
   } catch (e) {
     const status =
-      e.code === "bad_invite" || e.code === "invite_exhausted" ? 400 : 500;
+      e.code === "rate_limited"
+        ? 429
+        : e.code === "bad_invite" ||
+            e.code === "invite_exhausted" ||
+            e.code === "invite_required"
+          ? 400
+          : 500;
+    const headers = e.retryAfter ? { "Retry-After": String(e.retryAfter) } : {};
     return sendJson(res, status, {
       error: e.code || "redeem_failed",
-      message: String(e.message || e),
-    });
+      message: status === 500 ? "Invite redemption failed." : String(e.message || e),
+    }, headers);
   }
 }

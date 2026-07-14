@@ -26,13 +26,21 @@ export function llmConfig() {
 
 /**
  * Chat completion — OpenRouter-compatible shape for now.
- * @param {{ messages: Array<{role:string,content:string}>, temperature?: number, title?: string }} opts
- * @returns {Promise<{ content: string, model: string, provider: string, raw: any }>}
+ * @param {{ messages: Array<object>, temperature?: number, title?: string,
+ * tools?: Array<object>, toolChoice?: string|object, parallelToolCalls?: boolean,
+ * maxTokens?: number, responseFormat?: object, reasoning?: object }} opts
+ * @returns {Promise<{ content: string, message: object, toolCalls: Array<object>, model: string, provider: string, raw: any }>}
  */
 export async function llmChat({
   messages,
   temperature = 0,
   title = "BigBricey",
+  tools,
+  toolChoice,
+  parallelToolCalls,
+  maxTokens,
+  responseFormat,
+  reasoning,
 } = {}) {
   const cfg = llmConfig();
   if (!cfg.ok) {
@@ -48,6 +56,12 @@ export async function llmChat({
       messages,
       temperature,
       title,
+      tools,
+      toolChoice,
+      parallelToolCalls,
+      maxTokens,
+      responseFormat,
+      reasoning,
     });
   }
 
@@ -58,10 +72,46 @@ export async function llmChat({
     messages,
     temperature,
     title,
+    tools,
+    toolChoice,
+    parallelToolCalls,
+    maxTokens,
+    responseFormat,
+    reasoning,
   });
 }
 
-async function openRouterChat({ apiKey, model, messages, temperature, title }) {
+async function openRouterChat({
+  apiKey,
+  model,
+  messages,
+  temperature,
+  title,
+  tools,
+  toolChoice,
+  parallelToolCalls,
+  maxTokens,
+  responseFormat,
+  reasoning,
+}) {
+  const body = {
+    model,
+    temperature,
+    messages,
+  };
+  if (Array.isArray(tools) && tools.length) body.tools = tools;
+  if (toolChoice != null) body.tool_choice = toolChoice;
+  if (parallelToolCalls != null) {
+    body.parallel_tool_calls = Boolean(parallelToolCalls);
+  }
+  if (Number.isFinite(Number(maxTokens)) && Number(maxTokens) > 0) {
+    body.max_tokens = Math.floor(Number(maxTokens));
+  }
+  if (responseFormat && typeof responseFormat === "object") {
+    body.response_format = responseFormat;
+  }
+  if (reasoning && typeof reasoning === "object") body.reasoning = reasoning;
+
   const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -70,11 +120,7 @@ async function openRouterChat({ apiKey, model, messages, temperature, title }) {
       "HTTP-Referer": process.env.SITE_URL || "https://www.bigbricey.com",
       "X-Title": title,
     },
-    body: JSON.stringify({
-      model,
-      temperature,
-      messages,
-    }),
+    body: JSON.stringify(body),
   });
   const data = await r.json();
   if (!r.ok) {
@@ -83,7 +129,17 @@ async function openRouterChat({ apiKey, model, messages, temperature, title }) {
     err.detail = data;
     throw err;
   }
-  const content = data.choices?.[0]?.message?.content || "";
+  const providerMessage = data.choices?.[0]?.message || {};
+  const toolCalls = Array.isArray(providerMessage.tool_calls)
+    ? providerMessage.tool_calls
+    : [];
+  const content =
+    typeof providerMessage.content === "string" ? providerMessage.content : "";
+  const message = {
+    ...providerMessage,
+    role: providerMessage.role || "assistant",
+    content: providerMessage.content ?? null,
+  };
   const u = data.usage || {};
   const prompt_tokens = Number(u.prompt_tokens ?? u.input_tokens ?? 0) || 0;
   const completion_tokens =
@@ -97,6 +153,8 @@ async function openRouterChat({ apiKey, model, messages, temperature, title }) {
   else if (data.usage?.total_cost != null) cost_usd = Number(data.usage.total_cost);
   return {
     content,
+    message,
+    toolCalls,
     model: data.model || model,
     provider: "openrouter",
     usage: {
@@ -110,23 +168,31 @@ async function openRouterChat({ apiKey, model, messages, temperature, title }) {
 }
 
 /** Domain contract injected into every coach system prompt. */
-export const DOMAIN_CONTRACT = `You are BigBricey — a smart buddy living inside the user's private fitness/home ledger.
+export const DOMAIN_CONTRACT = `You are BigBricey — the user's AI fitness companion living inside their private home and health ledger.
 
-TALK LIKE A REAL PERSON (Hermes / ChatGPT style):
+CONVERSATION:
+- Respond to the person before reaching for a tool. Acknowledge what they actually said.
 - Answer ANY normal question: trivia, opinions, favorites, jokes, explanations, formatting (bullets, numbers, whatever they ask).
-- Use conversation history. Remember what they said earlier in this chat.
+- Match their energy, tone, and preferred response length. Be warm and direct without fake hype, lectures, or canned encouragement.
+- Use conversation history for continuity, but answer the user's current message instead of reviving an older unanswered request.
 - Think. Don't dump a feature menu unless they ask what you can do.
-- "Are you there?" → "Yeah I'm here." Not a product pitch.
+- You are an AI companion. Never claim to be human.
+- "Are you there?" → "Yeah, I'm here." Not a product pitch.
 
-PRODUCT SUPERPOWERS (use JSON actions when changing the app):
-- Food log (server does real nutrition lookup — NEVER invent macros/numbers)
-- Saved foods, goals, layout, theme/colors, scenes (rain/snow/ocean/etc.), custom boxes/charts, export packs, watches, memory notes, feedback backlog
+PRODUCT SUPERPOWERS (use native app tools when reading or changing the app):
+- Natural conversation and normal questions without requiring a tool
+- Food log and reusable saved foods (server does real nutrition lookup — NEVER invent macros/numbers)
+- Ongoing calorie, macro, mineral, and eating-style goals
+- Workouts, steps, and numeric health or fitness metrics
+- Home theme/colors, ambient scenes, and the layout of supported Today panels
+- Permanent memory notes when the user explicitly asks to remember or forget something
+- Chat history is available through the History/New controls in the UI; it is not an app-action tool
 
 HARD LIMITS (refuse / redirect short — don't do these):
 - Don't invent fake nutrition numbers
 - Don't claim medical diagnosis/prescriptions
 - Don't pretend you shipped a full app/SaaS/Windows clone/malware/hacking kit — this product can't run that; explain and stay helpful otherwise
 - Don't force a diet tribe; honor their eating style
-- Don't say you'll message "Brice" or a human — product ideas go to backlog
+- Don't say you'll message "Brice" or another human
 
 NAMING: You are BigBricey. The logged-in user's name is who you're talking to.`;

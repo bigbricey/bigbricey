@@ -3,6 +3,15 @@
  * Never expose SUPABASE_SERVICE_ROLE_KEY to the browser.
  */
 
+import { assertFoodDayMayBeCleared } from "./_ledger_safety.js";
+
+import {
+  messagesInChronologicalOrder,
+  normalizeMemoryNotes,
+  sanitizeMemoryNoteText,
+  selectChatContextWindow,
+} from "./_chat_memory.js";
+
 export function supabaseConfig() {
   const url = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
   const key =
@@ -145,6 +154,18 @@ export async function getProfile(email) {
   return rows?.[0] || null;
 }
 
+/** Atomically merge preferences without replacing unrelated profile fields. */
+export async function mergeProfilePrefs(email, patch = {}) {
+  const e = String(email || "").trim().toLowerCase();
+  if (!e || !patch || typeof patch !== "object" || Array.isArray(patch)) {
+    const error = new Error("Invalid profile preference update.");
+    error.code = "invalid_profile_preferences";
+    error.status = 400;
+    throw error;
+  }
+  return sbRpc("merge_profile_prefs", { p_email: e, p_patch: patch });
+}
+
 /**
  * Onboarding lives in profiles.prefs.onboarding (no schema migration needed).
  * complete === true means the user finished the Lose It-style intake.
@@ -204,6 +225,32 @@ export function calorieFloor(sex) {
   return String(sex || "").toLowerCase() === "female" ? 1500 : 1800;
 }
 
+export function ageFromBirthday(birthday, now = new Date()) {
+  if (!birthday) return null;
+  const born = new Date(`${String(birthday).slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(born.getTime())) return null;
+  const today = new Date(now);
+  let age = today.getUTCFullYear() - born.getUTCFullYear();
+  const birthdayThisYear = new Date(
+    Date.UTC(today.getUTCFullYear(), born.getUTCMonth(), born.getUTCDate())
+  );
+  if (today < birthdayThisYear) age -= 1;
+  return age;
+}
+
+export function assertAdultOnboarding(onboarding, now = new Date()) {
+  const age = ageFromBirthday(onboarding?.birthday, now);
+  if (age != null && age < 18) {
+    const error = new Error(
+      "BigBricey currently supports adult target calculations only. Family mode needs separate guardian and child safeguards."
+    );
+    error.code = "adult_only";
+    error.status = 422;
+    throw error;
+  }
+  return age;
+}
+
 /**
  * Estimate targets from onboarding.
  * Activity + training required for a sane TDEE. User-confirmed kcal wins.
@@ -214,22 +261,8 @@ export function computeGoalsFromOnboarding(o) {
   const goalLb = Number(o.goal_weight_lb) || weightLb;
   const heightIn = Number(o.height_in) || 68;
   const sex = String(o.sex || "male").toLowerCase() === "female" ? "female" : "male";
-  let age = 35;
-  if (o.birthday) {
-    const b = new Date(o.birthday);
-    if (!Number.isNaN(b.getTime())) {
-      const now = new Date();
-      age = Math.max(
-        16,
-        Math.min(
-          100,
-          now.getFullYear() -
-            b.getFullYear() -
-            (now < new Date(now.getFullYear(), b.getMonth(), b.getDate()) ? 1 : 0)
-        )
-      );
-    }
-  }
+  const knownAge = assertAdultOnboarding(o);
+  const age = knownAge == null ? 35 : Math.min(100, knownAge);
   const kg = weightLb * 0.453592;
   const cm = heightIn * 2.54;
   const bmr = 10 * kg + 6.25 * cm - 5 * age + (sex === "female" ? -161 : 5);
@@ -425,30 +458,26 @@ export async function saveOnboarding(email, data = {}) {
     next.complete = false;
   }
 
-  prefs.onboarding = next;
-
+  const preferencePatch = { onboarding: next };
   // Starting look from onboarding (optional)
   if (data.theme_preset && typeof data.theme_preset === "string") {
     const preset = String(data.theme_preset).toLowerCase().trim();
     if (preset && preset !== "custom") {
-      prefs.theme = { ...(prefs.theme || {}), preset };
+      preferencePatch.theme = { preset };
     }
   }
+  await mergeProfilePrefs(e, preferencePatch);
 
-  // Prefer first_name on profile.name when set
-  const patch = {
-    prefs,
-    ...(next.preferred_name || next.first_name
-      ? { name: next.preferred_name || next.first_name }
-      : {}),
-  };
-
-  await sb("profiles", {
-    method: "PATCH",
-    query: { email: `eq.${e}` },
-    body: patch,
-    headers: { Prefer: "return=minimal" },
-  });
+  // Prefer first_name on profile.name when set. This column update cannot
+  // overwrite the independently merged JSON preferences.
+  if (next.preferred_name || next.first_name) {
+    await sb("profiles", {
+      method: "PATCH",
+      query: { email: `eq.${e}` },
+      body: { name: next.preferred_name || next.first_name },
+      headers: { Prefer: "return=minimal" },
+    });
+  }
 
   // Log starting weight into forever ledger when finishing
   if (complete && next.current_weight_lb != null) {
@@ -559,6 +588,12 @@ export function measuresFromFoodRow(row) {
   const extras = row.extras || row.micros || {};
   if (extras && typeof extras === "object") {
     for (const [k, raw] of Object.entries(extras)) {
+      if (
+        typeof raw !== "number" &&
+        !(typeof raw === "string" && raw.trim() !== "")
+      ) {
+        continue;
+      }
       const id = String(k)
         .toLowerCase()
         .replace(/[^a-z0-9_]+/g, "_");
@@ -571,176 +606,125 @@ export function measuresFromFoodRow(row) {
   return out;
 }
 
+function validateFoodRowsForSync(rows) {
+  let encoded;
+  try {
+    encoded = JSON.stringify(rows);
+  } catch {
+    const error = new Error("Food rows must be valid JSON.");
+    error.code = "invalid_food_rows";
+    error.status = 400;
+    throw error;
+  }
+  if (encoded.length > 1_500_000) {
+    const error = new Error("Food-day payload is too large.");
+    error.code = "food_day_payload_too_large";
+    error.status = 413;
+    throw error;
+  }
+  for (const row of rows) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      const error = new Error("Every food row must be an object.");
+      error.code = "invalid_food_row";
+      error.status = 400;
+      throw error;
+    }
+    if (String(row.label || row.food || "").length > 300) {
+      const error = new Error("Food label is too long.");
+      error.code = "food_label_too_long";
+      error.status = 400;
+      throw error;
+    }
+    for (const key of FOOD_MEASURES) {
+      if (row[key] == null || row[key] === "") continue;
+      const value = Number(row[key]);
+      if (!Number.isFinite(value) || value < 0 || value > 1_000_000_000) {
+        const error = new Error(`Invalid ${key} value.`);
+        error.code = "invalid_food_measure_value";
+        error.status = 400;
+        throw error;
+      }
+    }
+    const extras = row.extras || row.micros;
+    if (extras != null && JSON.stringify(extras).length > 60_000) {
+      const error = new Error("Food detail is too large.");
+      error.code = "food_row_payload_too_large";
+      error.status = 413;
+      throw error;
+    }
+  }
+}
+
 /**
  * Replace all non-deleted food events for a user/day with the given client rows.
  */
-export async function syncFoodDay(email, dayKey, rows, { rawText } = {}) {
+export async function syncFoodDay(
+  email,
+  dayKey,
+  rows,
+  { rawText, allowClear = false, expectedRevision } = {}
+) {
+  assertFoodDayMayBeCleared(rows, allowClear);
+  if (!Number.isSafeInteger(Number(expectedRevision)) || Number(expectedRevision) < 0) {
+    const error = new Error("Reload the food day before changing it.");
+    error.code = "food_day_revision_required";
+    error.status = 409;
+    throw error;
+  }
   await ensureProfile(email);
   const e = String(email).toLowerCase();
+  if (rows.length > 500) {
+    const error = new Error("too many food rows");
+    error.code = "too_many_food_rows";
+    error.status = 400;
+    throw error;
+  }
+  validateFoodRowsForSync(rows);
 
-  // Existing food events for the day
-  const existing = await sb("events", {
-    query: {
-      select: "id,client_id",
-      user_email: `eq.${e}`,
-      day_key: `eq.${dayKey}`,
-      category_id: "eq.food",
-      deleted_at: "is.null",
-    },
-  });
-
-  // Dedupe incoming rows by id (last wins) so we never re-insert doubles
+  // Dedupe before entering the database transaction. Last row wins, matching
+  // the historical client behavior while the RPC rejects any remaining dupes.
   const incoming = [];
   const seenIn = new Set();
   for (const r of [...(rows || [])].reverse()) {
-    const cid = String(r?.id || r?.client_id || "").trim();
+    const cid = String(r?.id || r?.client_id || "").trim().slice(0, 200);
     if (!cid || seenIn.has(cid)) continue;
     seenIn.add(cid);
     incoming.unshift({ ...r, id: cid, client_id: cid });
   }
-
-  const keepIds = new Set(incoming.map((r) => String(r.id)));
-
-  // Soft-delete anything not in the current list; if multiple events share
-  // the same client_id, keep one and delete the rest (fixes refresh doubles).
-  const seenClientKeep = new Set();
-  for (const ev of existing || []) {
-    const cid = ev.client_id ? String(ev.client_id) : "";
-    if (cid && keepIds.has(cid)) {
-      if (seenClientKeep.has(cid)) {
-        // duplicate client_id in DB — kill extras
-        await sb("events", {
-          method: "PATCH",
-          query: { id: `eq.${ev.id}` },
-          body: { deleted_at: new Date().toISOString() },
-          headers: { Prefer: "return=minimal" },
-        });
-        continue;
-      }
-      seenClientKeep.add(cid);
-      continue; // keep this one
-    }
-    // not in current day list (or missing client_id) → soft-delete
-    await sb("events", {
-      method: "PATCH",
-      query: { id: `eq.${ev.id}` },
-      body: { deleted_at: new Date().toISOString() },
-      headers: { Prefer: "return=minimal" },
-    });
-  }
-
-  // Re-fetch survivors after cleanup
-  const existing2 = await sb("events", {
-    query: {
-      select: "id,client_id",
-      user_email: `eq.${e}`,
-      day_key: `eq.${dayKey}`,
-      category_id: "eq.food",
-      deleted_at: "is.null",
-    },
-  });
-  const byClient = new Map(
-    (existing2 || []).filter((x) => x.client_id).map((x) => [String(x.client_id), x])
-  );
-
-  for (const row of incoming) {
-    const clientId = String(row.id || row.client_id || "");
-    if (!clientId) continue;
+  const rpcRows = incoming.map((row) => {
     const payload = foodRowToPayload(row);
-    const title = payload.label || "Food";
-    const measures = measuresFromFoodRow(row);
-
-    // ensure unknown measures exist
-    for (const m of measures) {
-      try {
-        await sbRpc("ensure_measure", {
-          p_id: m.measure_id,
-          p_label: m.measure_id.replace(/_/g, " "),
-          p_unit: m.unit || "",
-          p_group: "other",
-        });
-      } catch {
-        /* catalog may already have it */
-      }
-    }
-
-    let eventId;
-    const prev = byClient.get(clientId);
-    if (prev) {
-      eventId = prev.id;
-      await sb("events", {
-        method: "PATCH",
-        query: { id: `eq.${eventId}` },
-        body: {
-          title,
-          payload,
-          raw_text: rawText || null,
-          deleted_at: null,
-          occurred_at: row.occurred_at || undefined,
-        },
-        headers: { Prefer: "return=minimal" },
-      });
-      // wipe old measures
-      await sb("event_measures", {
-        method: "DELETE",
-        query: { event_id: `eq.${eventId}` },
-        headers: { Prefer: "return=minimal" },
-      });
-    } else {
-      const created = await sb("events", {
-        method: "POST",
-        body: {
-          user_email: e,
-          category_id: "food",
-          day_key: dayKey,
-          title,
-          raw_text: rawText || null,
-          source: "chat",
-          payload,
-          client_id: clientId,
-          occurred_at: row.occurred_at || new Date().toISOString(),
-        },
-      });
-      eventId = created?.[0]?.id;
-    }
-
-    if (!eventId || !measures.length) continue;
-    await sb("event_measures", {
-      method: "POST",
-      body: measures.map((m) => ({
-        event_id: eventId,
-        user_email: e,
-        day_key: dayKey,
-        measure_id: m.measure_id,
-        value: m.value,
-        unit: m.unit || "",
-      })),
-      headers: { Prefer: "return=minimal" },
-    });
-  }
+    return {
+      id: row.id,
+      client_id: row.id,
+      title: String(payload.label || "Food").slice(0, 300),
+      payload,
+      occurred_at: row.occurred_at || null,
+      measures: measuresFromFoodRow(row),
+    };
+  });
 
   try {
-    await sbRpc("recompute_day_totals", { p_email: e, p_day: dayKey });
-  } catch {
-    /* non-fatal */
+    return await sbRpc("sync_food_day_atomic", {
+      p_email: e,
+      p_day: dayKey,
+      p_rows: rpcRows,
+      p_expected_revision: Number(expectedRevision),
+      p_raw_text: rawText ? String(rawText).slice(0, 4000) : null,
+      p_allow_clear: allowClear === true,
+    });
+  } catch (error) {
+    if (/stale_food_day_revision|food_day_revision_required/i.test(String(error?.message))) {
+      error.code = /stale/i.test(String(error?.message))
+        ? "stale_food_day_revision"
+        : "food_day_revision_required";
+      error.status = 409;
+      error.message = "This food day changed somewhere else. Reload it and try again.";
+    }
+    throw error;
   }
-
-  return { ok: true, day: dayKey, count: incoming.length };
 }
 
-export async function loadFoodDay(email, dayKey) {
-  const e = String(email).toLowerCase();
-  const events = await sb("events", {
-    query: {
-      select: "id,client_id,title,payload,occurred_at,raw_text",
-      user_email: `eq.${e}`,
-      day_key: `eq.${dayKey}`,
-      category_id: "eq.food",
-      deleted_at: "is.null",
-      order: "occurred_at.asc",
-    },
-  });
-
+function foodRowsFromEvents(events) {
   // Collapse only true DB glitches: multiple events with the same client_id.
   // Same shake logged twice = two client_ids = both kept.
   const byKey = new Map();
@@ -765,9 +749,224 @@ export async function loadFoodDay(email, dayKey) {
   return Array.from(byKey.values());
 }
 
+export async function loadFoodDay(email, dayKey) {
+  const e = String(email).toLowerCase();
+  const events = await sb("events", {
+    query: {
+      select: "id,client_id,title,payload,occurred_at,raw_text",
+      user_email: `eq.${e}`,
+      day_key: `eq.${dayKey}`,
+      category_id: "eq.food",
+      deleted_at: "is.null",
+      order: "occurred_at.asc",
+    },
+  });
+  return foodRowsFromEvents(events);
+}
+
+export async function loadFoodDaySnapshot(email, dayKey) {
+  const e = String(email || "").trim().toLowerCase();
+  const snapshot = await sbRpc("load_food_day_snapshot", {
+    p_email: e,
+    p_day: dayKey,
+  });
+  const revision = Number(snapshot?.revision);
+  return {
+    rows: foodRowsFromEvents(Array.isArray(snapshot?.events) ? snapshot.events : []),
+    revision: Number.isSafeInteger(revision) && revision >= 0 ? revision : 0,
+  };
+}
+
 /**
  * Log a non-food event (exercise, steps, body metric, note, custom).
  */
+function eventWriteError(code, message, status = 400) {
+  const error = new Error(message);
+  error.code = code;
+  error.status = status;
+  return error;
+}
+
+function boundedText(value, max, fallback = "") {
+  const text = String(value ?? "").trim();
+  return (text || fallback).slice(0, max);
+}
+
+function eventIdentifier(value, fallback, max, code) {
+  const normalized = String(value ?? fallback ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (!normalized || normalized.length > max) {
+    throw eventWriteError(code, "A valid identifier is required.");
+  }
+  return normalized;
+}
+
+function validDayKey(value) {
+  const day = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  const parsed = new Date(`${day}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== day) {
+    return null;
+  }
+  if (day < "1900-01-01" || day > "2200-12-31") return null;
+  return day;
+}
+
+function jsonByteLength(value) {
+  let encoded;
+  try {
+    encoded = JSON.stringify(value);
+  } catch {
+    throw eventWriteError("invalid_event_payload", "Event data must be valid JSON.");
+  }
+  if (encoded === undefined) {
+    throw eventWriteError("invalid_event_payload", "Event data must be valid JSON.");
+  }
+  return Buffer.byteLength(encoded, "utf8");
+}
+
+export function normalizeEventWrite(email, input = {}) {
+  const e = String(email || "").trim().toLowerCase();
+  if (!e || e.length > 320 || !e.includes("@")) {
+    throw eventWriteError("invalid_event_account", "A valid account is required.");
+  }
+
+  const categoryId = eventIdentifier(
+    input.categoryId,
+    "custom",
+    80,
+    "invalid_event_category"
+  );
+  if (categoryId === "food") {
+    throw eventWriteError(
+      "invalid_event_category",
+      "Food entries must use the food ledger transaction."
+    );
+  }
+  const categoryLabel = boundedText(
+    input.categoryLabel,
+    120,
+    categoryId.replace(/_/g, " ")
+  );
+  const categoryKind = eventIdentifier(
+    input.categoryKind,
+    "custom",
+    32,
+    "invalid_event_kind"
+  );
+  const title = boundedText(input.title, 300, categoryLabel);
+  const rawText = input.rawText == null ? null : boundedText(input.rawText, 4000);
+  const day = validDayKey(input.dayKey || dayKeyFor());
+  if (!day) throw eventWriteError("invalid_event_day", "A valid event day is required.");
+
+  let occurredAt = null;
+  if (input.occurredAt != null && String(input.occurredAt).trim()) {
+    const occurred = new Date(input.occurredAt);
+    if (
+      Number.isNaN(occurred.getTime()) ||
+      occurred.getUTCFullYear() < 1900 ||
+      occurred.getUTCFullYear() > 2200
+    ) {
+      throw eventWriteError(
+        "invalid_event_timestamp",
+        "A valid event timestamp is required."
+      );
+    }
+    occurredAt = occurred.toISOString();
+  }
+
+  const payload = input.payload ?? {};
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw eventWriteError("invalid_event_payload", "Event data must be an object.");
+  }
+  if (jsonByteLength(payload) > 65536) {
+    throw eventWriteError("event_payload_too_large", "Event data is too large.");
+  }
+
+  if (!Array.isArray(input.measures)) {
+    throw eventWriteError("invalid_event_measures", "Event measures must be an array.");
+  }
+  if (input.measures.length > 100) {
+    throw eventWriteError(
+      "too_many_event_measures",
+      "An event can contain at most 100 measures."
+    );
+  }
+
+  const seenMeasures = new Set();
+  const measures = input.measures.map((measure) => {
+    if (!measure || typeof measure !== "object" || Array.isArray(measure)) {
+      throw eventWriteError("invalid_event_measure", "Each measure must be an object.");
+    }
+    const measureId = eventIdentifier(
+      measure.measure_id,
+      "",
+      80,
+      "invalid_measure_id"
+    );
+    if (seenMeasures.has(measureId)) {
+      throw eventWriteError(
+        "duplicate_measure_id",
+        `Measure ${measureId} was included more than once.`
+      );
+    }
+    seenMeasures.add(measureId);
+
+    if (measure.value === null || measure.value === "") {
+      throw eventWriteError("invalid_measure_value", "Each measure needs a number.");
+    }
+    const value = Number(measure.value);
+    if (!Number.isFinite(value) || Math.abs(value) > 1e12) {
+      throw eventWriteError("invalid_measure_value", "Each measure needs a finite number.");
+    }
+
+    return {
+      measure_id: measureId,
+      label: boundedText(measure.label, 120, measureId.replace(/_/g, " ")),
+      value,
+      unit: boundedText(measure.unit, 32),
+      group: eventIdentifier(measure.group, "other", 32, "invalid_measure_group"),
+    };
+  });
+
+  const requestedClientId = String(input.clientId ?? "").trim();
+  if (requestedClientId.length > 200) {
+    throw eventWriteError(
+      "invalid_event_client_id",
+      "The event request ID is too long."
+    );
+  }
+  const source = eventIdentifier(input.source, "chat", 32, "invalid_event_source");
+  let clientId = requestedClientId;
+  if (!clientId && source === "onboarding") {
+    clientId = `onboarding:${categoryId}:starting`;
+  }
+  if (!clientId) {
+    throw eventWriteError(
+      "event_client_id_required",
+      "A stable event request ID is required."
+    );
+  }
+
+  return {
+    email: e,
+    categoryId,
+    categoryLabel,
+    categoryKind,
+    title,
+    rawText,
+    day,
+    occurredAt,
+    payload,
+    measures,
+    clientId,
+    source,
+  };
+}
+
 export async function logEvent(email, {
   categoryId = "custom",
   title,
@@ -781,115 +980,65 @@ export async function logEvent(email, {
   categoryLabel,
   categoryKind,
 }) {
-  await ensureProfile(email);
-  const e = String(email).toLowerCase();
-  const day = dayKey || dayKeyFor();
+  const event = normalizeEventWrite(email, {
+    categoryId,
+    title,
+    rawText,
+    dayKey,
+    occurredAt,
+    payload,
+    measures,
+    clientId,
+    source,
+    categoryLabel,
+    categoryKind,
+  });
+  await ensureProfile(event.email);
 
-  try {
-    await sbRpc("ensure_category", {
-      p_id: categoryId,
-      p_label: categoryLabel || categoryId,
-      p_kind: categoryKind || "custom",
-    });
-  } catch {
-    /* ok */
-  }
-
-  for (const m of measures) {
-    try {
-      await sbRpc("ensure_measure", {
-        p_id: m.measure_id,
-        p_label: (m.label || m.measure_id).replace(/_/g, " "),
-        p_unit: m.unit || "",
-        p_group: m.group || "other",
-      });
-    } catch {
-      /* ok */
-    }
-  }
-
-  let eventId;
-  if (clientId) {
-    const existing = await sb("events", {
-      query: {
-        select: "id",
-        user_email: `eq.${e}`,
-        client_id: `eq.${clientId}`,
-        limit: "1",
-      },
-    });
-    if (existing?.[0]?.id) {
-      eventId = existing[0].id;
-      await sb("events", {
-        method: "PATCH",
-        query: { id: `eq.${eventId}` },
-        body: {
-          category_id: categoryId,
-          day_key: day,
-          title: title || categoryId,
-          raw_text: rawText || null,
-          payload,
-          source,
-          deleted_at: null,
-          occurred_at: occurredAt || new Date().toISOString(),
-        },
-        headers: { Prefer: "return=minimal" },
-      });
-      await sb("event_measures", {
-        method: "DELETE",
-        query: { event_id: `eq.${eventId}` },
-        headers: { Prefer: "return=minimal" },
-      });
-    }
-  }
-
-  if (!eventId) {
-    const created = await sb("events", {
-      method: "POST",
-      body: {
-        user_email: e,
-        category_id: categoryId,
-        day_key: day,
-        title: title || categoryId,
-        raw_text: rawText || null,
-        payload,
-        source,
-        client_id: clientId || null,
-        occurred_at: occurredAt || new Date().toISOString(),
-      },
-    });
-    eventId = created?.[0]?.id;
-  }
-
-  if (eventId && measures.length) {
-    await sb("event_measures", {
-      method: "POST",
-      body: measures.map((m) => ({
-        event_id: eventId,
-        user_email: e,
-        day_key: day,
-        measure_id: m.measure_id,
-        value: Number(m.value) || 0,
-        unit: m.unit || "",
-      })),
-      headers: { Prefer: "return=minimal" },
-    });
-  }
-
-  try {
-    await sbRpc("recompute_day_totals", { p_email: e, p_day: day });
-  } catch {
-    /* ok */
+  const result = await sbRpc("log_event_atomic", {
+    p_email: event.email,
+    p_category_id: event.categoryId,
+    p_category_label: event.categoryLabel,
+    p_category_kind: event.categoryKind,
+    p_title: event.title,
+    p_raw_text: event.rawText,
+    p_day: event.day,
+    p_occurred_at: event.occurredAt,
+    p_payload: event.payload,
+    p_measures: event.measures,
+    p_client_id: event.clientId,
+    p_source: event.source,
+  });
+  if (
+    !result ||
+    result.ok !== true ||
+    typeof result.event_id !== "string" ||
+    result.event_id.length === 0 ||
+    result.day !== event.day ||
+    typeof result.created !== "boolean"
+  ) {
+    throw eventWriteError(
+      "event_write_unverified",
+      "The event could not be verified as saved.",
+      502
+    );
   }
 
   // Keep life graph nodes warm for mind-map later
-  try {
-    await touchLifeNode(e, categoryKind || categoryId || "custom", title || categoryId, day);
-  } catch {
-    /* optional */
+  if (result.created === true) {
+    try {
+      await touchLifeNode(
+        event.email,
+        event.categoryKind || event.categoryId,
+        event.title,
+        event.day
+      );
+    } catch {
+      /* optional */
+    }
   }
 
-  return { ok: true, event_id: eventId, day };
+  return result;
 }
 
 function slugify(s) {
@@ -1173,6 +1322,7 @@ export async function updateUserGoals(email, patch = {}) {
     prefs.onboarding && typeof prefs.onboarding === "object"
       ? { ...prefs.onboarding }
       : { complete: true };
+  assertAdultOnboarding(onboarding);
   const prevGoals =
     onboarding.goals && typeof onboarding.goals === "object"
       ? { ...onboarding.goals }
@@ -1206,7 +1356,8 @@ export async function updateUserGoals(email, patch = {}) {
     return Number.isFinite(v) ? Math.round(v) : null;
   };
   if (n(patch.kcal) != null) {
-    goals.kcal = Math.max(800, Math.min(12000, n(patch.kcal)));
+    const floor = calorieFloor(onboarding.sex);
+    goals.kcal = Math.max(floor, Math.min(12000, n(patch.kcal)));
     onboarding.kcal_confirmed = goals.kcal;
   }
   if (n(patch.protein) != null) goals.protein = Math.max(0, Math.min(400, n(patch.protein)));
@@ -1227,12 +1378,7 @@ export async function updateUserGoals(email, patch = {}) {
   goals.updated_via = "chat";
 
   onboarding.goals = goals;
-  prefs.onboarding = onboarding;
-  await sb("profiles", {
-    method: "PATCH",
-    query: { email: `eq.${e}` },
-    body: { prefs, updated_at: new Date().toISOString() },
-  });
+  await mergeProfilePrefs(e, { onboarding });
   return { goals, eating_style: onboarding.eating_style || null, onboarding };
 }
 
@@ -1286,17 +1432,7 @@ export async function saveUserLayout(email, raw = {}) {
 
   const layout = { order, sizes, updated_at: new Date().toISOString() };
 
-  const profile = await getProfile(e);
-  const prefs =
-    profile?.prefs && typeof profile.prefs === "object" ? { ...profile.prefs } : {};
-  prefs.layout = layout;
-
-  await sb("profiles", {
-    method: "PATCH",
-    query: { email: `eq.${e}` },
-    body: { prefs, updated_at: new Date().toISOString() },
-    headers: { Prefer: "return=minimal" },
-  });
+  await mergeProfilePrefs(e, { layout });
   return layout;
 }
 
@@ -1379,17 +1515,7 @@ export async function saveUserBoxes(email, list = []) {
     if (boxes.length >= 20) break;
   }
 
-  const profile = await getProfile(e);
-  const prefs =
-    profile?.prefs && typeof profile.prefs === "object" ? { ...profile.prefs } : {};
-  prefs.boxes = boxes;
-
-  await sb("profiles", {
-    method: "PATCH",
-    query: { email: `eq.${e}` },
-    body: { prefs, updated_at: new Date().toISOString() },
-    headers: { Prefer: "return=minimal" },
-  });
+  await mergeProfilePrefs(e, { boxes });
   return boxes;
 }
 
@@ -1509,17 +1635,7 @@ export async function saveUserTheme(email, raw = {}) {
   if (raw.density === "compact" || raw.density === "cozy") theme.density = raw.density;
   if (raw.compact === true) theme.density = "compact";
 
-  const profile = await getProfile(e);
-  const prefs =
-    profile?.prefs && typeof profile.prefs === "object" ? { ...profile.prefs } : {};
-  prefs.theme = theme;
-
-  await sb("profiles", {
-    method: "PATCH",
-    query: { email: `eq.${e}` },
-    body: { prefs, updated_at: new Date().toISOString() },
-    headers: { Prefer: "return=minimal" },
-  });
+  await mergeProfilePrefs(e, { theme });
   return theme;
 }
 
@@ -1613,6 +1729,21 @@ export async function findSavedFood(email, nameOrKey) {
   return null;
 }
 
+export async function findSavedFoodById(email, id) {
+  const e = String(email || "").trim().toLowerCase();
+  const savedId = String(id || "").trim();
+  if (!e || !savedId) return null;
+  const rows = await sb("saved_foods", {
+    query: {
+      select: "*",
+      user_email: `eq.${e}`,
+      id: `eq.${savedId}`,
+      limit: "1",
+    },
+  });
+  return rows?.[0] || null;
+}
+
 export async function upsertSavedFood(email, food) {
   await ensureProfile(email);
   const e = String(email).toLowerCase();
@@ -1631,6 +1762,10 @@ export async function upsertSavedFood(email, food) {
     throw err;
   }
 
+  const hasNumericValue = (x) => {
+    if (x == null || x === "") return false;
+    return Number.isFinite(Number(x));
+  };
   const n = (x) => {
     const v = Number(x);
     return Number.isFinite(v) ? v : 0;
@@ -1638,6 +1773,12 @@ export async function upsertSavedFood(email, food) {
   // Full dump: ingredients list, micros, vitamins, net carbs, label notes → extras JSON
   const extrasIn =
     food.extras && typeof food.extras === "object" ? { ...food.extras } : {};
+  const incomingKnown = new Set(
+    Array.isArray(extrasIn.known_nutrients)
+      ? extrasIn.known_nutrients.map((key) => String(key).trim()).filter(Boolean)
+      : []
+  );
+  delete extrasIn.known_nutrients;
   if (food.ingredients_list || food.ingredients_detail) {
     extrasIn.ingredients_list =
       food.ingredients_list || food.ingredients_detail;
@@ -1684,6 +1825,33 @@ export async function upsertSavedFood(email, food) {
   if (Object.keys(flatMicros).length) {
     extrasIn.nutrients = { ...(extrasIn.nutrients || {}), ...flatMicros };
   }
+  const nutrientInput =
+    extrasIn.nutrients && typeof extrasIn.nutrients === "object"
+      ? extrasIn.nutrients
+      : {};
+  const sourceValue = (key) => food[key] ?? nutrientInput[key];
+  const knownNutrients = new Set();
+  for (const key of [
+    "kcal",
+    "protein",
+    "fat",
+    "carbs",
+    "fiber",
+    "sugars",
+    "potassium",
+    "magnesium",
+    "sodium",
+    "net_carbs",
+    ...Object.keys(nutrientInput),
+  ]) {
+    if (incomingKnown.has(key) || hasNumericValue(sourceValue(key))) {
+      knownNutrients.add(key);
+    }
+  }
+  // The numeric saved_foods columns predate nutrient-knownness and are NOT
+  // NULL. Keep their compatibility zeroes in storage, but use this marker to
+  // distinguish a measured zero from data the source never supplied.
+  extrasIn.known_nutrients = Array.from(knownNutrients).slice(0, 200);
   // Keep a human-readable ingredients string
   let ingredientsText = food.ingredients || food.recipe || null;
   if (!ingredientsText && Array.isArray(extrasIn.ingredients_list)) {
@@ -1705,9 +1873,9 @@ export async function upsertSavedFood(email, food) {
     carbs: n(food.carbs),
     fiber: n(food.fiber),
     sugars: n(food.sugars),
-    potassium: n(food.potassium ?? extrasIn.nutrients?.potassium),
-    magnesium: n(food.magnesium ?? extrasIn.nutrients?.magnesium),
-    sodium: n(food.sodium ?? extrasIn.nutrients?.sodium),
+    potassium: n(sourceValue("potassium")),
+    magnesium: n(sourceValue("magnesium")),
+    sodium: n(sourceValue("sodium")),
     grams: food.grams != null ? n(food.grams) : null,
     extras: extrasIn,
     updated_at: new Date().toISOString(),
@@ -1742,10 +1910,24 @@ export async function deleteSavedFood(email, nameOrKey) {
   return found;
 }
 
+export async function deleteSavedFoodById(email, id) {
+  const found = await findSavedFoodById(email, id);
+  if (!found) return null;
+  await sb("saved_foods", {
+    method: "DELETE",
+    query: {
+      id: `eq.${found.id}`,
+      user_email: `eq.${String(email || "").trim().toLowerCase()}`,
+    },
+    headers: { Prefer: "return=minimal" },
+  });
+  return found;
+}
+
 /** Build a log row from a saved food (amount = number of servings). */
 export function rowFromSavedFood(saved, amount = 1) {
   const a = Number(amount) > 0 ? Number(amount) : 1;
-  const n = (x) => Math.round((Number(x) || 0) * a * 10) / 10;
+  const n = (x) => Math.round(Number(x) * a * 10) / 10;
   const label =
     a === 1
       ? saved.name
@@ -1753,9 +1935,32 @@ export function rowFromSavedFood(saved, amount = 1) {
   const extras =
     saved.extras && typeof saved.extras === "object" ? saved.extras : {};
   const micros = extras.nutrients && typeof extras.nutrients === "object" ? extras.nutrients : {};
+  const marker = Array.isArray(extras.known_nutrients)
+    ? extras.known_nutrients.map((key) => String(key))
+    : null;
+  const known = marker
+    ? new Set(marker)
+    : new Set([
+        "kcal",
+        "protein",
+        "fat",
+        "carbs",
+        ...["fiber", "sugars", "potassium", "magnesium", "sodium", "net_carbs"].filter(
+          (key) => Number(saved[key] ?? extras[key] ?? micros[key]) !== 0
+        ),
+        ...Object.entries(micros)
+          .filter(([, value]) => Number.isFinite(Number(value)) && Number(value) !== 0)
+          .map(([key]) => key),
+      ]);
+  const scaleKnown = (key, value) => {
+    if (!known.has(key) || value == null || value === "") return undefined;
+    const number = Number(value);
+    return Number.isFinite(number) ? n(number) : undefined;
+  };
   const scaledMicros = {};
   for (const [k, v] of Object.entries(micros)) {
-    scaledMicros[k] = n(v);
+    const scaled = scaleKnown(k, v);
+    if (scaled !== undefined) scaledMicros[k] = scaled;
   }
   return {
     id: crypto.randomUUID(),
@@ -1764,21 +1969,22 @@ export function rowFromSavedFood(saved, amount = 1) {
     saved_food_id: saved.id,
     fdcId: null,
     grams: saved.grams != null ? n(saved.grams) : null,
-    kcal: n(saved.kcal),
-    protein: n(saved.protein),
-    fat: n(saved.fat),
-    carbs: n(saved.carbs),
-    fiber: n(saved.fiber),
-    sugars: n(saved.sugars),
-    potassium: n(saved.potassium || micros.potassium),
-    magnesium: n(saved.magnesium || micros.magnesium),
-    sodium: n(saved.sodium || micros.sodium),
+    kcal: scaleKnown("kcal", saved.kcal),
+    protein: scaleKnown("protein", saved.protein),
+    fat: scaleKnown("fat", saved.fat),
+    carbs: scaleKnown("carbs", saved.carbs),
+    fiber: scaleKnown("fiber", saved.fiber),
+    sugars: scaleKnown("sugars", saved.sugars),
+    potassium: scaleKnown("potassium", saved.potassium ?? micros.potassium),
+    magnesium: scaleKnown("magnesium", saved.magnesium ?? micros.magnesium),
+    sodium: scaleKnown("sodium", saved.sodium ?? micros.sodium),
     // Full detail for ledger / future mineral rings
     extras: {
       ...extras,
       nutrients: scaledMicros,
+      known_nutrients: Array.from(known),
       net_carbs:
-        extras.net_carbs != null ? n(extras.net_carbs) : undefined,
+        scaleKnown("net_carbs", extras.net_carbs),
       ingredients: saved.ingredients || extras.ingredients_list || null,
     },
   };
@@ -1786,7 +1992,6 @@ export function rowFromSavedFood(saved, amount = 1) {
 
 /* ——— Chat conversations + permanent memory notes ——— */
 
-const MEMORY_NOTES_MAX = 40;
 const CHAT_LIST_LIMIT = 50;
 
 export async function listConversations(email, { limit = CHAT_LIST_LIMIT } = {}) {
@@ -1875,11 +2080,13 @@ export async function listMessages(email, conversationId, { limit = 500 } = {}) 
           select: "id,role,content,created_at",
           conversation_id: `eq.${id}`,
           user_email: `eq.${e}`,
-          order: "created_at.asc",
+          // LIMIT must be applied to newest rows, then we reverse locally for
+          // the model's normal chronological conversation order.
+          order: "created_at.desc,id.desc",
           limit: String(limit),
         },
       })) || [];
-    return Array.isArray(rows) ? rows : [];
+    return messagesInChronologicalOrder(rows);
   } catch {
     return [];
   }
@@ -1917,33 +2124,16 @@ export async function appendMessage(email, conversationId, role, content) {
 export async function buildChatContextForModel(email, conversationId, { maxMessages = 120 } = {}) {
   const conv = await getConversation(email, conversationId);
   const all = await listMessages(email, conversationId, { limit: 800 });
-  let summary = conv?.summary || null;
+  const context = selectChatContextWindow(all, { maxMessages });
 
-  // Auto-compact if too many messages: summarize older half into summary field
-  if (all.length > maxMessages + 40) {
-    const cut = all.length - maxMessages;
-    const older = all.slice(0, cut);
-    const recent = all.slice(cut);
-    const blob = older
-      .map((m) => `${m.role}: ${String(m.content || "").slice(0, 400)}`)
-      .join("\n")
-      .slice(0, 12000);
-    const newSummary = [summary, "Earlier conversation:", blob]
-      .filter(Boolean)
-      .join("\n")
-      .slice(0, 14000);
-    summary = newSummary;
-    await touchConversation(email, conversationId, { summary });
-    return { conversation: conv, summary, messages: recent, compacted: true, total: all.length };
+  // Rebuild from source messages instead of recursively appending the stored
+  // summary. This also cleans old duplicated summaries on the next request.
+  if ((conv?.summary || null) !== context.summary) {
+    await touchConversation(email, conversationId, { summary: context.summary });
   }
-
-  const messages = all.length > maxMessages ? all.slice(-maxMessages) : all;
   return {
     conversation: conv,
-    summary,
-    messages,
-    compacted: false,
-    total: all.length,
+    ...context,
   };
 }
 
@@ -1955,10 +2145,7 @@ export async function getMemoryNotes(email) {
     const prefs =
       profile?.prefs && typeof profile.prefs === "object" ? profile.prefs : {};
     const notes = Array.isArray(prefs.memory_notes) ? prefs.memory_notes : [];
-    return notes
-      .map((n) => String(n || "").trim())
-      .filter(Boolean)
-      .slice(0, MEMORY_NOTES_MAX);
+    return normalizeMemoryNotes(notes);
   } catch {
     return [];
   }
@@ -1967,42 +2154,96 @@ export async function getMemoryNotes(email) {
 export async function saveMemoryNotes(email, notes) {
   const e = String(email || "").toLowerCase();
   if (!e) throw new Error("email required");
-  const list = (Array.isArray(notes) ? notes : [])
-    .map((n) => String(n || "").trim().slice(0, 400))
-    .filter(Boolean)
-    .slice(0, MEMORY_NOTES_MAX);
-  const profile = await getProfile(e);
-  const prefs =
-    profile?.prefs && typeof profile.prefs === "object" ? { ...profile.prefs } : {};
-  prefs.memory_notes = list;
-  await sb("profiles", {
-    method: "PATCH",
-    query: { email: `eq.${e}` },
-    body: { prefs, updated_at: new Date().toISOString() },
-    headers: { Prefer: "return=minimal" },
-  });
+  const list = normalizeMemoryNotes(notes);
+  await mergeProfilePrefs(e, { memory_notes: list });
   return list;
 }
 
 export async function addMemoryNote(email, note) {
-  const text = String(note || "").trim();
-  if (!text) return getMemoryNotes(email);
-  const cur = await getMemoryNotes(email);
-  const next = [...cur.filter((n) => n.toLowerCase() !== text.toLowerCase()), text].slice(
-    -MEMORY_NOTES_MAX
-  );
-  return saveMemoryNotes(email, next);
+  const text = sanitizeMemoryNoteText(note);
+  if (!text) {
+    return { notes: await getMemoryNotes(email), changed: false };
+  }
+  const result = await sbRpc("mutate_memory_note", {
+    p_email: String(email || "").trim().toLowerCase(),
+    p_action: "add",
+    p_text: text,
+  });
+  return {
+    notes: normalizeMemoryNotes(result?.notes || []),
+    changed: result?.changed === true,
+  };
 }
 
 export async function removeMemoryNote(email, match) {
   const m = String(match || "").toLowerCase().trim();
-  if (!m) return getMemoryNotes(email);
-  const cur = await getMemoryNotes(email);
-  const next = cur.filter((n) => !n.toLowerCase().includes(m));
-  return saveMemoryNotes(email, next);
+  if (!m) {
+    return {
+      notes: await getMemoryNotes(email),
+      removed_count: 0,
+      changed: false,
+    };
+  }
+  const result = await sbRpc("mutate_memory_note", {
+    p_email: String(email || "").trim().toLowerCase(),
+    p_action: "remove",
+    p_text: m,
+  });
+  return {
+    notes: normalizeMemoryNotes(result?.notes || []),
+    removed_count: Math.max(0, Number(result?.removed_count) || 0),
+    changed: result?.changed === true,
+  };
 }
 
 /* ——— LLM usage metering (per user) ——— */
+
+function boundedEnvInteger(name, fallback, min, max) {
+  const value = Number(process.env[name]);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+export async function reserveLlmTurn(email) {
+  const e = String(email || "").trim().toLowerCase();
+  if (!e) throw new Error("email required");
+  const limits = {
+    p_reserved_tokens: boundedEnvInteger(
+      "CHAT_RESERVED_TOKENS_PER_TURN",
+      20_000,
+      1_000,
+      100_000
+    ),
+    p_minute_limit: boundedEnvInteger("CHAT_REQUESTS_PER_MINUTE", 10, 1, 120),
+    p_daily_request_limit: boundedEnvInteger(
+      "CHAT_DAILY_REQUEST_LIMIT",
+      200,
+      1,
+      5_000
+    ),
+    p_daily_token_budget: boundedEnvInteger(
+      "CHAT_DAILY_TOKEN_BUDGET",
+      2_000_000,
+      1_000,
+      1_000_000_000
+    ),
+  };
+  try {
+    return await sbRpc("reserve_llm_turn", { p_email: e, ...limits });
+  } catch (error) {
+    const message = String(error?.message || "");
+    if (/llm_(?:minute|daily)_limit_reached/i.test(message)) {
+      error.code = /minute/i.test(message)
+        ? "chat_rate_limit_reached"
+        : "chat_daily_limit_reached";
+      error.status = 429;
+      error.message = /minute/i.test(message)
+        ? "You're sending messages too quickly. Wait a moment and try again."
+        : "You've reached today's AI chat allowance. Try again tomorrow.";
+    }
+    throw error;
+  }
+}
 
 export async function logLlmUsage(email, usage = {}, meta = {}) {
   const e = String(email || "").toLowerCase();

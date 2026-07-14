@@ -2,7 +2,9 @@
  * Custom boxes — counters + AI chart boxes (line/bar/pie over any range).
  */
 (function () {
-  const LS_KEY = "bigbricey-boxes-v1";
+  const LEGACY_LS_KEY = "bigbricey-boxes-v1";
+  const LS_PREFIX = "bigbricey-boxes-v2-";
+  const QUARANTINE_KEY = "bigbricey-unassigned-boxes-v1";
   const MAX = 20;
   const CORE = new Set([
     "chat",
@@ -30,6 +32,26 @@
   let values = {}; // today counters
   let chartCache = {}; // id -> { days, series }
   let saveTimer = null;
+
+  function storageKey() {
+    try {
+      return window.BBAccountStorage?.key(LS_PREFIX, window.__ntUser?.email) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function quarantineLegacyPreference() {
+    try {
+      window.BBAccountStorage?.quarantineLegacyKey(
+        localStorage,
+        LEGACY_LS_KEY,
+        QUARANTINE_KEY
+      );
+    } catch {
+      /* local storage may be unavailable */
+    }
+  }
 
   function slug(s) {
     return String(s || "")
@@ -153,7 +175,8 @@
 
   function saveLocal() {
     try {
-      localStorage.setItem(LS_KEY, JSON.stringify(boxes));
+      const key = storageKey();
+      if (key) localStorage.setItem(key, JSON.stringify(boxes));
     } catch {
       /* */
     }
@@ -161,7 +184,9 @@
 
   function loadLocal() {
     try {
-      const raw = localStorage.getItem(LS_KEY);
+      const key = storageKey();
+      if (!key) return null;
+      const raw = localStorage.getItem(key);
       if (!raw) return null;
       return normalizeList(JSON.parse(raw));
     } catch {
@@ -740,6 +765,7 @@
   }
 
   function initBoxes() {
+    quarantineLegacyPreference();
     wire();
     const cloud = window.__ntUser?.boxes;
     const local = loadLocal();

@@ -1,5 +1,5 @@
-import { getAllowlist } from "./_auth.js";
-import { sb, supabaseConfig, ensureProfile } from "./_supabase.js";
+import { getAdminAllowlist, getAllowlist } from "./_auth.js";
+import { sb, sbRpc, supabaseConfig } from "./_supabase.js";
 
 const OWNER = "bigbricey@gmail.com";
 
@@ -7,23 +7,22 @@ export function isBootstrapAdmin(email) {
   const e = String(email || "").toLowerCase();
   if (!e) return false;
   if (e === OWNER) return true;
-  const allow = getAllowlist();
-  return allow.includes(e);
+  return getAdminAllowlist().includes(e);
 }
 
 /** Sync bootstrap only — use isMember for full check */
 export function isBootstrapAllowed(email) {
-  return isBootstrapAdmin(email);
+  const e = String(email || "").toLowerCase();
+  return Boolean(e) && (isBootstrapAdmin(e) || getAllowlist().includes(e));
 }
 
 export async function isMember(email) {
   const e = String(email || "").toLowerCase();
   if (!e) return false;
-  if (isBootstrapAdmin(e)) return true;
+  if (isBootstrapAllowed(e)) return true;
   if (!supabaseConfig().ok) {
-    // no DB: fall back to env allowlist only
-    const allow = getAllowlist();
-    return allow.length === 0 || allow.includes(e);
+    // Bootstrap addresses returned above; an empty allowlist must fail closed.
+    return false;
   }
   try {
     const rows = await sb("allowed_users", {
@@ -31,7 +30,7 @@ export async function isMember(email) {
     });
     return Boolean(rows?.[0]);
   } catch {
-    return isBootstrapAdmin(e);
+    return isBootstrapAllowed(e);
   }
 }
 
@@ -54,10 +53,9 @@ export async function getMembership(email) {
   const e = String(email || "").toLowerCase();
   if (!e) return { member: false, admin: false };
   if (isBootstrapAdmin(e)) return { member: true, admin: true, role: "admin" };
+  if (isBootstrapAllowed(e)) return { member: true, admin: false, role: "member" };
   if (!supabaseConfig().ok) {
-    const allow = getAllowlist();
-    const ok = allow.length === 0 || allow.includes(e);
-    return { member: ok, admin: ok && allow.includes(e), role: ok ? "member" : null };
+    return { member: false, admin: false, role: null };
   }
   try {
     const rows = await sb("allowed_users", {
@@ -73,7 +71,11 @@ export async function getMembership(email) {
       joined_at: row.joined_at,
     };
   } catch {
-    return { member: isBootstrapAdmin(e), admin: isBootstrapAdmin(e) };
+    return {
+      member: isBootstrapAllowed(e),
+      admin: isBootstrapAdmin(e),
+      role: isBootstrapAdmin(e) ? "admin" : isBootstrapAllowed(e) ? "member" : null,
+    };
   }
 }
 
@@ -83,53 +85,36 @@ export async function redeemInvite(email, code, { name } = {}) {
     .trim()
     .toUpperCase()
     .replace(/\s+/g, "");
-  if (!e) throw new Error("email required");
-  if (!c) throw new Error("invite code required");
+  if (!e) {
+    const error = new Error("email required");
+    error.code = "email_required";
+    throw error;
+  }
+  if (!c) {
+    const error = new Error("invite code required");
+    error.code = "invite_required";
+    throw error;
+  }
   if (!supabaseConfig().ok) throw new Error("database not configured");
 
-  // already member?
-  if (await isMember(e)) {
-    return { ok: true, already: true, email: e };
-  }
-
-  const invites = await sb("invite_codes", {
-    query: { select: "*", code: `eq.${c}`, limit: "1" },
+  const result = await sbRpc("redeem_invite_atomic", {
+    p_email: e,
+    p_name: name || null,
+    p_code: c,
   });
-  const inv = invites?.[0];
-  if (!inv || !inv.active) {
-    const err = new Error("Invalid or inactive invite code");
-    err.code = "bad_invite";
-    throw err;
-  }
-  if (inv.max_uses != null && Number(inv.use_count) >= Number(inv.max_uses)) {
-    const err = new Error("This invite code is used up");
-    err.code = "invite_exhausted";
-    throw err;
-  }
+  if (result?.ok) return result;
 
-  await ensureProfile(e, { name: name || null });
-
-  await sb("allowed_users", {
-    method: "POST",
-    body: {
-      email: e,
-      name: name || null,
-      role: "member",
-      invite_code: c,
-      joined_at: new Date().toISOString(),
-    },
-    headers: { Prefer: "return=minimal,resolution=merge-duplicates" },
-  });
-
-  // bump use count
-  await sb("invite_codes", {
-    method: "PATCH",
-    query: { code: `eq.${c}` },
-    body: { use_count: Number(inv.use_count || 0) + 1 },
-    headers: { Prefer: "return=minimal" },
-  });
-
-  return { ok: true, email: e, code: c };
+  const codeOut = result?.error || "redeem_failed";
+  const messages = {
+    bad_invite: "Invalid or inactive invite code",
+    invite_exhausted: "This invite code is used up",
+    rate_limited: "Too many attempts. Wait 15 minutes and try again.",
+    invite_required: "Invite code required",
+  };
+  const error = new Error(messages[codeOut] || "Invite redemption failed");
+  error.code = codeOut;
+  error.retryAfter = Number(result?.retry_after_seconds) || null;
+  throw error;
 }
 
 export async function touchLastSeen(email) {

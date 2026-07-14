@@ -1,10 +1,10 @@
-# Invite code (friends & family)
+# Invite codes (friends & family)
 
-**Code:** `BRICESFAMILY`  
-(spaces optional — redeem uppercases and strips spaces)
+Invite codes are operational credentials. Do not put an active code in this
+public repository, documentation, screenshots, or client-side code.
 
-- Active in Supabase `invite_codes`
-- Old codes (`FITZONE-JOIN`, `BRICES-CREW-9K2M`) deactivated
-- Owner admin: `bigbricey@gmail.com` (no code needed)
+- Create and rotate active codes directly in Supabase.
+- Any code previously committed to GitHub must be considered public and disabled.
+- Owner access is controlled separately by the server-side admin allowlist.
 
-Updated: 2026-07-13
+Updated: 2026-07-14

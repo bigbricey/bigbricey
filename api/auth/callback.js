@@ -1,17 +1,34 @@
 import {
+  clearOAuthStateCookie,
   getAuthSecret,
+  sendJson,
   sessionCookie,
   signSession,
   siteUrl,
+  verifyOAuthState,
 } from "../_auth.js";
 import { isMember } from "../_members.js";
 import { ensureProfile, supabaseConfig } from "../_supabase.js";
+
+export function verifiedGoogleEmail(profile) {
+  if (!profile || profile.email_verified !== true) return null;
+  const email = String(profile.email || "").trim().toLowerCase();
+  return email || null;
+}
 
 export default async function handler(req, res) {
   try {
     const url = new URL(req.url, `https://${req.headers.host}`);
     const code = url.searchParams.get("code");
     const err = url.searchParams.get("error");
+    const state = url.searchParams.get("state");
+    res.setHeader("Set-Cookie", clearOAuthStateCookie());
+    if (!verifyOAuthState(req, state)) {
+      res.statusCode = 400;
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.end("Invalid or expired sign-in request. Please start sign-in again.");
+      return;
+    }
     if (err) {
       res.statusCode = 302;
       res.setHeader("Location", `/?error=${encodeURIComponent(err)}`);
@@ -25,9 +42,9 @@ export default async function handler(req, res) {
 
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-    if (!clientId || !clientSecret) {
+    if (!clientId || !clientSecret || !getAuthSecret()) {
       res.statusCode = 500;
-      res.end("Google OAuth not configured");
+      res.end("Sign-in is not configured.");
       return;
     }
 
@@ -45,25 +62,16 @@ export default async function handler(req, res) {
     });
     const tokenData = await tokenRes.json();
     if (!tokenRes.ok || !tokenData.access_token) {
-      res.statusCode = 502;
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ error: "token_exchange_failed", detail: tokenData }));
-      return;
+      return sendJson(res, 502, { error: "token_exchange_failed" });
     }
 
     const profileRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
       headers: { Authorization: `Bearer ${tokenData.access_token}` },
     });
     const profile = await profileRes.json();
-    const email = String(profile.email || "").toLowerCase();
+    const email = verifiedGoogleEmail(profile);
     if (!email) {
-      res.statusCode = 502;
-      res.end("No email from Google");
-      return;
-    }
-
-    if (!process.env.AUTH_SECRET && !getAuthSecret()) {
-      /* noop */
+      return sendJson(res, 502, { error: "google_email_not_verified" });
     }
 
     const token = signSession({
@@ -73,7 +81,7 @@ export default async function handler(req, res) {
       sub: profile.sub || null,
     });
 
-    res.setHeader("Set-Cookie", sessionCookie(token));
+    res.setHeader("Set-Cookie", [clearOAuthStateCookie(), sessionCookie(token)]);
 
     // Member → app. Not invited yet → join page (session kept so they can redeem).
     const member = await isMember(email);
@@ -100,7 +108,6 @@ export default async function handler(req, res) {
     );
     res.end();
   } catch (e) {
-    res.statusCode = 500;
-    res.end(String(e.message || e));
+    return sendJson(res, 500, { error: "sign_in_failed" });
   }
 }

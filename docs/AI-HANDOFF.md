@@ -21,7 +21,7 @@ Private multi-user **fitness / food / life data ledger** with a chat coach that 
 - Google OAuth + invite gate
 
 **Vision:** highly customizable private “room” / buddy home — **not** freeform HTML/JS injection. Named themes/scenes/actions only.  
-**Not ready:** kids/COPPA Family Mode, paid multi-tenant security bar (see open risks).
+**Not ready:** kids/COPPA Family Mode or self-serve paid launch (see remaining product work).
 
 **Brice rules (global):** he approves public/identity/money/signups; prefer shipping money-capable finished work; short answers unless he asks for detail; don’t load `AI-ARCHIVE-DO-NOT-AUTOLOAD` unless he asks.
 
@@ -40,8 +40,11 @@ Private multi-user **fitness / food / life data ledger** with a chat coach that 
 
 Key files:
 
-- `api/chat.js` — chat + actions executor  
-- `api/_llm.js` — OpenRouter + **DOMAIN_CONTRACT**  
+- `api/chat.js` — authenticated orchestration + action executor
+- `api/_buddy_prompt.js` — natural buddy system prompt
+- `api/_tool_contracts.js` — closed native-tool schemas
+- `api/_native_tool_loop.js` — verified tool-result truth layer
+- `api/_llm.js` — OpenRouter transport + **DOMAIN_CONTRACT**
 - `api/_supabase.js` — data layer  
 - `api/_capabilities.js` — capability catalog + SCENE_IDS  
 - `public/app.js` — main UI  
@@ -55,13 +58,16 @@ Key files:
 
 ### Correct design (current intent)
 
-1. User message → **LLM** (natural conversation + history).  
-2. Model may return **free text** (chat) **or** JSON `{ "reply", "actions": [...] }` when changing app state.  
-3. Server **shows the model’s text**. Never replace a good model answer with a canned menu.  
-4. Server **executes** validated actions only (`set_scene`, food, theme, etc.).  
-5. Optional thin fallback: clear “make it rain” apply if model forgot `set_scene`.
+1. Authenticated user message → **LLM first** with bounded history and app state.
+2. Ordinary conversation returns normal text. App reads/changes use OpenRouter's native tool calls.
+3. Every call is checked against a small closed schema; unknown tools/fields reject the entire batch.
+4. Destructive calls pause on a signed, call-bound confirmation.
+5. The server executes approved calls against account-scoped data. Food and other events use transactional PostgreSQL functions.
+6. A second model pass sees only verified tool-result envelopes. A success claim is never shown unless the executor produced a real receipt.
 
-### What went wrong (fixed same day)
+Do not restore pseudo-JSON action prompting or regex/menu interceptors. Regex scene handling is outage-only fallback, never the normal conversation path.
+
+### What went wrong (fixed)
 
 Earlier, regex **interceptors** answered before the LLM (scene lists, “are you there”, etc.), so the bot felt lobotomized.  
 Also: “ONLY valid JSON” + `extractJson` failure → discarded model text → canned  
@@ -69,7 +75,7 @@ Also: “ONLY valid JSON” + `extractJson` failure → discarded model text →
 
 **Fix commits (main):** through `05dd5b7` *Unlobotomize chat: free talk like Hermes…*  
 Domain contract rewritten: **normal Q&A allowed**; hard limits = no invent macros, no fake SaaS/Windows builds, no medical orders.  
-`parseModelChatResponse()`: free text → `{ reply: raw, actions: [] }`.
+The current implementation uses native provider tools instead of model-authored pseudo-JSON.
 
 ### Memory
 
@@ -88,20 +94,26 @@ Bug fixed earlier: `stop()` cleared `data-scene` so canvas stayed hidden.
 
 ---
 
-## Open risks (ChatGPT audit 2026-07-14 — still open unless marked)
+## Security/reliability repair (2026-07-14)
 
-**Urgent (do before paid users):**
+Implemented in migrations 009/010 and the matching API/frontend release:
 
-1. **`saved_foods` no RLS** in `migration_005_saved_foods.sql` — anon grants risk. Enable RLS + policies; revoke anon write/read.  
-2. **Local food keys date-only** (`public/app.js` `localKey`) — shared-browser account bleed if cloud empty uploads prior local. Namespace by user email/id.  
-3. **Invite code in public docs** (`docs/INVITE-CODE.md`) — treat as public; rotate + rate-limit redeem.  
-4. Empty `rows: []` POST can clear a day (`api/log.js` + `syncFoodDay`) — require explicit clear.  
-5. Weak action schema / confirmations for destructive AI actions.  
-6. OAuth `state` / fallback `AUTH_SECRET` string in code.  
-7. No CI/test culture; README outdated.  
-8. Child path: age clamped to 16 for BMR; not child-product ready.  
-9. “Low carb today” rewrites baseline goals (not day override).  
-10. Food scorer penalizes vegan/vegetarian text in `_lib.js`.
+- Saved-food and private helper tables deny browser roles; invite redemption is atomic and rate-limited; every previously published code is disabled.
+- Local food, theme, layout, scene, box, and conversation storage is account-scoped. Unattributed legacy browser data is quarantined, never auto-uploaded.
+- Empty food-day writes require an explicit clear. Food snapshots use revisions so stale tabs reload instead of overwriting newer data.
+- Food and non-food writes are transactional/idempotent, historical totals are repaired, and UI/chat success text follows the database receipt.
+- Destructive AI tools use signed confirmations; native tool inputs are strict and bounded.
+- OAuth uses cookie-bound random state, requires Google's boolean verified-email claim, and session signing fails closed without a strong secret.
+- Prompt/history/read results are bounded; paid model work has atomic per-user minute/day/token reservations.
+- Missing nutrients remain unknown instead of becoming zero.
+- Automated tests cover chat behavior, tools, auth/privacy, concurrency contracts, frontend account/day binding, and nutrient knownness.
+
+### Remaining product work (not release regressions)
+
+1. This is adult-only today. Do not market or onboard it as a child product until consent, privacy, and age-appropriate goal logic are designed.
+2. “Change my goals today” still changes the baseline profile; per-day goal overrides are a future feature.
+3. Home customization is curated themes/scenes/layout today, not arbitrary generated backgrounds, avatar outfits, or user HTML/CSS/JS.
+4. Billing, self-serve signup, account deletion/export policy, support operations, and production monitoring still need a deliberate commercial launch pass.
 
 **Product direction:** Buddy Home (room, avatar, outfits) as curated layers — not MLP trademark preset; original pastel aesthetic if needed.
 
@@ -111,12 +123,16 @@ Bug fixed earlier: `stop()` cleared `data-scene` so canvas stayed hidden.
 
 ## Deploy
 
-```bash
-cd /Users/bigbricey/Projects/nutri-table
-# ensure .vercel points at project bigbricey
-git push origin main
-npx vercel --prod --yes
-```
+Production database status on 2026-07-14:
+
+- Migrations 009 and 010 are applied.
+- All previously published invite codes are disabled. The active private beta code is stored in the Mac Keychain under `BigBricey Private Beta Invite`, never in Git.
+- Post-migration verification preserved 47 events and 394 measures, rebuilt 10 total rows, found all 7 required RPCs, and confirmed browser roles cannot execute them or read saved foods.
+- The full automated suite passes: 131 tests.
+
+For a fresh database, preserve this order: migration 009, private invite creation outside Git, then migration 010. Deploy only to the Vercel project named `bigbricey` and smoke-test the signed-in app after every server release.
+
+For local development use `npm run dev` (Vercel's local runtime), not the legacy `server.js` parser harness.
 
 Env (Vercel): `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, Supabase, Google OAuth, `AUTH_SECRET`, etc.
 

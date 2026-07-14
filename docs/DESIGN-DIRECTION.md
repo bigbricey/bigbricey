@@ -1,7 +1,7 @@
 # NutriTable design direction (living notes)
 
 **Updated:** 2026-07-13  
-**Invite code:** `BRICESFAMILY` (see INVITE-CODE.md)
+**Invite access:** active codes stay out of the repository (see INVITE-CODE.md)
 
 ## Product
 Private lifelong health ledger at fitnessfixzone.com. Chat-first logging (food, workouts, steps, watches). Cloud per-user privacy. Invite-only.

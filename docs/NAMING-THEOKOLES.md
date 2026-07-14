@@ -27,4 +27,4 @@
 - Before big public monetization: trademark search + attorney
 
 ## Invite (unrelated but project-critical)
-- Code: **BRICESFAMILY** (see INVITE-CODE.md)
+- Codes are managed outside the public repository (see INVITE-CODE.md)

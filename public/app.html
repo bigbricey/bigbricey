@@ -15,7 +15,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
   <title>BigBricey</title>
-  <link rel="stylesheet" href="/styles.css?v=20260713c" />
+  <link rel="stylesheet" href="/styles.css?v=20260714b" />
 </head>
 <body class="tab-today">
   <div class="app-shell">
@@ -84,17 +84,16 @@
           </div>
           <div id="chatHistoryList" class="chat-history-list"></div>
         </div>
-        <div id="chatLog" class="chat-log" aria-live="polite">
-          <div class="chat-bubble bot welcome">
-            <div class="chat-who">BigBricey</div>
-            <div class="chat-text">I’m here to build your day. Tell me what you ate, a workout, steps, or a goal — e.g. “1 lb bacon”, “50 push-ups”, “watch potassium under 3500”. I remember this chat. Say “remember that I like …” for permanent notes. App ideas → product backlog.</div>
-          </div>
+        <div id="chatLog" class="chat-log" role="log" aria-live="polite" aria-relevant="additions text" aria-atomic="false" aria-busy="false" aria-label="Conversation with BigBricey" tabindex="0">
+          <div class="chat-empty">New conversation</div>
         </div>
+        <div id="chatStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
         <div class="composer">
+          <label class="sr-only" for="foodInput">Message BigBricey</label>
           <textarea id="foodInput" rows="2" enterkeyhint="send" autocomplete="off"
-            placeholder="What did you do or eat?"
+            placeholder="Message BigBricey…"
             autofocus></textarea>
-          <button id="addBtn" type="button">Send</button>
+          <button id="addBtn" type="button" aria-label="Send message">Send</button>
         </div>
         <p id="addMsg" class="msg" hidden></p>
       </section>
@@ -630,10 +629,13 @@
       <button type="button" class="tab" data-tab="you"><span class="tab-ico">☺</span><span>You</span></button>
     </nav>
   </div>
-  <script src="/theme.js?v=20260713c"></script>
+  <script src="/account-storage.js?v=20260714a"></script>
+  <script src="/theme.js?v=20260714a"></script>
   <script src="/scenes.js?v=20260713c"></script>
   <script src="/layout.js?v=20260713c"></script>
   <script src="/boxes.js?v=20260713c"></script>
-  <script src="/app.js?v=20260713c"></script>
+  <script src="/food-storage.js?v=20260714a"></script>
+  <script src="/chat-format.js?v=20260714b"></script>
+  <script src="/app.js?v=20260714b"></script>
 </body>
 </html>

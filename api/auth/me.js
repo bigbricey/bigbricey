@@ -1,4 +1,4 @@
-import { getSession, sendJson } from "../_auth.js";
+import { getSession, requireUser, sendJson } from "../_auth.js";
 import { readBody } from "../_lib.js";
 import { getMembership, touchLastSeen } from "../_members.js";
 import {
@@ -12,9 +12,15 @@ import {
 } from "../_supabase.js";
 
 export default async function handler(req, res) {
-  const session = getSession(req);
-  if (!session?.email) {
-    return sendJson(res, 200, { authenticated: false, member: false });
+  let session;
+  if (req.method === "POST") {
+    session = await requireUser(req, res);
+    if (!session) return;
+  } else {
+    session = getSession(req);
+    if (!session?.email) {
+      return sendJson(res, 200, { authenticated: false, member: false });
+    }
   }
 
   // Save layout / theme prefs

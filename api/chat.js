@@ -1,26 +1,33 @@
+import { randomUUID } from "node:crypto";
+
 import {
   resolveFood,
-  extractJson,
   sendJson,
   readBody,
-  toGrams,
+  toConvertibleGrams,
   round,
 } from "./_lib.js";
-import { requireUser } from "./_auth.js";
+import { getAuthSecret, requireUser } from "./_auth.js";
 import {
   dayKeyFor,
+  loadFoodDay,
+  loadFoodDaySnapshot,
+  syncFoodDay,
   logEvent,
   supabaseConfig,
   upsertWatchTarget,
   evaluateWatches,
   sbRpc,
   getProfile,
+  mergeProfilePrefs,
   onboardingFromPrefs,
   ensureProfile,
   listSavedFoods,
   findSavedFood,
+  findSavedFoodById,
   upsertSavedFood,
   deleteSavedFood,
+  deleteSavedFoodById,
   rowFromSavedFood,
   updateUserGoals,
   saveUserLayout,
@@ -36,19 +43,42 @@ import {
   getMemoryNotes,
   addMemoryNote,
   removeMemoryNote,
+  reserveLlmTurn,
   logLlmUsage,
   sb,
 } from "./_supabase.js";
 import { submitFeedback, summarizeFeedback, isAdmin } from "./_members.js";
-import { llmChat, llmConfig, DOMAIN_CONTRACT } from "./_llm.js";
+import { llmConfig } from "./_llm.js";
 import {
-  capabilitiesForSystemPrompt,
   abilitiesReplyText,
   SCENE_IDS,
 } from "./_capabilities.js";
 import { buildStatsReport } from "./_report.js";
 import { formatPersonBlock } from "./_coach_context.js";
-import { knowledgeForSystemPrompt } from "./_knowledge.js";
+import {
+  buildCurrentLogContext,
+  composeActionReply,
+  prepareModelHistory,
+} from "./_chat_wrapper.js";
+import { buildBuddySystemPrompt } from "./_buddy_prompt.js";
+import { callBuddyAfterTools, callBuddyFirstPass } from "./_buddy_turn.js";
+import {
+  BIGBRICEY_TOOLS,
+  buildNativeToolResultMessage,
+  buildToolResultEnvelope,
+  validateNativeToolCall,
+} from "./_tool_contracts.js";
+import {
+  actionFromValidatedToolCall,
+  assistantMessageForValidatedCalls,
+  classifyNativeToolExecution,
+  invalidNativeToolExecution,
+  selectVerifiedNativeToolReply,
+} from "./_native_tool_loop.js";
+import {
+  createToolConfirmationToken,
+  verifyToolConfirmationToken,
+} from "./_tool_confirmation.js";
 
 /**
  * Conversational control of the food log.
@@ -56,9 +86,7 @@ import { knowledgeForSystemPrompt } from "./_knowledge.js";
  */
 export default async function handler(req, res) {
   if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Allow", "GET, POST, OPTIONS");
     return res.status(204).end();
   }
   const session = await requireUser(req, res);
@@ -77,8 +105,8 @@ export default async function handler(req, res) {
       }
       const conversations = await listConversations(session.email);
       return sendJson(res, 200, { conversations });
-    } catch (e) {
-      return sendJson(res, 500, { error: String(e.message || e) });
+    } catch {
+      return sendJson(res, 500, { error: "conversation_request_failed" });
     }
   }
 
@@ -94,23 +122,74 @@ export default async function handler(req, res) {
           title: body.title || "New chat",
         });
         return sendJson(res, 200, { conversation: conv, messages: [] });
-      } catch (e) {
+      } catch {
         return sendJson(res, 500, {
-          error: String(e.message || e),
+          error: "conversation_create_failed",
           hint: "Run migration_007_chat_history.sql in Supabase if tables missing.",
         });
       }
     }
 
-    const text = String(body?.text || "").trim();
-    const rows = Array.isArray(body?.rows) ? body.rows : [];
+    const requestedDay = normalizeRequestedDay(body?.date || dayKeyFor());
+    if (!requestedDay) {
+      return sendJson(res, 400, { error: "valid date required" });
+    }
+    const requestId = normalizeClientRequestId(body?.request_id) || randomUUID();
+    if (Array.isArray(body?.rows) && body.rows.length > 500) {
+      return sendJson(res, 413, { error: "too many food rows" });
+    }
+    let rows = Array.isArray(body?.rows) ? body.rows : [];
+    let foodDayRevision = null;
+    let authoritativeRowsLoaded = false;
+    if (supabaseConfig().ok) {
+      try {
+        const snapshot = await loadFoodDaySnapshot(session.email, requestedDay);
+        rows = snapshot.rows;
+        foodDayRevision = snapshot.revision;
+        authoritativeRowsLoaded = true;
+      } catch {
+        // The authenticated client's current rows are an availability fallback;
+        // every mutation is still validated and synced under this account.
+      }
+    }
+
+    let confirmedNativeCall = null;
+    const isConfirmation = body?.op === "confirm_tool";
+    if (isConfirmation) {
+      try {
+        const rawCall = verifyToolConfirmationToken(body?.confirmation_token, {
+          email: session.email,
+          secret: getAuthSecret(),
+        });
+        confirmedNativeCall = validateNativeToolCall(rawCall, {
+          confirmedToolCallIds: [rawCall.id],
+        });
+        if (!confirmedNativeCall?.ok || confirmedNativeCall.status !== "ready") {
+          return sendJson(res, 400, { error: "invalid_confirmation" });
+        }
+      } catch (error) {
+        return sendJson(res, 400, {
+          error: error?.code || "invalid_confirmation",
+          message: "That confirmation is invalid or expired. Ask me to do it again.",
+        });
+      }
+    }
+
+    const text = isConfirmation
+      ? String(body?.text || "Yes, confirm that change.").trim()
+      : String(body?.text || "").trim();
     if (!text) return sendJson(res, 400, { error: "text required" });
+    if (text.length > 8_000) {
+      return sendJson(res, 413, { error: "message too long" });
+    }
 
     let personCtx = null;
     let themeSnap = null;
+    let layoutSnap = null;
     let sceneSnap = null;
     let scenesSeenSnap = [];
     let memoryNotes = [];
+    let profileSnapshotLoaded = false;
     if (supabaseConfig().ok) {
       try {
         await ensureProfile(session.email, {
@@ -118,9 +197,13 @@ export default async function handler(req, res) {
           picture: session.picture,
         });
         const profile = await getProfile(session.email);
+        profileSnapshotLoaded = true;
         personCtx = onboardingFromPrefs(profile?.prefs);
         if (profile?.prefs?.theme && typeof profile.prefs.theme === "object") {
           themeSnap = profile.prefs.theme;
+        }
+        if (profile?.prefs?.layout && typeof profile.prefs.layout === "object") {
+          layoutSnap = profile.prefs.layout;
         }
         sceneSnap = profile?.prefs?.scene || null;
         if (Array.isArray(profile?.prefs?.scenes_seen)) {
@@ -129,15 +212,6 @@ export default async function handler(req, res) {
         memoryNotes = await getMemoryNotes(session.email);
       } catch {
         personCtx = null;
-      }
-    }
-
-    let savedList = [];
-    if (supabaseConfig().ok) {
-      try {
-        savedList = await listSavedFoods(session.email);
-      } catch {
-        savedList = [];
       }
     }
 
@@ -183,23 +257,51 @@ export default async function handler(req, res) {
       }
     }
 
-    // Fast path: ONLY pure "what can you do?" — not normal chat
-    if (isAbilitiesQuestion(text) && !isPresenceOrSmallTalk(text) && !isSceneChat(text)) {
-      const reply = ABILITIES_REPLY;
+    if (body?.op === "cancel_tool") {
+      const reply = "Okay — I didn't change anything.";
       if (conversationId) {
         try {
           await appendMessage(session.email, conversationId, "assistant", reply);
         } catch {
-          /* */
+          /* best effort */
         }
       }
       return sendJson(res, 200, {
         reply,
         rows,
         changed: false,
-        actions: [],
+        ledger_committed: false,
         conversation_id: conversationId,
+        day_revision: foodDayRevision,
       });
+    }
+
+    // Put a hard per-user reservation in front of any paid model work. This is
+    // intentionally before both the first pass and confirmed tool voice pass.
+    if (llmConfig().ok) {
+      try {
+        await reserveLlmTurn(session.email);
+      } catch (error) {
+        const reply =
+          error?.status === 429
+            ? error.message
+            : "AI chat is temporarily unavailable. Try again in a moment.";
+        if (conversationId) {
+          try {
+            await appendMessage(session.email, conversationId, "assistant", reply);
+          } catch {
+            /* best effort */
+          }
+        }
+        return sendJson(res, 200, {
+          reply,
+          rows,
+          changed: false,
+          conversation_id: conversationId,
+          error: error?.code || "chat_quota_unavailable",
+          day_revision: foodDayRevision,
+        });
+      }
     }
 
     // Let the LLM talk. Code only *executes* validated actions after.
@@ -207,7 +309,6 @@ export default async function handler(req, res) {
       email: session.email,
       name: session.name,
       person: personCtx,
-      savedFoods: savedList,
       history: historyMessages,
       chatSummary,
       theme: themeSnap,
@@ -215,6 +316,8 @@ export default async function handler(req, res) {
       scenesSeen: scenesSeenSnap,
       memoryNotes,
       conversationId,
+      currentDate: requestedDay,
+      confirmedNativeCall,
     });
 
     if (intent?.error === "model_failed") {
@@ -286,25 +389,18 @@ export default async function handler(req, res) {
       });
     }
 
-    const actions = Array.isArray(intent?.actions) ? [...intent.actions] : [];
-    // If user clearly asked to APPLY a scene and model forgot set_scene, inject it.
-    // Never inject for list/chat/help — the model owns that conversation.
-    const applyFallback = resolveSceneIntent(text);
-    if (applyFallback.scene) {
-      const hasScene = actions.some((a) => {
-        const ty = String(a?.type || a?.action || "").toLowerCase();
-        return (
-          ty === "set_scene" ||
-          ty === "scene" ||
-          ty === "set_effect" ||
-          ty === "weather" ||
-          ty === "ambiance"
-        );
-      });
-      if (!hasScene) {
-        actions.push({ type: "set_scene", scene: applyFallback.scene });
-      }
-    }
+    const actions = Array.isArray(intent?.actions)
+      ? intent.actions.map((action, index) => ({
+          ...action,
+          __request_id: `chat:${requestId}:${action.__tool_call_id || index}`.slice(
+            0,
+            200
+          ),
+        }))
+      : [];
+    const nativeEvaluations = Array.isArray(intent?.nativeTurn?.evaluations)
+      ? intent.nativeTurn.evaluations
+      : [];
 
     let goalsOut = null;
     let layoutOut = null;
@@ -336,9 +432,9 @@ export default async function handler(req, res) {
             changed: false,
             report: reportText,
           });
-        } catch (err) {
+        } catch {
           return sendJson(res, 200, {
-            reply: `Couldn't build report: ${err.message}`,
+            reply: "I couldn't build that report right now.",
             rows,
             changed: false,
           });
@@ -347,7 +443,7 @@ export default async function handler(req, res) {
     }
 
     // Empty actions — show whatever the model said. Never canned-menu overwrite.
-    if (!actions.length) {
+    if (!actions.length && !nativeEvaluations.length) {
       const modelReply = intent?.reply && String(intent.reply).trim();
       if (modelReply) {
         if (conversationId) {
@@ -370,7 +466,18 @@ export default async function handler(req, res) {
         !isSceneChat(text) &&
         !isNonFoodUtterance(text)
       ) {
-        return await doAdd(text, rows, res, session.email, null, conversationId);
+        return await doAdd(
+          text,
+          rows,
+          res,
+          session.email,
+          null,
+          conversationId,
+          requestedDay,
+          requestId,
+          authoritativeRowsLoaded,
+          foodDayRevision
+        );
       }
       const reply = isPresenceOrSmallTalk(text)
         ? presenceReply()
@@ -394,9 +501,144 @@ export default async function handler(req, res) {
     const notes = [];
     const sideEvents = [];
     let memoryOut = null;
+    const executionByCall = new Map();
+    let ledgerCommitted = false;
+    let ledgerReloaded = false;
 
     for (const action of actions) {
       const type = (action.type || action.action || "").toLowerCase();
+      const noteStart = notes.length;
+      const beforeRows = JSON.stringify(next);
+      const beforeSideEvents = sideEvents.length;
+      let toolData = null;
+      let actionChanged = false;
+      try {
+
+      if (
+        action.__tool_name &&
+        ["add_food", "update_food", "remove_food", "clear_food_day", "log_saved_food"].includes(
+          action.__tool_name
+        ) &&
+        !authoritativeRowsLoaded
+      ) {
+        notes.push("Couldn't change food because the authoritative ledger is temporarily unavailable. Nothing changed.");
+        continue;
+      }
+
+      if (type === "read_today") {
+        const day = normalizeRequestedDay(action.day || requestedDay) || requestedDay;
+        const include = Array.isArray(action.include) && action.include.length
+          ? action.include
+          : ["food", "totals", "workouts", "metrics", "home"];
+        const readFailures = new Set();
+        let readRows = day === requestedDay ? next : [];
+        if (
+          day === requestedDay &&
+          (include.includes("food") || include.includes("totals")) &&
+          !authoritativeRowsLoaded
+        ) {
+          if (include.includes("food")) readFailures.add("food");
+          if (include.includes("totals")) readFailures.add("totals");
+        } else if (
+          day !== requestedDay &&
+          (include.includes("food") || include.includes("totals"))
+        ) {
+          try {
+            readRows = await loadFoodDay(session.email, day);
+          } catch {
+            if (include.includes("food")) readFailures.add("food");
+            if (include.includes("totals")) readFailures.add("totals");
+          }
+        }
+        const data = { day };
+        if (
+          (include.includes("food") && !readFailures.has("food")) ||
+          (include.includes("totals") && !readFailures.has("totals"))
+        ) {
+          const log =
+            day === requestedDay
+              ? buildCurrentLogContext(next)
+              : buildCurrentLogContext(readRows);
+          const boundedLog = boundedLedgerToolRead(log);
+          if (include.includes("food") && !readFailures.has("food")) {
+            data.food = boundedLog.items;
+            data.food_omitted_count = boundedLog.omitted_count;
+          }
+          if (include.includes("totals") && !readFailures.has("totals")) {
+            data.totals = boundedLog.totals;
+            data.known_subtotals = boundedLog.known_subtotals;
+            data.coverage = boundedLog.coverage;
+            data.data_quality = boundedLog.data_quality;
+            if (boundedLog.extra_nutrient_totals) {
+              data.extra_nutrient_totals = boundedLog.extra_nutrient_totals;
+              data.extra_nutrient_known_subtotals =
+                boundedLog.extra_nutrient_known_subtotals;
+              data.extra_nutrient_coverage = boundedLog.extra_nutrient_coverage;
+            }
+          }
+        }
+        if (include.includes("workouts") || include.includes("metrics")) {
+          try {
+            if (!supabaseConfig().ok) throw new Error("ledger_unavailable");
+            const events = await sb("events", {
+              query: {
+                select: "category_id,title,payload,occurred_at,source",
+                user_email: `eq.${String(session.email).toLowerCase()}`,
+                day_key: `eq.${day}`,
+                category_id: "neq.food",
+                deleted_at: "is.null",
+                order: "occurred_at.desc",
+                limit: "101",
+              },
+            });
+            const nonFood = (events || [])
+              .filter((event) => event.category_id !== "food")
+              .map(projectPrivateReadEvent);
+            if (include.includes("workouts")) {
+              const workouts = nonFood.filter((event) =>
+                /exercise|workout|strength|cardio|run|walk|bike|sport/i.test(
+                  String(event.category_id || "")
+                )
+              );
+              data.workouts = workouts.slice(0, 40).reverse();
+              data.workouts_omitted_count = Math.max(0, workouts.length - 40);
+            }
+            if (include.includes("metrics")) {
+              const metrics = nonFood.filter((event) =>
+                !/exercise|workout|strength|cardio|run|walk|bike|sport/i.test(
+                  String(event.category_id || "")
+                )
+              );
+              data.metrics = metrics.slice(0, 40).reverse();
+              data.metrics_omitted_count = Math.max(0, metrics.length - 40);
+            }
+          } catch {
+            if (include.includes("workouts")) readFailures.add("workouts");
+            if (include.includes("metrics")) readFailures.add("metrics");
+          }
+        }
+        if (include.includes("home")) {
+          if (!profileSnapshotLoaded) {
+            readFailures.add("home");
+          } else {
+            data.home = {
+              scene: sceneOut ?? sceneSnap ?? "none",
+              theme: themeOut ?? themeSnap ?? null,
+              layout: layoutOut ?? layoutSnap ?? null,
+            };
+          }
+        }
+        if (readFailures.size) {
+          toolData = { day, unavailable: Array.from(readFailures) };
+          notes.push(
+            `Couldn't read the requested private app data (${Array.from(readFailures).join(", ")}).`
+          );
+          continue;
+        }
+        toolData = data;
+        notes.push(`Read the recorded ledger for ${day}.`);
+        continue;
+      }
 
       if (
         type === "remember" ||
@@ -406,10 +648,17 @@ export default async function handler(req, res) {
       ) {
         const note = action.note || action.message || action.text || action.fact;
         try {
-          memoryOut = await addMemoryNote(session.email, note);
-          notes.push(`Saved permanent note: “${String(note).slice(0, 80)}”.`);
-        } catch (err) {
-          notes.push(`Couldn't save memory note: ${err.message}`);
+          const memoryResult = await addMemoryNote(session.email, note);
+          memoryOut = memoryResult.notes;
+          actionChanged = memoryResult.changed === true;
+          toolData = { changed: actionChanged };
+          notes.push(
+            actionChanged
+              ? `Saved permanent note: “${String(note).slice(0, 80)}”.`
+              : "That permanent note was already saved."
+          );
+        } catch {
+          notes.push("Couldn't save that memory note right now.");
         }
         continue;
       }
@@ -417,10 +666,20 @@ export default async function handler(req, res) {
       if (type === "forget" || type === "remove_memory" || type === "delete_memory") {
         const match = action.note || action.match || action.message || action.text;
         try {
-          memoryOut = await removeMemoryNote(session.email, match);
-          notes.push(`Removed matching permanent note(s) for “${match}”.`);
-        } catch (err) {
-          notes.push(`Couldn't remove note: ${err.message}`);
+          const memoryResult = await removeMemoryNote(session.email, match);
+          memoryOut = memoryResult.notes;
+          actionChanged = memoryResult.removed_count > 0;
+          toolData = {
+            removed_count: memoryResult.removed_count,
+            changed: actionChanged,
+          };
+          notes.push(
+            actionChanged
+              ? `Removed ${memoryResult.removed_count} matching permanent note${memoryResult.removed_count === 1 ? "" : "s"}.`
+              : "No permanent memory note matched that request."
+          );
+        } catch {
+          notes.push("Couldn't remove that memory note right now.");
         }
         continue;
       }
@@ -441,8 +700,8 @@ export default async function handler(req, res) {
           if (saved?.theme_key) {
             /* quiet */
           }
-        } catch (err) {
-          notes.push(`Couldn't save product note: ${err.message}`);
+        } catch {
+          notes.push("Couldn't save that product note right now.");
         }
         continue;
       }
@@ -474,8 +733,8 @@ export default async function handler(req, res) {
             );
           }
           suggestionsOut = summary;
-        } catch (err) {
-          notes.push(`Couldn't load suggestions: ${err.message}`);
+        } catch {
+          notes.push("Couldn't load suggestions right now.");
         }
         continue;
       }
@@ -504,8 +763,8 @@ export default async function handler(req, res) {
               (action.target_max != null ? `–${action.target_max}` : "") +
               ` ${action.unit || ""}`.trim()
           );
-        } catch (err) {
-          notes.push(`Couldn't set watch: ${err.message}`);
+        } catch {
+          notes.push("Couldn't set that goal watch right now.");
         }
         continue;
       }
@@ -572,15 +831,17 @@ export default async function handler(req, res) {
               categoryKind,
               title,
               rawText: text,
-              dayKey: dayKeyFor(),
+              dayKey: normalizeRequestedDay(action.day) || requestedDay,
               payload: action,
               measures,
+              clientId: action.__request_id,
               source: "chat",
             });
             sideEvents.push(r);
+            toolData = { event: r, title, category_id: categoryId };
             notes.push(`Logged: ${title} (${categoryId})`);
-          } catch (err) {
-            notes.push(`Activity noted but cloud save failed: ${err.message}`);
+          } catch {
+            notes.push("The workout could not be safely saved, so nothing changed.");
           }
         } else {
           notes.push(`Activity noted (cloud off): ${title}`);
@@ -600,15 +861,19 @@ export default async function handler(req, res) {
               categoryId: "steps",
               title: `${Math.round(steps)} steps`,
               rawText: text,
-              dayKey: dayKeyFor(),
+              dayKey: normalizeRequestedDay(action.day) || requestedDay,
               payload: { steps },
               measures: [{ measure_id: "steps", value: steps, unit: "steps" }],
-              clientId: `steps:${dayKeyFor()}`,
+              clientId: `steps:${normalizeRequestedDay(action.day) || requestedDay}`,
               source: "chat",
             });
+            toolData = {
+              day: normalizeRequestedDay(action.day) || requestedDay,
+              steps: Math.round(steps),
+            };
             notes.push(`Logged ${Math.round(steps).toLocaleString()} steps.`);
-          } catch (err) {
-            notes.push(`Steps noted but cloud save failed: ${err.message}`);
+          } catch {
+            notes.push("The step count could not be safely saved, so nothing changed.");
           }
         } else {
           notes.push(`Steps noted (cloud off): ${steps}`);
@@ -631,7 +896,7 @@ export default async function handler(req, res) {
               categoryId: action.categoryId || "body",
               title: `${action.label || mid}: ${value}${action.unit ? " " + action.unit : ""}`,
               rawText: text,
-              dayKey: dayKeyFor(),
+              dayKey: normalizeRequestedDay(action.day) || requestedDay,
               payload: action,
               measures: [
                 {
@@ -642,12 +907,102 @@ export default async function handler(req, res) {
                   group: action.group || "body",
                 },
               ],
+              clientId: action.__request_id,
               source: "chat",
             });
+            toolData = {
+              day: normalizeRequestedDay(action.day) || requestedDay,
+              measure_id: mid,
+              value,
+              unit: action.unit || "",
+            };
             notes.push(`Logged ${action.label || mid}: ${value}`);
-          } catch (err) {
-            notes.push(`Metric noted but cloud save failed: ${err.message}`);
+          } catch {
+            notes.push("That metric could not be safely saved, so nothing changed.");
           }
+        } else {
+          notes.push(
+            "The metric could not be safely saved because the cloud ledger is unavailable. Nothing changed."
+          );
+        }
+        continue;
+      }
+
+      if (type === "save_food_native") {
+        try {
+          let sourceRows = [];
+          if (Array.isArray(action.source_entry_ids)) {
+            sourceRows = action.source_entry_ids
+              .map((id) => next.find((row) => String(row.id) === String(id)))
+              .filter(Boolean);
+            if (sourceRows.length !== action.source_entry_ids.length) {
+              notes.push("Couldn't save that food because one or more source entries were not found.");
+              continue;
+            }
+          } else if (action.food_query) {
+            const resolved = await resolveFood(action.food_query, {
+              email: session.email,
+              findSavedFood,
+              rowFromSavedFood,
+            });
+            if (!resolved.row || !rowHasMacros(resolved.row)) {
+              notes.push(
+                resolved.note ||
+                  "Couldn't save that food because no complete verified nutrition match was found."
+              );
+              continue;
+            }
+            sourceRows = [resolved.row];
+          }
+          if (!sourceRows.length) {
+            notes.push("Couldn't save that food because it had no verified source.");
+            continue;
+          }
+          const aggregate = buildCurrentLogContext(sourceRows);
+          const totals = aggregate.totals;
+          if (
+            totals.kcal == null ||
+            totals.protein == null ||
+            totals.fat == null ||
+            totals.carbs == null
+          ) {
+            notes.push("Couldn't save that food because its recorded macros are incomplete.");
+            continue;
+          }
+          const nutrients = {
+            ...(aggregate.extra_nutrient_totals || {}),
+          };
+          const saved = await upsertSavedFood(session.email, {
+            name: action.name,
+            description: action.description || null,
+            serving_label: action.serving_label || "1 serving",
+            ingredients: sourceRows.map((row) => row.label).join("; "),
+            kcal: totals.kcal,
+            protein: totals.protein,
+            fat: totals.fat,
+            carbs: totals.carbs,
+            fiber: totals.fiber,
+            sugars: totals.sugars,
+            potassium: totals.potassium,
+            magnesium: totals.magnesium,
+            sodium: totals.sodium,
+            net_carbs: totals.net_carbs,
+            nutrients,
+          });
+          toolData = {
+            saved_food: {
+              id: saved.id,
+              name: saved.name,
+              serving_label: saved.serving_label,
+              kcal: saved.kcal,
+              protein: saved.protein,
+              fat: saved.fat,
+              carbs: saved.carbs,
+            },
+          };
+          notes.push(`Saved “${saved.name}” from verified recorded nutrition.`);
+        } catch {
+          notes.push("Couldn't save that food to your library right now.");
         }
         continue;
       }
@@ -740,8 +1095,8 @@ export default async function handler(req, res) {
               (saved.ingredients ? ` · ingredients kept` : "") +
               `. Say “log ${saved.name}” anytime.`
           );
-        } catch (err) {
-          notes.push(`Couldn't save food: ${err.message}`);
+        } catch {
+          notes.push("Couldn't save that food to your library right now.");
         }
         continue;
       }
@@ -753,32 +1108,68 @@ export default async function handler(req, res) {
         type === "use_saved_food"
       ) {
         const name = action.name || action.food || action.match || action.food_text;
+        const savedFoodId = action.saved_food_id || action.id;
         const amount = action.amount != null ? Number(action.amount) : 1;
-        if (!name) {
+        if (!name && !savedFoodId) {
           notes.push("Which saved food? (e.g. “log morning shake”)");
           continue;
         }
         try {
-          const saved = await findSavedFood(session.email, name);
+          const saved = savedFoodId
+            ? await findSavedFoodById(session.email, savedFoodId)
+            : await findSavedFood(session.email, name);
           if (!saved) {
             notes.push(
-              `No saved food named “${name}”. Save it first with name + macros, or say “list my saved foods”.`
+              name
+                ? `No saved food named “${name}”. Save it first or ask to list saved foods.`
+                : "No saved food matched that id."
             );
             continue;
           }
-          next.push(rowFromSavedFood(saved, amount));
+          const savedRow = rowFromSavedFood(saved, amount);
+          if (action.__request_id) savedRow.id = action.__request_id;
+          next = next.filter((row) => String(row.id) !== String(savedRow.id));
+          next.push(savedRow);
+          toolData = {
+            saved_food: { id: saved.id, name: saved.name },
+            servings: amount,
+          };
           notes.push(`Added saved: ${amount === 1 ? saved.name : amount + " × " + saved.name}`);
-        } catch (err) {
-          notes.push(`Couldn't load saved food: ${err.message}`);
+        } catch {
+          notes.push("Couldn't load that saved food right now.");
         }
         continue;
       }
 
       if (type === "list_saved" || type === "list_saved_foods") {
         try {
-          const list = await listSavedFoods(session.email);
+          let list = await listSavedFoods(session.email);
+          const query = String(action.query || "").trim().toLowerCase();
+          if (query) {
+            list = list.filter((food) =>
+              String(food.name || "").toLowerCase().includes(query)
+            );
+          }
+          const requestedLimit = Math.min(
+            50,
+            Math.max(1, Math.round(Number(action.limit) || 20))
+          );
+          const totalMatches = list.length;
+          list = list.slice(0, requestedLimit);
+          toolData = {
+            saved_foods: list.map((food) => ({
+              id: food.id,
+              name: food.name,
+              serving_label: food.serving_label,
+              kcal: food.kcal,
+              protein: food.protein,
+              fat: food.fat,
+              carbs: food.carbs,
+            })),
+            omitted_count: Math.max(0, totalMatches - list.length),
+          };
           if (!list.length) {
-            notes.push("No saved foods yet. Save one: name + kcal/protein/fat/carbs.");
+            notes.push("No saved foods matched. Ask me to save one from a recorded entry or a specific verified food lookup.");
           } else {
             const lines = list.map(
               (f) =>
@@ -786,8 +1177,25 @@ export default async function handler(req, res) {
             );
             notes.push(`Your saved foods (${list.length}):\n${lines.join("\n")}`);
           }
-        } catch (err) {
-          notes.push(`Couldn't list saved foods: ${err.message}`);
+        } catch {
+          notes.push("Couldn't list saved foods right now.");
+        }
+        continue;
+      }
+
+      if (type === "delete_saved_native") {
+        try {
+          const gone = action.saved_food_id
+            ? await deleteSavedFoodById(session.email, action.saved_food_id)
+            : await deleteSavedFood(session.email, action.name);
+          if (!gone) {
+            notes.push("No saved food matched that request.");
+            continue;
+          }
+          toolData = { deleted_saved_food: { id: gone.id, name: gone.name } };
+          notes.push(`Deleted saved food “${gone.name}”.`);
+        } catch {
+          notes.push("Couldn't delete that saved food right now.");
         }
         continue;
       }
@@ -801,8 +1209,8 @@ export default async function handler(req, res) {
         try {
           const gone = await deleteSavedFood(session.email, name);
           notes.push(gone ? `Deleted saved food “${gone.name}”.` : `No saved food “${name}”.`);
-        } catch (err) {
-          notes.push(`Couldn't delete: ${err.message}`);
+        } catch {
+          notes.push("Couldn't delete that saved item right now.");
         }
         continue;
       }
@@ -1013,8 +1421,8 @@ export default async function handler(req, res) {
               }. Drag ⠿ to move it. Log with measure “${measure_id}”.`
             );
           }
-        } catch (err) {
-          notes.push(`Couldn't update custom box: ${err.message}`);
+        } catch {
+          notes.push("Couldn't update that custom panel right now.");
         }
         continue;
       }
@@ -1046,8 +1454,8 @@ export default async function handler(req, res) {
               ? "Scene cleared."
               : `Scene set to “${scene}”. Look up — ambient effect on.`
           );
-        } catch (err) {
-          notes.push(`Couldn't set scene: ${err.message}`);
+        } catch {
+          notes.push("Couldn't set that scene right now.");
         }
         continue;
       }
@@ -1344,8 +1752,8 @@ export default async function handler(req, res) {
           notes.push(
             `Look updated${themeOut.preset ? ` (${themeOut.preset})` : ""}. Open You → Look & theme anytime.`
           );
-        } catch (err) {
-          notes.push(`Couldn't update theme: ${err.message}`);
+        } catch {
+          notes.push("Couldn't update the theme right now.");
         }
         continue;
       }
@@ -1474,8 +1882,8 @@ export default async function handler(req, res) {
           notes.push(
             `Layout updated: ${layout.order.join(" → ")}. Use Edit layout to fine-tune.`
           );
-        } catch (err) {
-          notes.push(`Couldn't update layout: ${err.message}`);
+        } catch {
+          notes.push("Couldn't update the layout right now.");
         }
         continue;
       }
@@ -1520,6 +1928,8 @@ export default async function handler(req, res) {
             patch.fat != null ||
             patch.carbs != null ||
             patch.net_carbs != null ||
+            patch.potassium != null ||
+            patch.magnesium != null ||
             patch.eating_style != null;
           if (!hasAny) {
             notes.push(
@@ -1531,12 +1941,15 @@ export default async function handler(req, res) {
           const g = out.goals || {};
           const netBit =
             g.net_carbs != null ? ` · net C ${g.net_carbs}g` : "";
+          const mineralBit =
+            `${g.potassium != null ? ` · K ${g.potassium}mg` : ""}` +
+            `${g.magnesium != null ? ` · Mg ${g.magnesium}mg` : ""}`;
           notes.push(
-            `Targets updated${out.eating_style ? ` (${out.eating_style})` : ""}: ${g.kcal} kcal · P ${g.protein}g · F ${g.fat}g · C ${g.carbs}g${netBit}. Rings use these now.`
+            `Targets updated${out.eating_style ? ` (${out.eating_style})` : ""}: ${g.kcal} kcal · P ${g.protein}g · F ${g.fat}g · C ${g.carbs}g${netBit}${mineralBit}. Rings use these now.`
           );
           goalsOut = out.goals;
-        } catch (err) {
-          notes.push(`Couldn't update goals: ${err.message}`);
+        } catch {
+          notes.push("Couldn't update those goals right now.");
         }
         continue;
       }
@@ -1556,7 +1969,10 @@ export default async function handler(req, res) {
           const saved = await findSavedFood(session.email, maybeName);
           if (saved && !/\d+\s*(oz|g|lb|egg)/i.test(phrase)) {
             const amount = action.amount != null ? Number(action.amount) : 1;
-            next.push(rowFromSavedFood(saved, amount));
+            const savedRow = rowFromSavedFood(saved, amount);
+            if (action.__request_id) savedRow.id = action.__request_id;
+            next = next.filter((row) => String(row.id) !== String(savedRow.id));
+            next.push(savedRow);
             notes.push(`Added saved: ${amount === 1 ? saved.name : amount + " × " + saved.name}`);
             continue;
           }
@@ -1580,10 +1996,16 @@ export default async function handler(req, res) {
           notes.push(`Incomplete data for “${phrase}” — try a more specific name.`);
           continue;
         }
+        if (action.__request_id) resolved.row.id = action.__request_id;
+        next = next.filter((row) => String(row.id) !== String(resolved.row.id));
         next.push(resolved.row);
         notes.push(`Added: ${resolved.row.label}`);
       } else if (type === "update" || type === "update_amount" || type === "fix") {
         const idx = findRowIndex(next, action);
+        if (idx === -2) {
+          notes.push("More than one food entry matched. Tell me which one or give its amount.");
+          continue;
+        }
         if (idx < 0) {
           notes.push(`Couldn't find a row to update (${action.match || action.food || "?"}).`);
           continue;
@@ -1597,10 +2019,10 @@ export default async function handler(req, res) {
         const amount = action.amount != null ? action.amount : null;
         const unit = action.unit || "serving";
         let phrase;
-        if (amount != null) {
-          phrase = `${amount} ${unit} ${foodName}`.replace(/\s+/g, " ").trim();
-        } else if (action.food_text) {
+        if (action.food_text) {
           phrase = action.food_text;
+        } else if (amount != null) {
+          phrase = `${amount} ${unit} ${foodName}`.replace(/\s+/g, " ").trim();
         } else {
           notes.push("Update needs a new amount.");
           continue;
@@ -1611,12 +2033,19 @@ export default async function handler(req, res) {
           rowFromSavedFood,
         });
         if (!resolved.row || !rowHasMacros(resolved.row)) {
-          // scale existing row if lookup fails but we know grams ratio
+          // Only scale an existing row from an exact mass conversion. Generic
+          // servings/cups/scoops need a verified food-specific basis.
           if (amount != null && old.grams) {
-            const newGrams = toGrams(Number(amount), unit);
-            const scale = newGrams / old.grams;
-            next[idx] = scaleRow(old, scale, phrase);
-            notes.push(`Updated to: ${next[idx].label}`);
+            const newGrams = toConvertibleGrams(Number(amount), unit);
+            if (newGrams != null) {
+              const scale = newGrams / old.grams;
+              next[idx] = scaleRow(old, scale, phrase);
+              notes.push(`Updated to: ${next[idx].label}`);
+            } else {
+              notes.push(
+                `Couldn't safely convert “${phrase}”. Give me grams/ounces/pounds, or a more specific food label.`
+              );
+            }
           } else {
             notes.push(resolved.note || `Couldn't update “${old.label}”.`);
           }
@@ -1627,7 +2056,15 @@ export default async function handler(req, res) {
         next[idx] = resolved.row;
         notes.push(`Updated: ${old.label} → ${resolved.row.label}`);
       } else if (type === "remove" || type === "delete") {
+        if (action.day && action.day !== requestedDay) {
+          notes.push("Couldn't remove that entry because the confirmed ledger day changed.");
+          continue;
+        }
         const idx = findRowIndex(next, action);
+        if (idx === -2) {
+          notes.push("More than one food entry matched. Tell me which one or give its amount.");
+          continue;
+        }
         if (idx < 0) {
           notes.push(`Couldn't find row to remove (${action.match || action.food || "?"}).`);
           continue;
@@ -1636,10 +2073,16 @@ export default async function handler(req, res) {
         next.splice(idx, 1);
         notes.push(`Removed: ${gone}`);
       } else if (type === "clear" || type === "clear_day") {
+        if (action.day !== requestedDay) {
+          notes.push("Couldn't clear food because the confirmed ledger day changed.");
+          continue;
+        }
         next = [];
         notes.push("Cleared the day.");
       } else if (type === "message" || type === "reply") {
-        if (action.text) notes.push(action.text);
+        // Never treat model-authored prose as an executor receipt. The model's
+        // top-level reply already carries conversational text.
+        continue;
       } else if (type === "add_food_phrase") {
         // alias
         const resolved = await resolveFood(action.food_text || text, {
@@ -1648,15 +2091,124 @@ export default async function handler(req, res) {
           rowFromSavedFood,
         });
         if (resolved.row && rowHasMacros(resolved.row)) {
+          if (action.__request_id) resolved.row.id = action.__request_id;
+          next = next.filter((row) => String(row.id) !== String(resolved.row.id));
           next.push(resolved.row);
           notes.push(`Added: ${resolved.row.label}`);
+        } else {
+          notes.push(
+            resolved.note ||
+              `Couldn't add “${action.food_text || text}” because no complete nutrition match was found.`
+          );
+        }
+      } else {
+        const actionName = type || "missing_type";
+        notes.push(`Unsupported action “${actionName}”. Nothing changed.`);
+      }
+      } finally {
+        if (action.__tool_call_id) {
+          const actionNotes = notes.slice(noteStart);
+          const stateChanged =
+            beforeRows !== JSON.stringify(next) ||
+            beforeSideEvents !== sideEvents.length ||
+            actionChanged ||
+            Boolean(
+              action.__tool_name &&
+                action.__tool_name !== "read_today" &&
+                action.__tool_name !== "list_saved_foods" &&
+                action.__tool_name !== "remember" &&
+                action.__tool_name !== "forget_memory"
+            );
+          executionByCall.set(
+            action.__tool_call_id,
+            classifyNativeToolExecution({
+              toolName: action.__tool_name,
+              notes: actionNotes,
+              changed: stateChanged,
+              data: toolData,
+            })
+          );
         }
       }
     }
 
-    // If nothing worked and looks like a food, try plain add
-    if (!notes.length || (notes.every((n) => /couldn't|no /i.test(n)) && looksLikeFood(text))) {
-      return await doAdd(text, rows, res, session.email, notes.join(" "), conversationId);
+    const foodRowsChanged = JSON.stringify(next) !== JSON.stringify(rows);
+    if (foodRowsChanged && supabaseConfig().ok) {
+      try {
+        const explicitlyConfirmedEmpty =
+          next.length === 0 &&
+          actions.some(
+            (action) =>
+              action.__tool_call_id &&
+              ["remove_food", "clear_food_day"].includes(action.__tool_name)
+          );
+        const syncReceipt = await syncFoodDay(session.email, requestedDay, next, {
+          rawText: text,
+          allowClear: explicitlyConfirmedEmpty,
+          expectedRevision: foodDayRevision,
+        });
+        foodDayRevision = Number(syncReceipt?.revision);
+        ledgerCommitted = true;
+      } catch (error) {
+        if (error?.code === "stale_food_day_revision") {
+          try {
+            const latest = await loadFoodDaySnapshot(session.email, requestedDay);
+            next = latest.rows;
+            foodDayRevision = latest.revision;
+            ledgerReloaded = true;
+          } catch {
+            next = rows.map((row) => ({ ...row }));
+          }
+          notes.push(
+            "This food day changed in another tab or device, so I reloaded it and did not overwrite anything. Please try that change again."
+          );
+        } else {
+          next = rows.map((row) => ({ ...row }));
+          notes.push("The food change could not be safely saved, so nothing was changed.");
+        }
+        for (const action of actions) {
+          if (
+            action.__tool_call_id &&
+            ["add_food", "update_food", "remove_food", "clear_food_day", "log_saved_food"].includes(
+              action.__tool_name
+            )
+          ) {
+            const execution = executionByCall.get(action.__tool_call_id) || {};
+            executionByCall.set(
+              action.__tool_call_id,
+              classifyNativeToolExecution({
+                toolName: action.__tool_name,
+                notes: [
+                  ...(execution.notes || []),
+                  "The ledger save failed; no food change was committed.",
+                ],
+                commitFailed: true,
+              })
+            );
+          }
+        }
+      }
+    }
+
+    // If an attempted action produced no usable food result, only fall back to
+    // food lookup when the user's own message actually looks like food.
+    if (
+      !nativeEvaluations.length &&
+      looksLikeFood(text) &&
+      (!notes.length || notes.every((n) => /couldn't|no /i.test(n)))
+    ) {
+      return await doAdd(
+        text,
+        rows,
+        res,
+        session.email,
+        notes.join(" "),
+        conversationId,
+        requestedDay,
+        requestId,
+        authoritativeRowsLoaded,
+        foodDayRevision
+      );
     }
 
     let watchStatuses = null;
@@ -1678,9 +2230,128 @@ export default async function handler(req, res) {
       }
     }
 
-    // Model owns the voice. Notes only fill in if model said nothing.
-    // If we applied a scene and model was silent, use a short confirm.
-    let reply = intent.reply || notes.join(" ") || "";
+    const toolResultMessages = [];
+    const verifiedToolResults = [];
+    let pendingConfirmation = null;
+    for (const evaluation of nativeEvaluations) {
+      if (!evaluation?.ok) {
+        verifiedToolResults.push(invalidNativeToolExecution());
+        continue;
+      }
+      if (evaluation.status === "needs_confirmation") {
+        let confirmation = evaluation.confirmation;
+        try {
+          const token = createToolConfirmationToken({
+            email: session.email,
+            validatedCall: evaluation,
+            secret: getAuthSecret(),
+          });
+          pendingConfirmation = {
+            token,
+            tool_call_id: evaluation.tool_call_id,
+            tool_name: evaluation.tool_name,
+            prompt: confirmation.prompt,
+          };
+        } catch {
+          confirmation = {
+            ...confirmation,
+            state: "unavailable",
+            prompt: "I couldn't create a safe confirmation. Ask me to try that again.",
+          };
+        }
+        verifiedToolResults.push({
+          status: "needs_confirmation",
+          changed: false,
+          confirmation,
+        });
+        toolResultMessages.push(
+          buildNativeToolResultMessage(
+            buildToolResultEnvelope({
+              toolCallId: evaluation.tool_call_id,
+              toolName: evaluation.tool_name,
+              status: "needs_confirmation",
+              confirmation,
+            })
+          )
+        );
+        continue;
+      }
+
+      const execution =
+        executionByCall.get(evaluation.tool_call_id) ||
+        classifyNativeToolExecution({
+          toolName: evaluation.tool_name,
+          notes: ["The requested action could not be completed."],
+          result: { ok: false },
+        });
+      verifiedToolResults.push(execution);
+      const success = execution?.status === "success";
+      const resultData = success
+        ? {
+            ...(execution.data && typeof execution.data === "object"
+              ? execution.data
+              : {}),
+            notes: execution.notes || [],
+            ...(evaluation.tool_name.includes("food")
+              ? { current_log: boundedLedgerToolRead(buildCurrentLogContext(next)) }
+              : {}),
+            ...(goalsOut ? { goals: goalsOut } : {}),
+            ...(themeOut ? { theme: themeOut } : {}),
+            ...(layoutOut ? { layout: layoutOut } : {}),
+            ...(sceneOut != null ? { scene: sceneOut } : {}),
+          }
+        : null;
+      toolResultMessages.push(
+        buildNativeToolResultMessage(
+          buildToolResultEnvelope({
+            toolCallId: evaluation.tool_call_id,
+            toolName: evaluation.tool_name,
+            status: success ? "success" : "error",
+            changed: Boolean(execution?.changed),
+            data: resultData,
+            error: success ? null : execution.error,
+          })
+        )
+      );
+    }
+
+    const executorDerivedReply = composeActionReply({
+      modelReply: intent.reply,
+      executionNotes: notes,
+    });
+    let candidateReply = executorDerivedReply;
+    if (
+      intent?.nativeTurn?.baseMessages &&
+      intent?.nativeTurn?.assistantMessage &&
+      toolResultMessages.length
+    ) {
+      try {
+        const finalTurn = await callBuddyAfterTools({
+          baseMessages: intent.nativeTurn.baseMessages,
+          assistantMessage: intent.nativeTurn.assistantMessage,
+          toolResultMessages,
+          tools: BIGBRICEY_TOOLS,
+          fallbackReply: executorDerivedReply,
+        });
+        candidateReply = finalTurn.reply || executorDerivedReply;
+        if (session.email && finalTurn.output?.usage) {
+          logLlmUsage(session.email, finalTurn.output.usage, {
+            model: finalTurn.output.model,
+            provider: finalTurn.output.provider,
+            conversation_id: conversationId || null,
+            purpose: "chat_after_tools",
+          }).catch(() => {});
+        }
+      } catch {
+        // Executor-derived reply is the truthful fallback when the voice pass fails.
+      }
+    }
+    let reply = selectVerifiedNativeToolReply({
+      candidateReply,
+      fallbackReply: executorDerivedReply,
+      toolResults: verifiedToolResults,
+      pendingConfirmation,
+    });
     if (sceneOut != null && !String(reply).trim()) {
       reply = sceneReplyFor(sceneOut);
     }
@@ -1713,36 +2384,102 @@ export default async function handler(req, res) {
       scene: sceneOut,
       conversation_id: conversationId,
       memory_notes: memoryOut,
+      pending_confirmation: pendingConfirmation,
+      ledger_committed: ledgerCommitted,
+      ledger_reloaded: ledgerReloaded,
+      day_revision: foodDayRevision,
     });
-  } catch (e) {
+  } catch {
     return sendJson(res, 500, {
-      error: String(e.message || e),
-      detail: e.detail || null,
+      error: "chat_request_failed",
+      message: "The chat request failed. Please try again.",
     });
   }
 }
 
-async function doAdd(text, rows, res, email, prefix, conversationId) {
+async function doAdd(
+  text,
+  rows,
+  res,
+  email,
+  prefix,
+  conversationId,
+  requestedDay,
+  requestId,
+  authoritativeRowsLoaded,
+  expectedRevision
+) {
+  const commitRow = async (row, successReply) => {
+    if (!supabaseConfig().ok || !authoritativeRowsLoaded) {
+      return sendJson(res, 200, {
+        reply: "The food log is temporarily unavailable, so I didn't change anything.",
+        rows,
+        changed: false,
+        conversation_id: conversationId,
+      });
+    }
+
+    row.id = `chat:${requestId}:direct_food`.slice(0, 200);
+    const next = [
+      ...rows.filter((item) => String(item.id) !== String(row.id)),
+      row,
+    ];
+    try {
+      const syncReceipt = await syncFoodDay(email, requestedDay, next, {
+        rawText: text,
+        allowClear: false,
+        expectedRevision,
+      });
+      expectedRevision = Number(syncReceipt?.revision);
+    } catch (error) {
+      if (error?.code === "stale_food_day_revision") {
+        try {
+          const latest = await loadFoodDaySnapshot(email, requestedDay);
+          return sendJson(res, 200, {
+            reply:
+              "This food day changed in another tab or device, so I reloaded it and did not overwrite anything. Please try that change again.",
+            rows: latest.rows,
+            changed: false,
+            ledger_reloaded: true,
+            day_revision: latest.revision,
+            conversation_id: conversationId,
+          });
+        } catch {
+          /* use the safe generic response below */
+        }
+      }
+      return sendJson(res, 200, {
+        reply: "That food could not be safely saved, so nothing was changed.",
+        rows,
+        changed: false,
+        conversation_id: conversationId,
+      });
+    }
+
+    if (conversationId) {
+      try {
+        await appendMessage(email, conversationId, "assistant", successReply);
+      } catch {
+        /* */
+      }
+    }
+    return sendJson(res, 200, {
+      reply: successReply,
+      rows: next,
+      changed: true,
+      ledger_committed: true,
+      day_revision: expectedRevision,
+      conversation_id: conversationId,
+    });
+  };
+
   // Direct hit on personal library by whole phrase (e.g. "log my shake")
   if (email && supabaseConfig().ok) {
     try {
       const saved = await findSavedFood(email, text);
       if (saved) {
-        const next = [...rows, rowFromSavedFood(saved, 1)];
         const reply = (prefix ? prefix + " " : "") + `Added saved: ${saved.name}`;
-        if (conversationId) {
-          try {
-            await appendMessage(email, conversationId, "assistant", reply);
-          } catch {
-            /* */
-          }
-        }
-        return sendJson(res, 200, {
-          reply,
-          rows: next,
-          changed: true,
-          conversation_id: conversationId,
-        });
+        return commitRow(rowFromSavedFood(saved, 1), reply);
       }
     } catch {
       /* continue */
@@ -1789,21 +2526,8 @@ async function doAdd(text, rows, res, email, prefix, conversationId) {
       conversation_id: conversationId,
     });
   }
-  const next = [...rows, resolved.row];
   const reply = (prefix ? prefix + " " : "") + `Added: ${resolved.row.label}`;
-  if (conversationId) {
-    try {
-      await appendMessage(email, conversationId, "assistant", reply);
-    } catch {
-      /* */
-    }
-  }
-  return sendJson(res, 200, {
-    reply,
-    rows: next,
-    changed: true,
-    conversation_id: conversationId,
-  });
+  return commitRow(resolved.row, reply);
 }
 
 const ABILITIES_REPLY = abilitiesReplyText();
@@ -2130,22 +2854,9 @@ async function persistUserScene(email, scene) {
   const id = normalizeSceneId(scene);
   if (!id && scene !== "none") return;
   const sceneId = id || "none";
-  const profile = await getProfile(email);
-  const prefs =
-    profile?.prefs && typeof profile.prefs === "object" ? { ...profile.prefs } : {};
-  prefs.scene = sceneId;
-  // Track which scenes this user has actually turned on (for “haven’t seen yet” lists)
-  if (sceneId !== "none") {
-    const prev = Array.isArray(prefs.scenes_seen) ? prefs.scenes_seen : [];
-    if (!prev.includes(sceneId)) {
-      prefs.scenes_seen = [...prev, sceneId].slice(-40);
-    }
-  }
-  await sb("profiles", {
-    method: "PATCH",
-    query: { email: `eq.${String(email).toLowerCase()}` },
-    body: { prefs, updated_at: new Date().toISOString() },
-    headers: { Prefer: "return=minimal" },
+  await mergeProfilePrefs(email, {
+    scene: sceneId,
+    ...(sceneId !== "none" ? { scenes_seen: [sceneId] } : {}),
   });
 }
 
@@ -2156,21 +2867,7 @@ async function persistScenesSeen(email, ids) {
     .map((s) => normalizeSceneId(s))
     .filter((s) => s && s !== "none");
   if (!add.length) return;
-  const profile = await getProfile(email);
-  const prefs =
-    profile?.prefs && typeof profile.prefs === "object" ? { ...profile.prefs } : {};
-  const prev = Array.isArray(prefs.scenes_seen) ? prefs.scenes_seen : [];
-  const next = [...prev];
-  for (const id of add) {
-    if (!next.includes(id)) next.push(id);
-  }
-  prefs.scenes_seen = next.slice(-40);
-  await sb("profiles", {
-    method: "PATCH",
-    query: { email: `eq.${String(email).toLowerCase()}` },
-    body: { prefs, updated_at: new Date().toISOString() },
-    headers: { Prefer: "return=minimal" },
-  });
+  await mergeProfilePrefs(email, { scenes_seen: add });
 }
 
 /**
@@ -2483,168 +3180,163 @@ function isNonFoodUtterance(text) {
   return false;
 }
 
-async function interpretIntent(text, rows, ctx = {}) {
-  if (!llmConfig().ok) {
-    // Offline: export keyword still works without model
-    if (/export|print.*(stat|report|summary)|stats? pack|for my (doctor|gpt|claude|grok)/i.test(text)) {
-      return { reply: "Building your data pack…", actions: [{ type: "export_report", days: 30 }] };
+const PRIVATE_READ_NUTRIENT_KEYS = [
+  "kcal",
+  "protein",
+  "fat",
+  "carbs",
+  "net_carbs",
+  "fiber",
+  "sugars",
+  "potassium",
+  "magnesium",
+  "sodium",
+  "calcium",
+  "iron",
+];
+
+function boundedRecord(value, limit = 40) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return Object.fromEntries(Object.entries(value).slice(0, limit));
+}
+
+function boundedLedgerToolRead(log = {}) {
+  const sourceItems = Array.isArray(log.items) ? log.items : [];
+  const items = sourceItems.slice(-50).map((raw) => {
+    const item = {
+      id: String(raw?.id || "").slice(0, 120),
+      label: String(raw?.label || "Food").slice(0, 240),
+    };
+    if (raw?.source) item.source = String(raw.source).slice(0, 80);
+    if (Number.isFinite(Number(raw?.grams))) item.grams = Number(raw.grams);
+    for (const key of PRIVATE_READ_NUTRIENT_KEYS) {
+      if (raw?.[key] == null || !Number.isFinite(Number(raw[key]))) continue;
+      item[key] = Number(raw[key]);
     }
-    return { actions: [{ type: "add", food_text: text }] };
+    const nutrients = boundedRecord(raw?.nutrients, 30);
+    if (nutrients && Object.keys(nutrients).length) item.nutrients = nutrients;
+    return item;
+  });
+  return {
+    items,
+    omitted_count: Math.max(0, sourceItems.length - items.length),
+    totals: boundedRecord(log.totals, 40) || {},
+    known_subtotals: boundedRecord(log.known_subtotals, 40) || {},
+    coverage: boundedRecord(log.coverage, 40) || {},
+    data_quality: log.data_quality || null,
+    ...(log.extra_nutrient_totals
+      ? {
+          extra_nutrient_totals: boundedRecord(log.extra_nutrient_totals, 40),
+          extra_nutrient_known_subtotals: boundedRecord(
+            log.extra_nutrient_known_subtotals,
+            40
+          ),
+          extra_nutrient_coverage: boundedRecord(log.extra_nutrient_coverage, 40),
+        }
+      : {}),
+  };
+}
+
+function projectPrivateReadEvent(event = {}) {
+  const payload =
+    event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+      ? event.payload
+      : {};
+  const details = {};
+  for (const key of [
+    "duration_min",
+    "sets",
+    "reps",
+    "load_lb",
+    "steps",
+    "measure_id",
+    "value",
+    "unit",
+    "label",
+    "notes",
+  ]) {
+    const value = payload[key];
+    if (typeof value === "number" && Number.isFinite(value)) details[key] = value;
+    else if (typeof value === "string" && value.trim()) details[key] = value.slice(0, 240);
   }
+  return {
+    category_id: String(event.category_id || "custom").slice(0, 80),
+    title: String(event.title || "").slice(0, 240),
+    occurred_at: event.occurred_at || null,
+    source: String(event.source || "").slice(0, 40),
+    ...(Object.keys(details).length ? { details } : {}),
+  };
+}
 
-  const summary = rows.map((r, i) => ({
-    index: i,
-    id: r.id,
-    label: r.label,
-    kcal: r.kcal,
-    protein: r.protein,
-    fat: r.fat,
-    carbs: r.carbs,
-    grams: r.grams,
-  }));
+function normalizeRequestedDay(value) {
+  const raw = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  const [year, month, day] = raw.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return raw;
+}
 
+function normalizeClientRequestId(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.length > 160 || !/^[a-zA-Z0-9._:-]+$/.test(raw)) return null;
+  return raw;
+}
+
+async function interpretIntent(text, rows, ctx = {}) {
   const personBlock = formatPersonBlock(ctx);
+  const priorCapped = prepareModelHistory(ctx.history, {
+    maxMessages: 24,
+    currentText: text,
+  });
 
-  const saved = Array.isArray(ctx.savedFoods) ? ctx.savedFoods : [];
-  const savedBlock = saved.length
-    ? `USER SAVED FOODS (personal library — use these exact names; macros already known):\n${saved
-        .map(
-          (f) =>
-            `- "${f.name}" (${f.serving_label}): ${f.kcal} kcal, P${f.protein} F${f.fat} C${f.carbs}${
-              f.ingredients ? " | " + String(f.ingredients).slice(0, 80) : ""
-            }`
-        )
-        .join("\n")}`
-    : `USER SAVED FOODS: (none yet)`;
+  const system = buildBuddySystemPrompt({
+    personBlock,
+    currentDate: ctx.currentDate,
+    scene: ctx.scene,
+    scenesSeen: ctx.scenesSeen,
+    theme: ctx.theme,
+    memoryNotes: ctx.memoryNotes,
+    chatSummary: ctx.chatSummary,
+    currentLog: buildCurrentLogContext(rows),
+  });
+  const baseMessages = [
+    { role: "system", content: system },
+    ...priorCapped,
+    { role: "user", content: text },
+  ];
 
-  const theme = ctx.theme && typeof ctx.theme === "object" ? ctx.theme : null;
-  const themeBlock = theme
-    ? `CURRENT THEME (live UI — use for “change it back” / undo):\n${JSON.stringify({
-        preset: theme.preset,
-        accent: theme.accent,
-        bg0: theme.bg0,
-        ring_left: theme.ring_left,
-        ring_eaten: theme.ring_eaten,
-        ring_goal: theme.ring_goal,
-        ring_over: theme.ring_over,
-        font_scale: theme.font_scale,
-        radius: theme.radius,
-        density: theme.density,
-      })}`
-    : `CURRENT THEME: default midnight (eaten ring #38bdf8)`;
-
-  const sceneNow = ctx.scene || "none";
-  const seenScenes = Array.isArray(ctx.scenesSeen) ? ctx.scenesSeen : [];
-  const sceneBlock = `CURRENT SCENE: ${sceneNow}
-SCENES USER HAS TRIED (if known): ${seenScenes.length ? seenScenes.join(", ") : "(unknown — use chat history)"}
-ALL SCENE IDS: rain, snow, desert, ocean, matrix, stars, confetti, fireflies, aurora, mist, neon_city, none
-When listing: use a numbered list in your reply. When applying: set_scene action. Talk like a human.`;
-
-  const memNotes = Array.isArray(ctx.memoryNotes) ? ctx.memoryNotes : [];
-  const memoryBlock = memNotes.length
-    ? `PERMANENT USER NOTES (across all chats):\n${memNotes.map((n) => `- ${n}`).join("\n")}`
-    : `PERMANENT USER NOTES: (none)`;
-
-  const summaryBlock = ctx.chatSummary
-    ? `EARLIER IN THIS CONVERSATION (compacted summary):\n${String(ctx.chatSummary).slice(0, 12000)}`
-    : "";
-
-  const system = `${DOMAIN_CONTRACT}
-
-${personBlock}
-
-${savedBlock}
-
-${themeBlock}
-
-${sceneBlock}
-
-${memoryBlock}
-
-${summaryBlock}
-
-${knowledgeForSystemPrompt()}
-
-${capabilitiesForSystemPrompt()}
-
-You manage:
-1) TODAY's food table (add/fix/remove/clear) — server looks up real nutrition; NEVER invent macros
-2) Personal SAVED FOODS library — shakes/recipes/favorites the user teaches once, then logs by name
-3) DAILY TARGETS (kcal + macros + eating style) — user can change ANY day by talking: low carb, high carb, vegan, carnivore, fruit day, whatever. Use set_goals.
-4) Forever cloud events — life activity becomes categories automatically
-5) Watch targets — "watch my potassium, warn if under 3500mg / 7 days"
-6) Product backlog — app ideas/bugs via feedback action with message + category + theme_key + theme_label. Categories: layout, charts, themes, boxes, food, goals, chat, bugs, mobile, export, other. theme_key = short snake_case cluster id (same idea → same key). NEVER say you are messaging Brice/Bryce. Say product backlog for the owner to review. NEVER auto-promise builds. NEVER private food diary.
-11) ADMIN ONLY: if the logged-in user asks “what are people asking for / suggestion digest / backlog summary” → list_suggestions (owner reviews; nothing auto-builds).
-12) PERMANENT NOTES — remember facts across conversations with remember/save_memory (short notes). forget/remove_memory to drop. Use for preferences like “likes black eaten rings” only when user asks to remember. Max short facts, not a diary dump.
-7) Export packs — "print my stats" / "export for my doctor" / "pack for ChatGPT"
-8) TODAY LAYOUT — reorder/resize boxes on the Today screen. Use set_layout. Panels: chat, kcal, pro, fat, carb, net, minerals, summary, food. Sizes: full, half, third.
-9) LOOK / THEME — set_theme. Presets: midnight, light, neon, forest, pink, terminal, pastel, sunset. Vibes: mlp/my_little_pony/cute→pastel, matrix/hacker→terminal, barbie→pink. Fields: accent, bg0/background, ring_left, ring_eaten (eaten circle), ring_goal, ring_over, font_scale (0.85–1.3), radius (0–32) or shape square|round, density cozy|compact.
-10) CUSTOM BOXES — (a) counters: push-ups/water goals via add_box kind counter. (b) CHARTS: any history graph via add_box kind:chart (or add_chart). Fields: measures[] (protein,kcal,fat,carbs,magnesium,potassium,sodium,fiber,steps,pushups,water_oz…), days|weeks|months|years, chart: line|bar|pie, title, color, size. Example: magnesium last 6 months line chart. remove_box deletes.
-
-Current food log:
-${JSON.stringify(summary, null, 0)}
-
-OUTPUT FORMAT:
-- Pure chat (questions, opinions, lists, favorites, trivia, banter): answer in normal language. Free text is fine.
-- When changing the app (food, scene, theme, goals, layout, boxes, etc.): respond with JSON:
-{"reply":"what you say to the user","actions":[ ... ]}
-- Chat with no app change: either free text OR {"reply":"...","actions":[]}
-- Prefer natural, complete answers — not one-word confirmations unless that's enough.
-- Action examples (only when needed): add/update/remove/clear food, save_food, log_saved, set_goals, set_layout, set_theme, set_scene, add_box, add_chart, remember, export_report, etc.
-
-Rules:
-- You HAVE conversation history in prior messages. “Change it back” / undo → use CURRENT THEME + recent turns. Default eaten ring is #38bdf8 if they want original blue.
-- “Remember that I like X” → remember action. Do not remember medical diagnoses.
-- Ambient vibes / scenes (client also handles these): “make it rain”, “make it like rain”, “let me see ocean”, “show me sand”, “desert”, “snow”, “matrix”, “stars”, “stop the snow”, “clear effects” → set_scene with scene id from CAPABILITIES. Casual phrasing counts. NEVER food-add for scene talk.
-- "save my shake / remember this food / store this recipe" → save_food. User MUST supply numbers — NEVER invent macros/micros. When they give a FULL label/breakdown, store ALL of it: kcal, macros, fiber, sugars, net_carbs, potassium, magnesium, sodium, iron, calcium, vitamins, and ingredients_list. Put extra vitamins/minerals in nutrients:{}. One saved food can hold many ingredients + many micros (not one number only).
-- "I had my morning shake" / "log the HLTH shake" when name matches SAVED FOODS → log_saved (not USDA guess)
-- "list my saved foods" → list_saved
-- "delete saved X" → delete_saved
-- Diet/goal changes ANY time: "I'm low carb today", "set carbs to 40", "2000 calories", "high protein day", "vegan this week", "carnivore", "fruit day" → set_goals. Map styles to: low_carb, keto, carnivore, higher_protein, plant_forward, vegan, flexible, no_pref, or short free text. If they only change style, set recompute:true so macros rebalance near their calorie target. If they give exact numbers, use those (don't invent). NEVER invent macros for food logging.
-- TOTAL CARBS vs NET CARBS are SEPARATE goals. "100g carbs and 50g net carbs" → set_goals with carbs:100 AND net_carbs:50. Do NOT say this is impossible. Both fields exist; the UI has separate Carbs and Net carbs rings.
-- Layout moves: "put chat at the bottom", "chat below food", "make protein half width", "put macros side by side", "reset layout" → set_layout (or reset_layout). Prefer put/before/after or chat:top|bottom for simple moves; full order+sizes when rearranging many boxes. Panel ids only: chat,kcal,pro,fat,carb,net,minerals,summary,food.
-- Look/theme: "make it neon", "pastel / My Little Pony vibe", "eaten rings pink", "make circles/goal yellow", "bigger text", "smaller text", "square corners", "round corners", "compact mode", "light mode", "reset theme" → set_theme (include ring_eaten/ring_left/ring_goal, font_scale, radius or shape).
-- "What can you do / abilities / what are you able to change" → empty actions + reply listing food logging, goals, layout, theme/colors/font/corners, custom boxes, charts, export. NEVER try to add food for capability questions.
-- YOU ARE A PERSON IN CHAT, not a script. Answer naturally. “are you there?” → “Yeah I’m here” — not a feature list.
-- Scenes available: rain, snow, desert, ocean, matrix, stars, confetti, fireflies, aurora, mist, neon_city, none.
-- When user wants a SCENE LOOK applied → set_scene with that id. When they want a LIST / favorites / “what’s left” → empty actions + your own numbered reply. Listen to corrections (“I already saw X”) and don’t re-list those. Do NOT food-add for scene talk.
-- Never invent scene ids outside the list. Never paste a robotic abilities dump for small talk.
-- Custom counters: "add a push-up box with goal 100", "track water 100oz" → add_box kind counter.
-- Charts/graphs: "show magnesium last 6 months", "graph protein 3 weeks", "pie of macros this week", "bar chart calories 90 days" → add_chart / add_box kind:chart with measures + days/weeks/months + chart line|bar|pie. Always create a box they can keep/move — don't only describe data in text if they asked for a graph.
-- remove_box to delete any custom box.
-- Ambiguous food ("sushi") → empty actions + reply asking what kind before add
-- Stress/argument → log_activity with category_id stress, title factual (no counseling)
-- Export/print/stats for doctor or other AI → export_report with days (7/30/90)
-- Watch magnesium/potassium → set_watch
-- "30000 steps" → log_steps
-- App ideas / “I wish the app had X” → feedback with message + category + theme_key + theme_label. Same idea from many people should reuse the same theme_key. Phrase as backlog for owner review — NEVER “send to Brice/Bryce”. Do NOT promise it will be built.
-- Admin “what are people asking for?” → list_suggestions only for admin; summarize themes/counts; do not implement features from that list unless owner decides.
-- Never invent nutrition numbers
-- Totals questions → empty actions + answer from log
-- General chat / trivia / opinions → just answer. Empty actions. Do NOT refuse normal conversation.
-- You are BigBricey (the product buddy). Talk to the logged-in user as a friend in their room.`;
-
-  const history = Array.isArray(ctx.history) ? ctx.history : [];
-  const prior = [];
-  for (const m of history) {
-    const role = m.role === "assistant" || m.role === "bot" ? "assistant" : "user";
-    const content = String(m.content || "").trim();
-    if (!content) continue;
-    prior.push({ role, content: content.slice(0, 8000) });
+  if (ctx.confirmedNativeCall?.ok && ctx.confirmedNativeCall.status === "ready") {
+    const evaluations = [ctx.confirmedNativeCall];
+    return {
+      reply: "",
+      actions: evaluations.map(actionFromValidatedToolCall).filter(Boolean),
+      nativeTurn: {
+        evaluations,
+        baseMessages,
+        assistantMessage: assistantMessageForValidatedCalls(evaluations),
+      },
+    };
   }
-  // Cap prior messages for safety while still using a large window
-  const priorCapped = prior.length > 100 ? prior.slice(-100) : prior;
+
+  if (!llmConfig().ok) {
+    return { error: "model_failed", detail: "llm_not_configured" };
+  }
 
   try {
-    const out = await llmChat({
-      temperature: 0.6,
-      title: "BigBricey-Chat",
-      messages: [
-        { role: "system", content: system },
-        ...priorCapped,
-        { role: "user", content: text },
-      ],
+    const turn = await callBuddyFirstPass({
+      systemPrompt: system,
+      history: priorCapped,
+      userText: text,
+      tools: BIGBRICEY_TOOLS,
     });
+    const out = turn.output;
     // Meter tokens per user (fire-and-forget)
     if (ctx.email && out?.usage) {
       logLlmUsage(ctx.email, out.usage, {
@@ -2661,44 +3353,47 @@ Rules:
         { model: out.model, provider: out.provider, purpose: "chat_no_usage" }
       ).catch(() => {});
     }
-    return parseModelChatResponse(out.content);
+    const evaluations = turn.toolCalls.map((call) => {
+      const checked = validateNativeToolCall(call);
+      if (checked.ok) {
+        if (
+          checked.tool_name === "remove_food" &&
+          !checked.arguments.day &&
+          ctx.currentDate
+        ) {
+          checked.arguments.day = ctx.currentDate;
+        }
+        return checked;
+      }
+      return {
+        ...checked,
+        tool_call_id: String(call?.id || "").slice(0, 200),
+        tool_name: String(call?.function?.name || "").slice(0, 100),
+      };
+    });
+    const valid = evaluations.filter((evaluation) => evaluation.ok);
+    const allCallsValid = evaluations.every((evaluation) => evaluation.ok);
+    const executableCalls = allCallsValid ? valid : [];
+    const actions = executableCalls
+      .map(actionFromValidatedToolCall)
+      .filter(Boolean);
+    const reply = allCallsValid
+      ? turn.reply || ""
+      : "I couldn't safely use that app action. Nothing changed.";
+    return {
+      reply,
+      actions,
+      nativeTurn: evaluations.length
+        ? {
+            evaluations,
+            baseMessages: turn.baseMessages,
+            assistantMessage: assistantMessageForValidatedCalls(executableCalls),
+          }
+        : null,
+    };
   } catch (e) {
     return { error: "model_failed", detail: e.detail || e.message };
   }
-}
-
-/**
- * Hermes-style: free text is a valid reply.
- * JSON {reply, actions} still used when the model is driving the app.
- */
-function parseModelChatResponse(content) {
-  const raw = String(content || "").trim();
-  if (!raw) {
-    return { error: "model_failed", detail: "empty_model_response" };
-  }
-
-  // Strip ```json fences if present
-  let body = raw;
-  const fence = body.match(/^```(?:json)?\s*([\s\S]*?)```\s*$/i);
-  if (fence) body = fence[1].trim();
-
-  const parsed = extractJson(body);
-  if (!parsed?.error && parsed && typeof parsed === "object") {
-    const reply =
-      parsed.reply != null
-        ? String(parsed.reply)
-        : parsed.message != null
-          ? String(parsed.message)
-          : "";
-    const actions = Array.isArray(parsed.actions) ? parsed.actions : [];
-    // JSON object with neither reply nor actions → still show raw-ish
-    if (reply || actions.length) {
-      return { ...parsed, reply: reply || "", actions };
-    }
-  }
-
-  // Model spoke English (or messy non-JSON) — SHOW IT. Never discard.
-  return { reply: raw, actions: [] };
 }
 
 function findRowIndex(rows, action) {
@@ -2709,11 +3404,14 @@ function findRowIndex(rows, action) {
   }
   const m = String(action.match || action.food || action.label || "").toLowerCase();
   if (!m) return -1;
-  // prefer last matching row (most recent)
-  for (let i = rows.length - 1; i >= 0; i--) {
-    if (String(rows[i].label || "").toLowerCase().includes(m)) return i;
+  const matches = [];
+  for (let i = 0; i < rows.length; i += 1) {
+    if (String(rows[i].label || "").toLowerCase().includes(m)) matches.push(i);
   }
-  return -1;
+  // Native label selectors are permitted specifically for rows omitted from
+  // the compact prompt, but never guess when two ledger entries match.
+  if (action.__tool_call_id && matches.length > 1) return -2;
+  return matches.length ? matches[matches.length - 1] : -1;
 }
 
 function stripAmount(label) {

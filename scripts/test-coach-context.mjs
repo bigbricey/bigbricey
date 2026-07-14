@@ -3,6 +3,7 @@
  * Run: node scripts/test-coach-context.mjs
  */
 import {
+  COACH_BEHAVIOR_RULES,
   formatPersonBlock,
   eatingStyleGuidance,
   normalizeEatingStyle,
@@ -80,10 +81,11 @@ assert(/no_pref|no special/i.test(openBlock), "open style");
 assert(/2800/.test(openBlock), "includes kcal target from goals");
 
 // domain contract coherence
+const combinedPolicy = `${DOMAIN_CONTRACT}\n${COACH_BEHAVIOR_RULES}`;
 assert(/BigBricey/.test(DOMAIN_CONTRACT), "contract brands BigBricey");
-assert(/NEVER force|Never force|forcing any diet tribe/i.test(DOMAIN_CONTRACT), "contract no force tribe");
-assert(/not medical advice/i.test(DOMAIN_CONTRACT), "contract not medical advice");
-assert(/vegan/i.test(DOMAIN_CONTRACT) && /carnivore/i.test(DOMAIN_CONTRACT), "contract mentions both styles");
+assert(/NEVER force|Never force|forcing any diet tribe/i.test(combinedPolicy), "combined policy does not force a diet tribe");
+assert(/not medical advice|no diagnosis|don't claim medical diagnosis/i.test(combinedPolicy), "combined policy limits medical claims");
+assert(/vegan/i.test(combinedPolicy) && /carnivore/i.test(combinedPolicy), "combined policy covers both styles");
 assert(!/always low.?carb for everyone/i.test(DOMAIN_CONTRACT), "no always-low-carb contradiction");
 
 // incomplete onboarding
