@@ -77,10 +77,10 @@ export function buildDeterministicConversationExcerpt(
 /** Build the bounded, deterministic context returned to the model layer. */
 export function selectChatContextWindow(
   rows,
-  { maxMessages = 120, compactAfterExtraMessages = 40 } = {}
+  { maxMessages = 24, compactAfterExtraMessages = 0 } = {}
 ) {
   const ordered = messagesInChronologicalOrder(rows);
-  const recentLimit = positiveInteger(maxMessages, 120);
+  const recentLimit = positiveInteger(maxMessages, 24);
   const compactExtra = Math.max(0, Math.floor(Number(compactAfterExtraMessages) || 0));
   const cut = Math.max(0, ordered.length - recentLimit);
   const shouldCompact = ordered.length > recentLimit + compactExtra;

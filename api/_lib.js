@@ -9,8 +9,8 @@ Return ONLY valid JSON:
 {
   "food_query": "short searchable food name",
   "amount": number,
-  "unit": "g"|"oz"|"lb"|"scoop"|"scoops"|"egg"|"eggs"|"cup"|"tbsp"|"tsp"|"piece"|"serving",
-  "grams_estimate": number or null,
+  "unit": "g"|"oz"|"lb"|"kg"|"scoop"|"scoops"|"egg"|"eggs"|"cup"|"tbsp"|"tsp"|"stick"|"sticks"|"piece"|"serving",
+  "grams_estimate": number only for an exact g/oz/lb/kg conversion, otherwise null,
   "notes": "optional short note"
 }`;
 
@@ -64,7 +64,7 @@ export function offlineParse(text) {
   let food = t;
 
   const m = t.match(
-    /^([\d./]+)\s*(pounds|pound|lbs|lb|ounces|ounce|oz|grams|gram|kg|g|scoops|scoop|eggs|egg|cups|cup|tbsp|tsp|pieces|piece)?\s*(.*)$/i
+    /^(half|quarter|one|a|an|[\d.]+\/[\d.]+|[\d.]+)\s*(?:of\s+an?\s+|an?\s+)?(pounds|pound|lbs|lb|ounces|ounce|oz|grams|gram|kg|g|scoops|scoop|eggs|egg|cups|cup|tbsp|tsp|sticks|stick|pieces|piece)?\s*(?:of\s+)?(.*)$/i
   );
   if (m) {
     amount = evalFraction(m[1]);
@@ -89,6 +89,8 @@ export function offlineParse(text) {
     eggs: "eggs",
     cup: "cup",
     cups: "cup",
+    stick: "stick",
+    sticks: "stick",
   };
   unit = unitMap[unit] || unit;
 
@@ -104,6 +106,10 @@ export function offlineParse(text) {
 }
 
 function evalFraction(s) {
+  const word = String(s).toLowerCase();
+  if (word === "half") return 0.5;
+  if (word === "quarter") return 0.25;
+  if (word === "one" || word === "a" || word === "an") return 1;
   if (String(s).includes("/")) {
     const [a, b] = String(s).split("/").map(Number);
     return a / b;
@@ -124,19 +130,47 @@ export function toGrams(amount, unit) {
     case "egg":
     case "eggs":
       return amount * 50;
-    case "scoop":
-    case "scoops":
-      return amount * 30;
-    case "cup":
-    case "cups":
-      return amount * 150;
-    case "tbsp":
-      return amount * 15;
-    case "tsp":
-      return amount * 5;
     default:
-      return 100;
+      return null;
   }
+}
+
+/**
+ * Prefer explicit quantity words in the user's own phrase over a model's
+ * generic serving fallback for the few household units with a fixed basis.
+ */
+export function normalizeParsedFoodQuantity(text, parsed = {}) {
+  const next = { ...parsed };
+  const raw = String(text || "").toLowerCase().trim();
+  const amountToken = "(half|quarter|one|a|an|[\\d.]+\\/[\\d.]+|[\\d.]+)";
+  const butterStick = raw.match(
+    new RegExp(
+      `(?:^|\\b)${amountToken}\\s*(?:of\\s+an?\\s+|an?\\s+)?sticks?\\s*(?:of\\s+)?(?:[a-z]+\\s+){0,3}butter\\b`,
+      "i"
+    )
+  );
+  if (butterStick) {
+    next.amount = evalFraction(butterStick[1]);
+    next.unit = "stick";
+    next.grams_estimate = null;
+  }
+  return next;
+}
+
+/** Exact mass basis only; no generic cup, scoop, piece, or serving guesses. */
+export function verifiedFoodGrams(parsed, query) {
+  const amount = Number(parsed?.amount);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const unit = String(parsed?.unit || "").toLowerCase();
+  const exact = toConvertibleGrams(amount, unit);
+  if (exact != null) return exact;
+  if ((unit === "egg" || unit === "eggs") && /\begg\b/i.test(String(query || ""))) {
+    return amount * 50;
+  }
+  if ((unit === "stick" || unit === "sticks") && /\bbutter\b/i.test(String(query || ""))) {
+    return amount * 113.398;
+  }
+  return null;
 }
 
 /**
@@ -302,14 +336,74 @@ export function scoreFood(query, f) {
   const protein = Number(n.protein) || 0;
   const fat = Number(n.fat) || 0;
   const carbs = Number(n.carbs) || 0;
+  const exactMineralIngredient =
+    /\bsalt\b/i.test(q) &&
+    /\bsalt\b/i.test(d) &&
+    !/popcorn|chips|snack|seasoning|rub|sauce|dip/i.test(d) &&
+    Number(n.sodium) > 0;
   if (kcal > 0) s += 12;
+  else if (exactMineralIngredient) s += 18;
   else s -= 40; // hard penalty — user sees blank calories
   if (protein > 0 || fat > 0 || carbs > 0) s += 6;
+  else if (exactMineralIngredient) s += 6;
   if (kcal > 0 && protein > 0) s += 4;
   // garbage OFF entries sometimes claim fat/kcal with zero carbs for veggies
   if (/artichoke|berry|vegetable|fruit/i.test(q) && fat > 8 && carbs < 1) s -= 8;
 
   return s;
+}
+
+const FOOD_QUERY_STOP_WORDS = new Set([
+  "a", "an", "and", "the", "of", "with", "for", "my", "some",
+  "half", "quarter", "one", "piece", "pieces", "serving", "servings",
+  "stick", "sticks", "cup", "cups", "tbsp", "tsp", "oz", "ounce",
+  "ounces", "lb", "lbs", "pound", "pounds", "g", "gram", "grams", "kg",
+  "fresh", "frozen", "organic", "canned", "drained",
+]);
+const FOREIGN_FOOD_FORMS = new Set([
+  "popcorn", "candy", "cereal", "cookie", "cookies", "cracker", "crackers",
+  "chips", "soup", "dressing", "sandwich", "sauce", "seasoning", "snack",
+  "dip", "bar", "bars", "bits", "imitation", "meatless", "vegetarian", "vegan",
+]);
+
+function foodWords(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+/** Reject semantically contaminated search hits before they reach the ledger. */
+export function foodMatchQuality(query, food) {
+  const queryWords = foodWords(query).filter(
+    (word) => word.length > 1 && !FOOD_QUERY_STOP_WORDS.has(word) && !/^\d/.test(word)
+  );
+  const descriptionWords = foodWords(food?.description);
+  const querySet = new Set(queryWords);
+  const descriptionSet = new Set(descriptionWords);
+  const matched = queryWords.filter((word) => descriptionSet.has(word));
+  const coverage = queryWords.length ? matched.length / queryWords.length : 0;
+  const foreignForms = descriptionWords.filter(
+    (word) => FOREIGN_FOOD_FORMS.has(word) && !querySet.has(word)
+  );
+  const butterMismatch =
+    querySet.has("butter") &&
+    descriptionWords.some((word) => ["light", "whipped", "spread", "margarine", "blend"].includes(word)) &&
+    !descriptionWords.some((word) => querySet.has(word) && ["light", "whipped", "spread", "margarine", "blend"].includes(word));
+  const requiredCoverage = queryWords.length <= 1 ? 1 : 0.66;
+  return {
+    credible:
+      queryWords.length > 0 &&
+      coverage >= requiredCoverage &&
+      foreignForms.length === 0 &&
+      !butterMismatch,
+    coverage,
+    foreignForms,
+    butterMismatch,
+  };
 }
 
 /** Normalize Open Food Facts nutriments → per-100g macros */
@@ -354,12 +448,12 @@ export function offNutrients(n) {
   return nutrients;
 }
 
-export function pickBestFood(foods) {
+export function pickBestFood(foods, query = "") {
   if (!foods?.length) return null;
-  const sorted = [...foods].sort((a, b) => b.score - a.score);
-  // Prefer first with real calories
-  const withCals = sorted.find((f) => (Number(f.nutrients?.kcal) || 0) > 0);
-  return withCals || sorted[0];
+  const credible = query
+    ? foods.filter((food) => foodMatchQuality(query, food).credible)
+    : [...foods];
+  return credible.sort((a, b) => b.score - a.score)[0] || null;
 }
 
 export function round(n) {
@@ -471,7 +565,10 @@ export async function openFoodFactsSearch(q) {
         f.nutrients.kcal > 0 ||
         f.nutrients.protein > 0 ||
         f.nutrients.fat > 0 ||
-        f.nutrients.carbs > 0
+        f.nutrients.carbs > 0 ||
+        f.nutrients.sodium > 0 ||
+        f.nutrients.potassium > 0 ||
+        f.nutrients.magnesium > 0
     );
 
   foods.sort((a, b) => b.score - a.score);
@@ -565,7 +662,7 @@ export async function foodSearch(q) {
  */
 export async function resolveFood(text, opts = {}) {
   const parseResult = await parseFood(text);
-  const parsed = parseResult.parsed;
+  const parsed = normalizeParsedFoodQuantity(text, parseResult.parsed);
   if (parsed?.error === "off_topic") {
     return { error: "off_topic" };
   }
@@ -602,7 +699,18 @@ export async function resolveFood(text, opts = {}) {
   const searchQ = expandQuery(q);
   let search;
   try {
-    search = await foodSearch(searchQ);
+    const queries =
+      searchQ.toLowerCase() === String(q).toLowerCase()
+        ? [searchQ]
+        : [searchQ, q];
+    const searches = await Promise.all(queries.map((query) => foodSearch(query)));
+    search = {
+      query: q,
+      foods: searches
+        .flatMap((result) => result.foods || [])
+        .sort((a, b) => b.score - a.score),
+      errors: searches.flatMap((result) => result.errors || []),
+    };
   } catch (e) {
     return {
       parsed,
@@ -613,21 +721,32 @@ export async function resolveFood(text, opts = {}) {
     };
   }
 
-  const best = pickBestFood(search.foods || []);
+  // Search expansion improves ranking, but semantic acceptance is checked
+  // against what the user actually named so "bacon" does not require every
+  // word from the USDA-oriented expansion.
+  const best = pickBestFood(search.foods || [], q);
   if (!best) {
+    const saltNote = /\bsalt\b/i.test(q)
+      ? "I couldn't find a credible pure-salt nutrition match, so I did not substitute a snack or seasoning product. Give me the package label or an exact gram amount."
+      : "No credible match in the food databases — try a more specific name or package label";
     return {
       parsed,
       match: null,
       row: null,
-      note: "No match in food databases — try a different name",
+      note: saltNote,
       detail: search.errors || null,
     };
   }
 
-  const grams =
-    Number(parsed?.grams_estimate) ||
-    toGrams(Number(parsed?.amount) || 1, parsed?.unit || "serving") ||
-    100;
+  const grams = verifiedFoodGrams(parsed, q);
+  if (grams == null) {
+    return {
+      parsed,
+      match: best,
+      row: null,
+      note: `I found “${best.description}”, but I couldn't verify the weight of “${formatAmount(parsed) || "that serving"}” for this exact food. Give me grams, ounces, pounds, or the package serving weight.`,
+    };
+  }
   const scale = grams / 100;
   const n = best.nutrients || {};
   const scaledNutrient = (value) => {
@@ -653,11 +772,13 @@ export async function resolveFood(text, opts = {}) {
   };
 
   // Never ship a blank-calorie row if we can avoid it
-  if (
-    (Number(row.kcal) || 0) <= 0 &&
-    (Number(row.protein) || 0) <= 0 &&
-    (Number(row.fat) || 0) <= 0
-  ) {
+  const positiveEnergyOrMacro = [row.kcal, row.protein, row.fat, row.carbs].some(
+    (value) => Number(value) > 0
+  );
+  const explicitMacroSet = [row.kcal, row.protein, row.fat, row.carbs].every(
+    (value) => value != null && Number.isFinite(Number(value))
+  );
+  if (!positiveEnergyOrMacro && !explicitMacroSet) {
     return {
       parsed,
       match: best,

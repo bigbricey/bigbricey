@@ -197,6 +197,28 @@ test("a capped summary keeps the context nearest to the live message window", as
   }
 });
 
+test("the default model window excerpts every turn older than the live 24 messages", async () => {
+  const rows = Array.from({ length: 60 }, (_, index) =>
+    message(index, { content: `continuity turn ${index}` })
+  );
+  installFakeSupabase({ messages: rows });
+
+  try {
+    const context = await buildChatContextForModel(
+      "brice@example.com",
+      "conversation-1"
+    );
+
+    assert.equal(context.messages.length, 24);
+    assert.equal(context.messages[0].id, "message-0036");
+    assert.equal(context.messages.at(-1).id, "message-0059");
+    assert.match(context.summary, /continuity turn 35\b/);
+    assert.equal(context.compacted, true);
+  } finally {
+    restoreEnvironment();
+  }
+});
+
 test("memory notes accept legacy text or structured text while removing unsafe controls and duplicates", async () => {
   installFakeSupabase({
     memoryNotes: [

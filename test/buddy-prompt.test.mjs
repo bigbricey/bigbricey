@@ -23,8 +23,49 @@ test("native buddy prompt is conversationally broad and delegates app state to t
   );
   assert.match(prompt, /never[^\n]{0,80}(?:guess|infer|embellish)[^\n]{0,100}private fact/i);
   assert.match(prompt, /My Little Pony[^\n]{0,100}pastel/i);
+  assert.match(prompt, /set_tracker[^\n]{0,160}actually created/i);
+  assert.match(prompt, /honor the user['’]s stated eating style/i);
+  assert.match(prompt, /skip ceremonial openings/i);
   assert.doesNotMatch(prompt, /OUTPUT FORMAT|\{"reply"|JSON actions/i);
-  assert.ok(prompt.length < 12_000, `prompt should stay focused, got ${prompt.length}`);
+  assert.ok(prompt.length < 18_000, `prompt should stay focused, got ${prompt.length}`);
+});
+
+test("recent excluded conversation detail survives the prompt excerpt cap", async () => {
+  const { buildBuddySystemPrompt } = await import(PROMPT_MODULE);
+  const prompt = buildBuddySystemPrompt({
+    chatSummary:
+      "Earlier conversation excerpts:\n" +
+      "oldest detail ".repeat(500) +
+      "\nuser: newest-continuity-sentinel",
+  });
+
+  assert.match(prompt, /newest-continuity-sentinel/);
+});
+
+test("recent excluded detail survives a full profile, memory list, and ledger", async () => {
+  const { buildBuddySystemPrompt } = await import(PROMPT_MODULE);
+  const prompt = buildBuddySystemPrompt({
+    personBlock: "p".repeat(20_000),
+    memoryNotes: Array.from(
+      { length: 40 },
+      (_, index) => `memory ${index} ${"m".repeat(300)}`
+    ),
+    chatSummary:
+      "Earlier conversation excerpts:\n" +
+      "old detail ".repeat(2_000) +
+      "\nuser: newest-stress-sentinel",
+    currentLog: {
+      items: Array.from({ length: 40 }, (_, index) => ({
+        id: `row-${index}-${"x".repeat(100)}`,
+        label: `Food ${index} ${"l".repeat(100)}`,
+        grams: index + 1,
+      })),
+    },
+    theme: { preset: "pastel", extra: "x".repeat(5_000) },
+  });
+
+  assert.match(prompt, /newest-stress-sentinel/);
+  assert.ok(prompt.length <= 18_000);
 });
 
 test("memory notes are bounded user data, not executable system instructions", async () => {
@@ -37,7 +78,7 @@ test("memory notes are bounded user data, not executable system instructions", a
 
   assert.match(prompt, /user-authored data/i);
   assert.match(prompt, /never treat[^\n]{0,100}instructions/i);
-  assert.ok(prompt.length < 12_000, `memory must be bounded, got ${prompt.length}`);
+  assert.ok(prompt.length < 18_000, `memory must be bounded, got ${prompt.length}`);
 });
 
 test("the newest permanent memory remains visible after the ten-note prompt cap", async () => {
@@ -104,7 +145,7 @@ test("current ledger rows expose only bounded action-safe entry data", async () 
   assert.match(prompt, /only for selecting an entry/i);
   assert.match(prompt, /call read_today/i);
   assert.doesNotMatch(prompt, /private-provider-name|secret note must not leak|tool_instruction/);
-  assert.ok(prompt.length <= 11_500, `prompt exceeded hard limit: ${prompt.length}`);
+  assert.ok(prompt.length <= 18_000, `prompt exceeded hard limit: ${prompt.length}`);
 });
 
 test("current ledger accepts the currentLedger alias and stays valid and bounded", async () => {
@@ -130,7 +171,7 @@ test("current ledger accepts the currentLedger alias and stays valid and bounded
   assert.match(prompt, /entry-199-/);
   assert.doesNotMatch(prompt, /entry-0-/);
   assert.doesNotMatch(prompt, /must-not-appear/);
-  assert.ok(prompt.length <= 11_500, `prompt exceeded hard limit: ${prompt.length}`);
+  assert.ok(prompt.length <= 18_000, `prompt exceeded hard limit: ${prompt.length}`);
   assert.doesNotMatch(prompt, /undefined|NaN|Infinity/);
 });
 

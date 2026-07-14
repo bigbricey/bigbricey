@@ -8,7 +8,7 @@ import {
 } from "../api/_capabilities.js";
 import { DOMAIN_CONTRACT } from "../api/_llm.js";
 
-const unsupportedClaims = /custom (?:box|tracker)|chart|graph|export|watch(?:es)?|feedback|backlog/i;
+const unsupportedClaims = /export|watch(?:es)?|feedback|backlog/i;
 
 test("system and user capability copy claim only supported product abilities", () => {
   const systemCopy = `${DOMAIN_CONTRACT}\n${capabilitiesForSystemPrompt()}`;
@@ -23,6 +23,7 @@ test("system and user capability copy claim only supported product abilities", (
     assert.match(copy, /workout/i);
     assert.match(copy, /steps/i);
     assert.match(copy, /metric/i);
+    assert.match(copy, /tracker|chart/i);
     assert.match(copy, /theme|color/i);
     assert.match(copy, /scene/i);
     assert.match(copy, /layout/i);
@@ -39,6 +40,7 @@ test("catalog distinguishes native actions from UI-only chat history", () => {
     "saved_foods",
     "goals",
     "activity",
+    "trackers",
     "layout",
     "theme",
     "scenes",

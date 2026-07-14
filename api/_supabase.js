@@ -1497,13 +1497,26 @@ export async function saveUserBoxes(email, list = []) {
     let goal = raw.goal != null ? Number(raw.goal) : raw.target != null ? Number(raw.target) : null;
     if (goal != null && !Number.isFinite(goal)) goal = null;
     const sizeDefault = kind === "chart" ? "full" : "half";
+    const knownUnit = {
+      weight_lb: "lb",
+      kcal: "kcal",
+      protein: "g",
+      fat: "g",
+      carbs: "g",
+      net_carbs: "g",
+      steps: "steps",
+      reps: "reps",
+      sets: "sets",
+      duration_min: "min",
+      distance_mi: "mi",
+    }[mid] || "";
     boxes.push({
       id,
       kind,
       title: String(raw.title || raw.label || mid).slice(0, 48),
       measure_id: mid,
       measures: kind === "chart" ? measures : [mid],
-      unit: String(raw.unit || "").slice(0, 16),
+      unit: String(raw.unit || knownUnit).slice(0, 16),
       goal: kind === "counter" ? goal : null,
       mode: String(raw.mode || "floor").toLowerCase() === "ceiling" ? "ceiling" : "floor",
       color: hex(raw.color) || hex(raw.accent) || "#38bdf8",
@@ -2119,12 +2132,16 @@ export async function appendMessage(email, conversationId, role, content) {
 
 /**
  * Build messages for the LLM: optional summary + recent turns.
- * Keeps a large window for GLM; auto-compacts older turns into conversation.summary.
+ * Keeps the same live window the model receives and deterministically excerpts
+ * every older turn into conversation.summary, so there is no blind middle.
  */
-export async function buildChatContextForModel(email, conversationId, { maxMessages = 120 } = {}) {
+export async function buildChatContextForModel(email, conversationId, { maxMessages = 24 } = {}) {
   const conv = await getConversation(email, conversationId);
   const all = await listMessages(email, conversationId, { limit: 800 });
-  const context = selectChatContextWindow(all, { maxMessages });
+  const context = selectChatContextWindow(all, {
+    maxMessages,
+    compactAfterExtraMessages: 0,
+  });
 
   // Rebuild from source messages instead of recursively appending the stored
   // summary. This also cleans old duplicated summaries on the next request.

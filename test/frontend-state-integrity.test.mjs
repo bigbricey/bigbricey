@@ -102,3 +102,17 @@ test("manual food buttons claim success only after a committed revision", async 
   assert.doesNotMatch(manualBlock, /fiber:\s*0|magnesium:\s*0|sodium:\s*0/);
   assert.match(manualBlock, /Potassium is optional/);
 });
+
+test("custom charts never turn missing metric days into fake zero measurements", async () => {
+  const source = await readFile(new URL("../public/boxes.js", import.meta.url), "utf8");
+  const pointsStart = source.indexOf("function seriesPoints");
+  const pointsEnd = source.indexOf("function drawLines", pointsStart);
+  const pointsBlock = source.slice(pointsStart, pointsEnd);
+
+  assert.match(pointsBlock, /return null/);
+  assert.doesNotMatch(pointsBlock, /return row \? Number\(row\.total\) \|\| 0 : 0/);
+  assert.match(source, /No recorded data in this range yet/);
+  assert.match(source, /observedMin/);
+  assert.match(source, /No recorded points yet[^\n]{0,100}start this chart/);
+  assert.match(source, /role="img"[^\n]{0,100}aria-label/);
+});

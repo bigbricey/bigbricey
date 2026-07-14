@@ -68,6 +68,40 @@ test("read and customization calls retain only canonical validated arguments", (
 
   assert.deepEqual(
     actionFromValidatedToolCall(
+      validated("set_tracker", {
+        kind: "chart",
+        title: "Weight trend",
+        measure_id: "weight_lb",
+        days: 30,
+        chart: "line",
+      })
+    ),
+    {
+      type: "set_chart",
+      kind: "chart",
+      title: "Weight trend",
+      measure_id: "weight_lb",
+      days: 30,
+      chart: "line",
+      __tool_call_id: "call_set_tracker",
+      __tool_name: "set_tracker",
+    }
+  );
+
+  assert.deepEqual(
+    actionFromValidatedToolCall(
+      validated("remove_tracker", { match: "Weight trend" })
+    ),
+    {
+      type: "remove_box",
+      name: "Weight trend",
+      __tool_call_id: "call_remove_tracker",
+      __tool_name: "remove_tracker",
+    }
+  );
+
+  assert.deepEqual(
+    actionFromValidatedToolCall(
       validated("set_theme", { preset: "pastel", radius: 24 })
     ),
     {
@@ -172,6 +206,17 @@ test("native execution truth classifies known executor failures as errors", () =
       toolName: "forget_memory",
       note: "No permanent memory note matched that request.",
       code: "TOOL_NOT_FOUND",
+    },
+    {
+      toolName: "remove_tracker",
+      note: "No custom box matched “weight”.",
+      code: "TOOL_NOT_FOUND",
+    },
+    {
+      toolName: "add_food",
+      note:
+        "I found “Tilapia fillet”, but I couldn't verify the weight of “1 piece” for this exact food. Give me grams, ounces, pounds, or the package serving weight.",
+      code: "TOOL_REQUIRED_DETAILS",
     },
     {
       toolName: "add_food",

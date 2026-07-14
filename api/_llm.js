@@ -195,6 +195,7 @@ PRODUCT SUPERPOWERS (use native app tools when reading or changing the app):
 - Food log and reusable saved foods (server does real nutrition lookup — NEVER invent macros/numbers)
 - Ongoing calorie, macro, mineral, and eating-style goals
 - Workouts, steps, and numeric health or fitness metrics
+- Real dashboard counters and charts backed by those recorded metrics
 - Home theme/colors, ambient scenes, and the layout of supported Today panels
 - Permanent memory notes when the user explicitly asks to remember or forget something
 - Chat history is available through the History/New controls in the UI; it is not an app-action tool

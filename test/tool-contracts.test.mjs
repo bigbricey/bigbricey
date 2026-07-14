@@ -35,6 +35,8 @@ const EXPECTED_TOOLS = [
   "log_workout",
   "log_steps",
   "log_metric",
+  "set_tracker",
+  "remove_tracker",
   "set_theme",
   "set_scene",
   "set_layout",
@@ -389,6 +391,75 @@ test("workout, steps, and metric contracts enforce finite bounded measurements",
   );
 });
 
+test("dashboard trackers create real bounded counters or charts and removal is confirmed", () => {
+  const chart = validateNativeToolCall(
+    call("set_tracker", {
+      kind: "chart",
+      title: "30-day weight",
+      measure_id: "weight_lb",
+      unit: "lb",
+      chart: "line",
+      days: 30,
+      size: "full",
+      color: "#38bdf8",
+    })
+  );
+  assert.equal(chart.ok, true);
+  assert.equal(chart.status, "ready");
+
+  const counter = validateNativeToolCall(
+    call("set_tracker", {
+      kind: "counter",
+      title: "Push-ups",
+      measure_id: "pushups",
+      unit: "reps",
+      goal: 100,
+      mode: "floor",
+    })
+  );
+  assert.equal(counter.ok, true);
+
+  assert.equal(
+    validateNativeToolCall(
+      call("set_tracker", {
+        kind: "chart",
+        title: "Ambiguous",
+        measure_id: "weight_lb",
+        measures: ["weight_lb"],
+      })
+    ).error.code,
+    "INVALID_COMBINATION"
+  );
+  assert.equal(
+    validateNativeToolCall(
+      call("set_tracker", {
+        kind: "counter",
+        title: "Bad counter",
+        measure_id: "pushups",
+        days: 30,
+      })
+    ).error.code,
+    "INVALID_COMBINATION"
+  );
+  assert.equal(
+    validateNativeToolCall(
+      call("set_tracker", {
+        kind: "chart",
+        title: "Too long",
+        measure_id: "weight_lb",
+        days: 1096,
+      })
+    ).error.code,
+    "OUT_OF_RANGE"
+  );
+
+  const removal = validateNativeToolCall(
+    call("remove_tracker", { match: "30-day weight" })
+  );
+  assert.equal(removal.status, "needs_confirmation");
+  assert.equal(removal.policy.destructive, true);
+});
+
 test("theme and scene contracts reject arbitrary CSS and nonexistent scenes", () => {
   const theme = validateNativeToolCall(
     call("set_theme", {
@@ -483,6 +554,7 @@ test("every destructive tool carries explicit confirmation metadata", () => {
     "remove_food",
     "clear_food_day",
     "delete_saved_food",
+    "remove_tracker",
     "forget_memory",
   ]);
   for (const name of destructive) {

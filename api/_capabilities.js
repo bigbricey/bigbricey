@@ -41,6 +41,13 @@ export const CAPABILITY_CATALOG = [
     kind: "tool",
   },
   {
+    id: "trackers",
+    title: "Dashboard trackers & charts",
+    summary: "Create real counters and 1–1095 day line, bar, or pie charts from recorded metrics.",
+    examples: ["show my weight for 30 days", "make a 100 push-up tracker"],
+    kind: "tool",
+  },
+  {
     id: "layout",
     title: "Today layout",
     summary: "Reorder supported Today panels and set full, half, or third widths.",
@@ -112,7 +119,7 @@ Chat history is controlled with the History/New buttons in the app; it is not a 
 
 I cannot (yet): upload photos as live wallpaper, invent unlimited freeform 3D games, browse the open web, or diagnose medical conditions.
 
-Try: “make it rain”, “eaten rings pink”, “log 1 lb bacon”, or “remember that I prefer short answers”.`;
+Try: “make me a 30-day weight chart”, “make it rain”, “log 1 lb bacon”, or “remember that I prefer short answers”.`;
 }
 
 export const SCENE_IDS = [

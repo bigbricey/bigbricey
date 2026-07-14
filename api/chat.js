@@ -186,6 +186,7 @@ export default async function handler(req, res) {
     let personCtx = null;
     let themeSnap = null;
     let layoutSnap = null;
+    let boxesSnap = [];
     let sceneSnap = null;
     let scenesSeenSnap = [];
     let memoryNotes = [];
@@ -204,6 +205,9 @@ export default async function handler(req, res) {
         }
         if (profile?.prefs?.layout && typeof profile.prefs.layout === "object") {
           layoutSnap = profile.prefs.layout;
+        }
+        if (Array.isArray(profile?.prefs?.boxes)) {
+          boxesSnap = profile.prefs.boxes.slice(0, 20);
         }
         sceneSnap = profile?.prefs?.scene || null;
         if (Array.isArray(profile?.prefs?.scenes_seen)) {
@@ -235,7 +239,7 @@ export default async function handler(req, res) {
         if (conversationId) {
           await appendMessage(session.email, conversationId, "user", text);
           const ctx = await buildChatContextForModel(session.email, conversationId, {
-            maxMessages: 120,
+            maxMessages: 24,
           });
           // exclude the message we just added from history for the model? include all recent
           historyMessages = (ctx.messages || []).filter(
@@ -625,6 +629,7 @@ export default async function handler(req, res) {
               scene: sceneOut ?? sceneSnap ?? "none",
               theme: themeOut ?? themeSnap ?? null,
               layout: layoutOut ?? layoutSnap ?? null,
+              trackers: boxesOut ?? boxesSnap,
             };
           }
         }
@@ -1251,7 +1256,10 @@ export default async function handler(req, res) {
             boxes = boxes.filter((b) => {
               const id = String(b.id || "").toLowerCase();
               const mid = String(b.measure_id || "").toLowerCase();
-              const title = String(b.title || "").toLowerCase();
+              const title = String(b.title || "")
+                .toLowerCase()
+                .replace(/[^a-z0-9_]+/g, "_")
+                .replace(/^_+|_+$/g, "");
               return (
                 id !== key &&
                 mid !== key &&
@@ -2298,6 +2306,7 @@ export default async function handler(req, res) {
             ...(goalsOut ? { goals: goalsOut } : {}),
             ...(themeOut ? { theme: themeOut } : {}),
             ...(layoutOut ? { layout: layoutOut } : {}),
+            ...(boxesOut ? { trackers: boxesOut } : {}),
             ...(sceneOut != null ? { scene: sceneOut } : {}),
           }
         : null;
@@ -3441,10 +3450,10 @@ function scaleRow(old, scale, newLabel) {
 }
 
 function rowHasMacros(row) {
+  const macros = [row?.kcal, row?.protein, row?.fat, row?.carbs];
   return (
-    (Number(row.kcal) || 0) > 0 ||
-    (Number(row.protein) || 0) > 0 ||
-    (Number(row.fat) || 0) > 0
+    macros.some((value) => Number(value) > 0) ||
+    macros.every((value) => value != null && Number.isFinite(Number(value)))
   );
 }
 

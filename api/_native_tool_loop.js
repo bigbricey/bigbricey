@@ -90,6 +90,19 @@ export function actionFromValidatedToolCall(call) {
     case "log_metric":
       action = { type: "log_metric", ...args };
       break;
+    case "set_tracker":
+      action = {
+        type: args.kind === "chart" ? "set_chart" : "set_box",
+        ...args,
+      };
+      break;
+    case "remove_tracker":
+      action = {
+        type: "remove_box",
+        id: args.id,
+        name: args.match,
+      };
+      break;
     case "set_theme":
       action = { type: "set_theme", ...args };
       break;
@@ -166,6 +179,8 @@ const MUTATING_NATIVE_TOOLS = new Set([
   "log_workout",
   "log_steps",
   "log_metric",
+  "set_tracker",
+  "remove_tracker",
   "set_theme",
   "set_scene",
   "set_layout",
@@ -219,6 +234,7 @@ function noteFailure(note, toolName) {
     /^\s*more than one food entry matched\b/i.test(text) ||
     /^\s*add requested but\b/i.test(text) ||
     /^\s*tell me what to change\b/i.test(text) ||
+    /^\s*i found\b[^\n]{0,240}\bcouldn['’]?t verify\b/i.test(text) ||
     /^\s*to save\b[^\n]{0,160}\bgive macros\b/i.test(text) ||
     /^\s*try a preset\b/i.test(text)
   ) {
@@ -232,6 +248,7 @@ function noteFailure(note, toolName) {
     (/\b(?:source entr(?:y|ies)|row)\b[^.!?\n]{0,80}\bnot found\b/i.test(text) ||
       /\bcouldn['’]?t find\b/i.test(text) ||
       /^\s*no permanent memory note matched\b/i.test(text) ||
+      /^\s*no custom (?:box|tracker) matched\b/i.test(text) ||
       /\bno (?:complete )?(?:verified )?nutrition match\b/i.test(text) ||
       /\bno nutrition match\b/i.test(text) ||
       /^\s*no match in food databases\b/i.test(text) ||

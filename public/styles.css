@@ -1201,6 +1201,12 @@ body.layout-editing .layout-panel-chrome {
   background: rgba(0,0,0,0.2);
   border: 1px solid var(--line);
 }
+.custom-chart-summary {
+  margin: -4px 0 9px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
 .custom-chart-canvas {
   display: block;
   width: 100%;

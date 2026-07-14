@@ -52,3 +52,22 @@ Cross-AI continuity. Local Grok session is ephemeral; **this file + git are the 
 ## Brice process note
 
 When he asks whether work is saved for other AIs — **write docs + git push**, don’t only describe gaps. Obsidian was **not** auto-synced this session.
+
+## Codex human-style production test and repair
+
+- Reproduced the signed-in failure: a 30-day weight-chart request was honestly
+  refused because chart code existed but was absent from the native tool catalog.
+- Reproduced a ledger accuracy failure: “Himalayan pink salt” was committed as
+  a popcorn product; a half stick of butter also selected a light-butter 100 g
+  basis, and one fillet was treated as a guessed serving.
+- Permanent memory itself worked across a brand-new conversation. The remaining
+  continuity defect was inside long conversations: storage kept 120 messages,
+  the model used 24, and summarization did not start until later.
+- Added strict native dashboard tracker/chart tools, truthful tool receipts, and
+  confirmation-gated removal. Weight charts use recorded `weight_lb` points,
+  never zero-fill missing days, use a focused trend scale, and expose a plain-text
+  latest/change summary.
+- Added semantic food-match rejection and exact quantity-basis rules. Ambiguous
+  fillets/teaspoons/servings now ask for label weight instead of silently guessing.
+- Aligned long-chat excerpting to the actual 24-message model window and kept
+  the most recent excluded context in the bounded prompt.

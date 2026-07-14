@@ -140,7 +140,7 @@
       title,
       measure_id,
       measures: kind === "chart" ? measures.slice(0, 6) : [measure_id],
-      unit: String(raw.unit || "").slice(0, 16),
+      unit: String(raw.unit || defaultMeasureUnit(measure_id)).slice(0, 16),
       goal,
       mode,
       color,
@@ -235,6 +235,46 @@
     return String(Math.round(x * 10) / 10).replace(/\.0$/, "");
   }
 
+  function friendlyMeasure(measure) {
+    const key = String(measure || "").toLowerCase();
+    const known = {
+      weight_lb: "Weight",
+      kcal: "Calories",
+      protein: "Protein",
+      fat: "Fat",
+      carbs: "Carbs",
+      net_carbs: "Net carbs",
+      steps: "Steps",
+      reps: "Reps",
+      sets: "Sets",
+      duration_min: "Duration",
+      distance_mi: "Distance",
+    };
+    if (known[key]) return known[key];
+    return key
+      .split("_")
+      .filter(Boolean)
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ") || "Metric";
+  }
+
+  function defaultMeasureUnit(measure) {
+    const known = {
+      weight_lb: "lb",
+      kcal: "kcal",
+      protein: "g",
+      fat: "g",
+      carbs: "g",
+      net_carbs: "g",
+      steps: "steps",
+      reps: "reps",
+      sets: "sets",
+      duration_min: "min",
+      distance_mi: "mi",
+    };
+    return known[String(measure || "").toLowerCase()] || "";
+  }
+
   function escapeHtml(s) {
     return String(s || "")
       .replace(/&/g, "&amp;")
@@ -281,11 +321,12 @@
             <span class="custom-box-icon">${escapeHtml(box.icon || "📈")}</span>
             <div>
               <div class="custom-box-title">${escapeHtml(box.title)}</div>
-              <div class="custom-box-sub">${escapeHtml((box.measures || []).join(", "))} · ${box.days || 30}d · ${escapeHtml(box.chart || "line")}</div>
+              <div class="custom-box-sub">${escapeHtml((box.measures || []).map(friendlyMeasure).join(", "))} · ${box.days || 30}d · ${escapeHtml(box.chart || "line")}</div>
             </div>
           </div>
+          <div class="custom-chart-summary" data-chart-summary="${escapeHtml(box.id)}" aria-live="polite">Loading recorded data…</div>
           <div class="custom-chart-wrap">
-            <canvas class="custom-chart-canvas" data-chart-box="${escapeHtml(box.id)}" width="640" height="220"></canvas>
+            <canvas class="custom-chart-canvas" data-chart-box="${escapeHtml(box.id)}" width="640" height="220" role="img" aria-label="${escapeHtml(box.title)} chart"></canvas>
           </div>
           <div class="custom-chart-legend" data-chart-legend="${escapeHtml(box.id)}"></div>
         </article>`;
@@ -353,16 +394,44 @@
     if (type === "pie") drawPie(canvas, cached, measures, box);
     else if (type === "bar") drawBars(canvas, cached, measures, box);
     else drawLines(canvas, cached, measures, box);
+    updateChartSummary(box, cached, measures);
 
     const leg = document.querySelector(`[data-chart-legend="${box.id}"]`);
     if (leg) {
       leg.innerHTML = measures
         .map((m, i) => {
           const c = CHART_PALETTE[i % CHART_PALETTE.length];
-          return `<span><i style="background:${c}"></i>${escapeHtml(m)}</span>`;
+          return `<span><i style="background:${c}"></i>${escapeHtml(friendlyMeasure(m))}</span>`;
         })
         .join("");
     }
+  }
+
+  function updateChartSummary(box, cached, measures) {
+    const el = document.querySelector(`[data-chart-summary="${box.id}"]`);
+    if (!el) return;
+    const pointsByMeasure = measures.map((measure) =>
+      seriesPoints(cached, measure).filter((value) => Number.isFinite(value))
+    );
+    const totalPoints = pointsByMeasure.reduce((sum, points) => sum + points.length, 0);
+    if (!totalPoints) {
+      el.textContent = `No recorded points yet — log ${friendlyMeasure(measures[0])} to start this chart.`;
+      return;
+    }
+    if (measures.length === 1) {
+      const points = pointsByMeasure[0];
+      const first = points[0];
+      const latest = points[points.length - 1];
+      const change = latest - first;
+      const unit = box.unit ? ` ${box.unit}` : "";
+      const changeText =
+        points.length > 1
+          ? ` · ${change > 0 ? "+" : ""}${fmt(change)}${unit} since first point`
+          : "";
+      el.textContent = `${points.length} recorded point${points.length === 1 ? "" : "s"} · Latest ${fmt(latest)}${unit}${changeText}`;
+      return;
+    }
+    el.textContent = `${totalPoints} recorded points across ${measures.length} metrics.`;
   }
 
   function drawChartEmpty(canvas, msg) {
@@ -381,7 +450,9 @@
     const rows = cached.series?.[measure] || [];
     return (cached.days || []).map((day) => {
       const row = rows.find((x) => x.day_key === day);
-      return row ? Number(row.total) || 0 : 0;
+      if (!row || row.total == null || row.total === "") return null;
+      const value = Number(row.total);
+      return Number.isFinite(value) ? value : null;
     });
   }
 
@@ -400,9 +471,20 @@
     }
     const plotW = w - pad.l - pad.r;
     const plotH = h - pad.t - pad.b;
-    let max = 1;
     const all = measures.map((m) => seriesPoints(cached, m));
-    all.forEach((pts) => pts.forEach((v) => { if (v > max) max = v; }));
+    const recorded = all.flat().filter((value) => Number.isFinite(value));
+    if (!recorded.length) {
+      drawChartEmpty(canvas, "No recorded data in this range yet");
+      return;
+    }
+    const observedMin = Math.min(...recorded);
+    const observedMax = Math.max(...recorded);
+    const observedRange = observedMax - observedMin;
+    const focusedScale = observedMin > 0 && observedMin > observedMax * 0.25;
+    const padding = Math.max(observedRange * 0.12, Math.abs(observedMax) * 0.015, 1);
+    const min = focusedScale ? Math.max(0, observedMin - padding) : Math.min(0, observedMin);
+    const max = Math.max(min + 1, observedMax + padding);
+    const yFor = (value) => pad.t + plotH - ((value - min) / (max - min)) * plotH;
 
     ctx.strokeStyle = "rgba(148,163,184,0.15)";
     ctx.lineWidth = 1;
@@ -421,18 +503,22 @@
       ctx.lineWidth = 2.2;
       ctx.lineJoin = "round";
       ctx.beginPath();
+      let started = false;
       pts.forEach((v, i) => {
+        if (!Number.isFinite(v)) return;
         const x = pad.l + (days.length === 1 ? plotW / 2 : (plotW * i) / (days.length - 1));
-        const y = pad.t + plotH - (v / max) * plotH;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+        const y = yFor(v);
+        if (!started) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else ctx.lineTo(x, y);
       });
       ctx.stroke();
       ctx.fillStyle = color;
       pts.forEach((v, i) => {
-        if (v <= 0) return;
+        if (!Number.isFinite(v)) return;
         const x = pad.l + (days.length === 1 ? plotW / 2 : (plotW * i) / (days.length - 1));
-        const y = pad.t + plotH - (v / max) * plotH;
+        const y = yFor(v);
         ctx.beginPath();
         ctx.arc(x, y, 2.5, 0, Math.PI * 2);
         ctx.fill();
@@ -441,6 +527,8 @@
 
     ctx.fillStyle = "#64748b";
     ctx.font = "10px DM Sans, system-ui";
+    ctx.fillText(fmt(max), 4, pad.t + 4);
+    ctx.fillText(fmt(min), 4, pad.t + plotH);
     const step = Math.max(1, Math.floor(days.length / 5));
     days.forEach((day, i) => {
       if (i % step !== 0 && i !== days.length - 1) return;
@@ -465,6 +553,10 @@
     // For many days, aggregate weekly averages if > 60
     let labels = days;
     let series = measures.map((m) => seriesPoints(cached, m));
+    if (!series.flat().some((value) => Number.isFinite(value))) {
+      drawChartEmpty(canvas, "No recorded data in this range yet");
+      return;
+    }
     if (days.length > 60) {
       const bucket = Math.ceil(days.length / 40);
       const nLabels = [];
@@ -473,7 +565,10 @@
         nLabels.push(days[i]);
         measures.forEach((_, mi) => {
           const slice = series[mi].slice(i, i + bucket);
-          const avg = slice.reduce((a, b) => a + b, 0) / (slice.length || 1);
+          const recorded = slice.filter((value) => Number.isFinite(value));
+          const avg = recorded.length
+            ? recorded.reduce((a, b) => a + b, 0) / recorded.length
+            : null;
           nSeries[mi].push(avg);
         });
       }

@@ -48,6 +48,7 @@ Key files:
 - `api/_supabase.js` — data layer  
 - `api/_capabilities.js` — capability catalog + SCENE_IDS  
 - `public/app.js` — main UI  
+- `public/boxes.js` — real metric-backed counters/charts
 - `public/scenes.js` — particle scenes  
 - `public/theme.js`, `layout.js`, `boxes.js`  
 - `supabase/migration_*.sql`
@@ -64,6 +65,12 @@ Key files:
 4. Destructive calls pause on a signed, call-bound confirmation.
 5. The server executes approved calls against account-scoped data. Food and other events use transactional PostgreSQL functions.
 6. A second model pass sees only verified tool-result envelopes. A success claim is never shown unless the executor produced a real receipt.
+
+Native tools now include `set_tracker` / confirmation-gated `remove_tracker`.
+They connect the LLM to the existing custom counter/chart renderer, so requests
+such as “make a 30-day weight chart” create a real persisted dashboard panel.
+Missing measurement days remain missing (never fake zeroes), and charts show a
+text summary of recorded points as well as the canvas visualization.
 
 Do not restore pseudo-JSON action prompting or regex/menu interceptors. Regex scene handling is outage-only fallback, never the normal conversation path.
 
@@ -106,6 +113,12 @@ Implemented in migrations 009/010 and the matching API/frontend release:
 - OAuth uses cookie-bound random state, requires Google's boolean verified-email claim, and session signing fails closed without a strong secret.
 - Prompt/history/read results are bounded; paid model work has atomic per-user minute/day/token reservations.
 - Missing nutrients remain unknown instead of becoming zero.
+- Food matches with unrelated product forms (for example pure salt matching a
+  popcorn product) are rejected before the ledger changes. Generic pieces,
+  cups, teaspoons, and servings no longer receive invented 100 g/household
+  weights; exact mass or a verified fixed basis is required.
+- The live model window and deterministic conversation excerpt now meet at the
+  same 24-message boundary, removing the former blind middle of a long chat.
 - Automated tests cover chat behavior, tools, auth/privacy, concurrency contracts, frontend account/day binding, and nutrient knownness.
 
 ### Remaining product work (not release regressions)

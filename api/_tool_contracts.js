@@ -14,6 +14,9 @@ const SCENES = [
 ];
 const PANELS = ["chat", "kcal", "pro", "fat", "carb", "net", "minerals", "summary", "food"];
 const PANEL_SIZES = ["full", "half", "third"];
+const TRACKER_KINDS = ["counter", "chart"];
+const TRACKER_MODES = ["floor", "ceiling"];
+const CHART_TYPES = ["line", "bar", "pie"];
 const THEME_PRESETS = ["midnight", "light", "neon", "forest", "pink", "terminal", "pastel", "sunset"];
 const INCLUDE_SECTIONS = ["food", "totals", "workouts", "metrics", "home"];
 
@@ -99,6 +102,25 @@ const DEFINITIONS = [
     label: string("Human label."),
     day: string("Calendar day in YYYY-MM-DD format."),
   }, ["measure_id", "value"])],
+  ["set_tracker", "Create or update a real Today dashboard counter or chart backed by recorded ledger measurements. For weight use weight_lb. Charts may start empty until that metric is logged.", objectSchema({
+    id: string("Optional stable custom panel id beginning with c_."),
+    kind: string("Tracker type.", { enum: TRACKER_KINDS }),
+    title: string("Short user-facing panel title."),
+    measure_id: string("One stable snake_case measurement id. Use this for counters or single-series charts."),
+    measures: array("One to six stable snake_case measurement ids for a chart.", { type: "string" }, { minItems: 1, maxItems: 6, uniqueItems: true }),
+    unit: string("Short display unit."),
+    goal: number("Counter target."),
+    mode: string("Whether the counter aims for at least or at most the goal.", { enum: TRACKER_MODES }),
+    color: string("Hex accent color."),
+    icon: string("One short emoji or symbol."),
+    size: string("Dashboard width.", { enum: PANEL_SIZES }),
+    chart: string("Chart style.", { enum: CHART_TYPES }),
+    days: integer("Number of calendar days shown by a chart."),
+  }, ["kind", "title"])],
+  ["remove_tracker", "Request removal of one custom dashboard counter or chart now. Call this immediately; the app will collect confirmation before execution.", objectSchema({
+    id: string("Custom panel id."),
+    match: string("Distinctive tracker title or measurement id."),
+  })],
   ["set_theme", "Change the private app look using safe theme fields.", objectSchema({
     preset: string("Theme preset.", { enum: THEME_PRESETS }),
     accent: string("Hex accent color."),
@@ -150,6 +172,11 @@ const CONFIRMATIONS = {
     required: true,
     reason: "This removes matching information from permanent memory.",
     prompt: "Forget this remembered information?",
+  },
+  remove_tracker: {
+    required: true,
+    reason: "This removes a custom dashboard counter or chart.",
+    prompt: "Remove this dashboard tracker?",
   },
 };
 
@@ -240,9 +267,9 @@ function validateArguments(name, input) {
   const textRules = {
     query: { max: 500 }, entry_id: { max: 200 }, name: { max: 120 }, saved_food_id: { max: 200 },
     food_query: { max: 500 }, serving_label: { max: 120 }, description: { max: 500 },
-    unit: { max: 32 }, title: { max: 160 }, category: { max: 60, pattern: /^[a-z0-9_ -]+$/i },
+    id: { max: 48, pattern: /^c_[a-z0-9_]+$/ }, unit: { max: 32 }, title: { max: 160 }, category: { max: 60, pattern: /^[a-z0-9_ -]+$/i },
     notes: { max: 500 }, measure_id: { max: 80, pattern: /^[a-z0-9_]+$/ }, label: { max: 120 }, style: { max: 60, pattern: /^[a-z0-9_ -]+$/i },
-    note: { max: 300 }, match: { max: 300 },
+    note: { max: 300 }, match: { max: 300 }, kind: { max: 16 }, mode: { max: 16 }, chart: { max: 16 }, color: { max: 9 }, icon: { max: 8 },
   };
   for (const [key, rules] of Object.entries(textRules)) {
     const error = stringField(args, key, rules);
@@ -265,12 +292,32 @@ function validateArguments(name, input) {
     }
     args.source_entry_ids = args.source_entry_ids.map(cleanString);
   }
+  if (args.measures != null) {
+    if (
+      !Array.isArray(args.measures) ||
+      !args.measures.length ||
+      args.measures.length > 6 ||
+      new Set(args.measures).size !== args.measures.length ||
+      args.measures.some(
+        (id) =>
+          typeof id !== "string" ||
+          !/^[a-z0-9_]{1,80}$/.test(cleanString(id))
+      )
+    ) {
+      return validationError(
+        "INVALID_VALUE",
+        "Chart measurement ids are invalid.",
+        "function.arguments.measures"
+      );
+    }
+    args.measures = args.measures.map(cleanString);
+  }
 
   for (const [key, limits] of Object.entries({
     quantity: { min: 0.001, max: 10000 }, servings: { min: 0.001, max: 1000 }, limit: { min: 1, max: 50, integer: true },
     kcal: { min: 1500, max: 10000 }, protein: { min: 0, max: 1000 }, fat: { min: 0, max: 1000 }, carbs: { min: 0, max: 2000 }, net_carbs: { min: 0, max: 2000 }, potassium: { min: 0, max: 30000 }, magnesium: { min: 0, max: 5000 },
     duration_min: { min: 0, max: 1440 }, sets: { min: 0, max: 10000, integer: true }, reps: { min: 0, max: 100000, integer: true }, load_lb: { min: 0, max: 5000 }, steps: { min: 0, max: 200000, integer: true },
-    value: { min: -1000000000, max: 1000000000 }, font_scale: { min: 0.85, max: 1.3 }, radius: { min: 0, max: 32 },
+    value: { min: -1000000000, max: 1000000000 }, goal: { min: 0, max: 1000000000 }, days: { min: 1, max: 1095, integer: true }, font_scale: { min: 0.85, max: 1.3 }, radius: { min: 0, max: 32 },
   })) {
     const error = range(args, key, limits);
     if (error) return error;
@@ -317,6 +364,59 @@ function validateArguments(name, input) {
     }
     if (args.density != null && !["cozy", "compact"].includes(args.density)) return validationError("INVALID_VALUE", "Unknown density.", "function.arguments.density");
     if (args.shape != null && !["square", "round"].includes(args.shape)) return validationError("INVALID_VALUE", "Unknown shape.", "function.arguments.shape");
+  }
+  if (name === "set_tracker") {
+    if (!TRACKER_KINDS.includes(args.kind)) {
+      return validationError("INVALID_VALUE", "Unknown tracker type.", "function.arguments.kind");
+    }
+    if (args.color != null && !/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(args.color)) {
+      return validationError("INVALID_VALUE", '"color" must be a hex color.', "function.arguments.color");
+    }
+    if (args.size != null && !PANEL_SIZES.includes(args.size)) {
+      return validationError("INVALID_VALUE", "Unknown tracker size.", "function.arguments.size");
+    }
+    if (args.kind === "chart") {
+      if (!exactlyOne(args, ["measure_id", "measures"])) {
+        return validationError(
+          args.measure_id != null && args.measures != null
+            ? "INVALID_COMBINATION"
+            : "REQUIRED_FIELD",
+          "Use one measurement id or one chart measurement list.",
+          "function.arguments"
+        );
+      }
+      if (args.chart != null && !CHART_TYPES.includes(args.chart)) {
+        return validationError("INVALID_VALUE", "Unknown chart style.", "function.arguments.chart");
+      }
+      if (args.goal != null || args.mode != null) {
+        return validationError(
+          "INVALID_COMBINATION",
+          "Chart trackers do not use a counter goal or mode.",
+          "function.arguments"
+        );
+      }
+    } else {
+      if (args.measure_id == null) {
+        return validationError("REQUIRED_FIELD", '"measure_id" is required.', "function.arguments.measure_id");
+      }
+      if (args.measures != null || args.chart != null || args.days != null) {
+        return validationError(
+          "INVALID_COMBINATION",
+          "Counter trackers cannot include chart-only fields.",
+          "function.arguments"
+        );
+      }
+      if (args.mode != null && !TRACKER_MODES.includes(args.mode)) {
+        return validationError("INVALID_VALUE", "Unknown tracker goal mode.", "function.arguments.mode");
+      }
+    }
+  }
+  if (name === "remove_tracker" && !exactlyOne(args, ["id", "match"])) {
+    return validationError(
+      args.id != null && args.match != null ? "INVALID_COMBINATION" : "REQUIRED_FIELD",
+      "Use exactly one tracker identifier.",
+      "function.arguments"
+    );
   }
   if (name === "set_scene" && !SCENES.includes(args.scene)) return validationError("INVALID_VALUE", "Unknown scene.", "function.arguments.scene");
   if (name === "set_layout") {
