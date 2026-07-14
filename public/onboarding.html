@@ -217,6 +217,7 @@
     consent_health: false,
     consent_marketing: false,
     first_name: "",
+    theme_preset: "midnight",
     sex: "",
     birthday: "",
     height_ft: 5,
@@ -248,7 +249,7 @@
     if (state.primary_goal === "lose") s.push("lose_rate");
     s.push("activity", "training", "eating");
     if (state.primary_goal === "lose" || state.primary_goal === "muscle") s.push("goal_weight");
-    s.push("kcal_confirm", "obstacles", "confidence");
+    s.push("kcal_confirm", "obstacles", "confidence", "theme_pick");
     return s;
   }
 
@@ -264,6 +265,7 @@
       case "welcome": return true;
       case "consent": return Boolean(state.consent_health);
       case "name": return state.first_name.trim().length >= 1;
+      case "theme_pick": return true;
       case "sex": return state.sex === "male" || state.sex === "female";
       case "birthday": return Boolean(state.birthday);
       case "height": return state.height_ft >= 3 && state.height_in >= 0 && state.height_in <= 11;
@@ -380,10 +382,24 @@
       </div>`;
     } else if (id === "name") {
       html = `<div class="ob-step on">
-        <h1 class="ob-title">What's your first name?</h1>
-        <p class="ob-sub">So BigBricey can talk to you like a person.</p>
-        <input class="ob-field" id="nameIn" autocomplete="given-name" placeholder="First name" value="${esc(state.first_name)}" />
+        <h1 class="ob-title">What should BigBricey call you?</h1>
+        <p class="ob-sub">This is your name in chat (instead of “You”). BigBricey stays BigBricey. You can use a first name or nickname.</p>
+        <input class="ob-field" id="nameIn" autocomplete="nickname" placeholder="e.g. Brice, Alex, Coach" value="${esc(state.first_name)}" />
         <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn" ${canNext() ? "" : "disabled"}>${cta}</button></div>
+      </div>`;
+    } else if (id === "theme_pick") {
+      const themes = [
+        { id: "midnight", label: "Midnight", sub: "Dark default — clean and focused" },
+        { id: "pastel", label: "Pastel", sub: "Soft purple / pink vibe" },
+        { id: "forest", label: "Forest", sub: "Green, calm" },
+        { id: "neon", label: "Neon", sub: "Electric night mode" },
+        { id: "light", label: "Clean light", sub: "Bright / daytime" },
+      ];
+      html = `<div class="ob-step on">
+        <h1 class="ob-title">Pick a starting look</h1>
+        <p class="ob-sub">Optional default theme. You can change anytime in the app or by talking to BigBricey (“make it rain”, “pastel”, etc.).</p>
+        <div class="ob-choices" id="themeChoices">${renderChoice(themes, state.theme_preset || "midnight", false)}</div>
+        <div class="ob-foot"><button type="button" class="ob-cta" id="nextBtn">${cta}</button></div>
       </div>`;
     } else if (id === "sex") {
       html = `<div class="ob-step on">
@@ -520,6 +536,7 @@
       nameIn.oninput = () => { state.first_name = nameIn.value; refreshCta(); };
       nameIn.onkeydown = (e) => { if (e.key === "Enter" && canNext()) onNext(); };
     }
+
     const bdayIn = document.getElementById("bdayIn");
     if (bdayIn) bdayIn.onchange = () => { state.birthday = bdayIn.value; refreshCta(); };
     const ftIn = document.getElementById("ftIn");
@@ -554,6 +571,7 @@
 
     bindPick("#sexChoices", (id) => { state.sex = id; });
     bindPick("#goalChoices", (id) => { state.primary_goal = id; if (id !== "lose") state.lose_rate_lb_week = "0.5"; });
+    bindPick("#themeChoices", (id) => { state.theme_preset = id || "midnight"; });
     bindPick("#rateChoices", (id) => { state.lose_rate_lb_week = id; });
     bindPick("#actChoices", (id) => { state.activity_level = id; });
     bindPick("#trainChoices", (id) => { state.training_level = id; });
@@ -633,6 +651,8 @@
       consent_marketing: false,
       consented_at: new Date().toISOString(),
       first_name: state.first_name.trim(),
+      preferred_name: state.first_name.trim(),
+      theme_preset: state.theme_preset || "midnight",
       sex: state.sex,
       birthday: state.birthday,
       height_in: Number(state.height_ft) * 12 + Number(state.height_in),

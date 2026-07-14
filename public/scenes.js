@@ -206,26 +206,26 @@
     const x = Math.random() * w;
     const y = randomY ? Math.random() * h : -20;
     if (type === "rain") {
-      return { type, x, y, len: 12 + Math.random() * 18, vy: 12 + Math.random() * 16, vx: -1 };
+      return { type, x, y, len: 10 + Math.random() * 14, vy: 6 + Math.random() * 8, vx: -0.6 };
     }
     if (type === "snow") {
-      return { type, x, y, r: 1 + Math.random() * 2.5, vy: 0.6 + Math.random() * 1.4, vx: Math.sin(Math.random() * 6) * 0.6 };
+      return { type, x, y, r: 1 + Math.random() * 2.2, vy: 0.35 + Math.random() * 0.8, vx: Math.sin(Math.random() * 6) * 0.35 };
     }
     if (type === "dust") {
-      return { type, x, y: Math.random() * h, r: 0.8 + Math.random() * 2, vx: 0.4 + Math.random() * 1.2, vy: (Math.random() - 0.5) * 0.4 };
+      return { type, x, y: Math.random() * h, r: 0.8 + Math.random() * 2, vx: 0.25 + Math.random() * 0.7, vy: (Math.random() - 0.5) * 0.25 };
     }
     if (type === "bubbles") {
       return { type, x, y: h + Math.random() * 40, r: 2 + Math.random() * 6, vy: -(0.5 + Math.random() * 1.5), vx: (Math.random() - 0.5) * 0.6 };
     }
     if (type === "matrix") {
-      return { type, x: Math.floor(Math.random() * 40) * (w / 40), y, vy: 2 + Math.random() * 6, ch: String.fromCharCode(0x30a0 + Math.random() * 96) };
+      return { type, x: Math.floor(Math.random() * 40) * (w / 40), y, vy: 1.2 + Math.random() * 3, ch: String.fromCharCode(0x30a0 + Math.random() * 96) };
     }
     if (type === "stars") {
       return { type, x, y: Math.random() * h, r: Math.random() * 1.6, a: Math.random(), da: 0.01 + Math.random() * 0.02 };
     }
     if (type === "confetti") {
       const colors = ["#f472b6", "#38bdf8", "#fbbf24", "#34d399", "#a78bfa"];
-      return { type, x, y, w: 4 + Math.random() * 6, h: 3 + Math.random() * 4, vy: 2 + Math.random() * 4, vx: (Math.random() - 0.5) * 2, color: colors[i % colors.length], rot: Math.random() * 6 };
+      return { type, x, y, w: 4 + Math.random() * 6, h: 3 + Math.random() * 4, vy: 1.2 + Math.random() * 2.2, vx: (Math.random() - 0.5) * 1.2, color: colors[0], rot: Math.random() * 6 };
     }
     if (type === "fireflies") {
       return { type, x, y: Math.random() * h, r: 1.5 + Math.random() * 2, a: Math.random(), phase: Math.random() * 6 };

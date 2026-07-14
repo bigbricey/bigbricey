@@ -789,6 +789,19 @@ function drawTrendChart(canvas, days, series, measures) {
 }
 
 /* chat */
+function displayUserName() {
+  const u = window.__ntUser || {};
+  const o = u.onboarding || {};
+  const raw =
+    o.preferred_name ||
+    o.call_me ||
+    o.first_name ||
+    (u.name || "").split(/\s+/)[0] ||
+    "";
+  const name = String(raw || "").trim();
+  return name || "You";
+}
+
 function appendChat(role, text, isError) {
   if (!chatLog || !text) return;
   const welcome = chatLog.querySelector(".welcome");
@@ -801,7 +814,8 @@ function appendChat(role, text, isError) {
     (text === "Working…" ? " thinking" : "");
   const who = document.createElement("div");
   who.className = "chat-who";
-  who.textContent = role === "user" ? "You" : isError ? "Error" : "BigBricey";
+  who.textContent =
+    role === "user" ? displayUserName() : isError ? "Error" : "BigBricey";
   const body = document.createElement("div");
   body.className = "chat-text";
   body.textContent = text;

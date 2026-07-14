@@ -1733,6 +1733,15 @@ const ABILITIES_REPLY = abilitiesReplyText();
 function isAbilitiesQuestion(text) {
   const t = String(text || "").toLowerCase();
   if (!t.trim()) return false;
+  // If they also ask to DO something (snow/rain/theme), don't trap in abilities-only path
+  if (
+    /\b(make it|change|set|switch|turn|apply|use)\b/.test(t) &&
+    /\b(rain|snow|desert|ocean|matrix|stars|confetti|theme|color|colour|background|font|layout|box|chart)\b/.test(
+      t
+    )
+  ) {
+    return false;
+  }
   if (
     /what (can|do) you (do|know)|your abilities|what are you (able|capable)|what all can i|how does this work|what can i (ask|do|change|customize)|do you (even )?know|capabilities|help me (use|customize)|what.?s possible/.test(
       t
@@ -1740,11 +1749,13 @@ function isAbilitiesQuestion(text) {
   ) {
     return true;
   }
-  // "are you able to change colors / sizes / themes" without food words
+  // Pure capability probes (no action request)
   if (
-    /(are you able|can you|could you).*(color|colour|theme|layout|size|font|square|round|customize|custom|ring|circle|box|chart|graph)/.test(
+    /^(are you able|can you|could you)\b/.test(t.trim()) &&
+    /(color|colour|theme|layout|size|font|square|round|customize|custom|ring|circle|box|chart|graph|snow|rain)/.test(
       t
     ) &&
+    !/\b(make|change|set|please do)\b/.test(t) &&
     !/(ate|eaten|had|log|bacon|egg|oz|lb|protein shake|calories?\s+\d)/.test(t)
   ) {
     return true;
@@ -1975,6 +1986,13 @@ Rules:
         conversation_id: ctx.conversationId || null,
         purpose: "chat",
       }).catch(() => {});
+    } else if (ctx.email && out && !out.usage) {
+      // Still record a hit if provider omitted usage
+      logLlmUsage(
+        ctx.email,
+        { prompt_tokens: 0, completion_tokens: 0, total_tokens: 1 },
+        { model: out.model, provider: out.provider, purpose: "chat_no_usage" }
+      ).catch(() => {});
     }
     const parsed = extractJson(out.content);
     if (parsed?.error === "no_json" || parsed?.error === "bad_json") {

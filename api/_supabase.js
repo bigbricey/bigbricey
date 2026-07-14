@@ -358,6 +358,12 @@ export async function saveOnboarding(email, data = {}) {
   const next = {
     ...prev,
     first_name: data.first_name != null ? String(data.first_name).trim() : prev.first_name,
+    preferred_name:
+      data.preferred_name != null
+        ? String(data.preferred_name).trim()
+        : data.first_name != null
+          ? String(data.first_name).trim()
+          : prev.preferred_name || prev.first_name,
     primary_goal: primaryGoal,
     lose_rate_lb_week:
       data.lose_rate_lb_week != null
@@ -420,10 +426,20 @@ export async function saveOnboarding(email, data = {}) {
 
   prefs.onboarding = next;
 
+  // Starting look from onboarding (optional)
+  if (data.theme_preset && typeof data.theme_preset === "string") {
+    const preset = String(data.theme_preset).toLowerCase().trim();
+    if (preset && preset !== "custom") {
+      prefs.theme = { ...(prefs.theme || {}), preset };
+    }
+  }
+
   // Prefer first_name on profile.name when set
   const patch = {
     prefs,
-    ...(next.first_name ? { name: next.first_name } : {}),
+    ...(next.preferred_name || next.first_name
+      ? { name: next.preferred_name || next.first_name }
+      : {}),
   };
 
   await sb("profiles", {
@@ -1996,6 +2012,9 @@ export async function logLlmUsage(email, usage = {}, meta = {}) {
     Math.max(0, Math.round(Number(usage.total_tokens) || 0)) || prompt + completion;
   if (prompt + completion + total <= 0) return null;
   try {
+    let convId = meta.conversation_id || null;
+    // Only pass real UUIDs (avoid insert failures)
+    if (convId && !/^[0-9a-f-]{36}$/i.test(String(convId))) convId = null;
     const body = {
       user_email: e,
       model: meta.model || usage.model || null,
@@ -2007,7 +2026,7 @@ export async function logLlmUsage(email, usage = {}, meta = {}) {
         usage.cost_usd != null && Number.isFinite(Number(usage.cost_usd))
           ? Number(usage.cost_usd)
           : null,
-      conversation_id: meta.conversation_id || null,
+      conversation_id: convId,
       purpose: meta.purpose || "chat",
     };
     const created = await sb("llm_usage", {
