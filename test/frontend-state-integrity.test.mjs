@@ -189,3 +189,40 @@ test("the You tab exposes transparent, safely rendered, account-bound memory con
   assert.match(privacy, /facts and preferences/i);
   assert.match(privacy, /where the memory came from/i);
 });
+
+test("the adaptive home companion reports only real app lifecycle states", async () => {
+  const html = await readFile(new URL("../public/app.html", import.meta.url), "utf8");
+  const source = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+
+  assert.match(html, /id="companionCore"/);
+  assert.match(html, /id="companionStateLabel"/);
+  assert.match(html, /id="companionStateDetail"/);
+  assert.match(html, /home\.js/);
+  assert.doesNotMatch(html, /data-panel=["']companion["']/);
+
+  const renderStart = source.indexOf("function render()");
+  const renderEnd = source.indexOf("function setText", renderStart);
+  assert.match(source.slice(renderStart, renderEnd), /BBHome\?\.render/);
+
+  const thinkingStart = source.indexOf("function setThinking");
+  const thinkingEnd = source.indexOf("async function requireAuth", thinkingStart);
+  assert.match(source.slice(thinkingStart, thinkingEnd), /BBHome\?\.set\(["']thinking["']/);
+
+  const sendStart = source.indexOf("async function onSend");
+  const sendEnd = source.indexOf("function sortBy", sendStart);
+  const sendBlock = source.slice(sendStart, sendEnd);
+  assert.match(sendBlock, /verifiedHomeItemCount = rows\.length/);
+  assert.match(sendBlock, /data\.pending_confirmation\?\.token/);
+  assert.match(sendBlock, /BBHome\?\.set\(["']reviewing["']/);
+  assert.match(sendBlock, /let verifiedHomeItemCount = null/);
+  assert.match(
+    sendBlock,
+    /if \(pendingToolConfirmation\)[\s\S]{0,220}else if \(verifiedHomeItemCount != null\)/
+  );
+  assert.ok(
+    sendBlock.lastIndexOf('BBHome?.set("reviewing"') >
+      sendBlock.lastIndexOf("render();"),
+    "pending review must be applied after renders so it wins state precedence"
+  );
+  assert.match(sendBlock, /catch \(e\)[\s\S]{0,240}BBHome\?\.set\(["']error["']/);
+});

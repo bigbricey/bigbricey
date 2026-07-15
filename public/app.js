@@ -58,6 +58,7 @@ async function init() {
   if (!ok) return;
   configureAccountStorage(window.__ntUser?.email);
   rows = loadLocal(selectedDay);
+  window.BBHome?.init({ itemCount: rows.length });
   initVisionCapture();
   wireMemoryCenter();
 
@@ -1207,6 +1208,8 @@ function appendChat(role, text, isError = false, options = {}) {
 }
 function setThinking(on) {
   if (!chatLog) return;
+  if (on) window.BBHome?.set("thinking", { itemCount: rows.length });
+  else window.BBHome?.render({ itemCount: rows.length });
   chatLog.setAttribute("aria-busy", on ? "true" : "false");
   const status = document.getElementById("chatStatus");
   if (status) status.textContent = on ? "BigBricey is thinking." : "";
@@ -1964,6 +1967,7 @@ async function onSend() {
   setThinking(true);
   try {
     let verifiedAddedRows = [];
+    let verifiedHomeItemCount = null;
     const data = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2037,6 +2041,9 @@ async function onSend() {
       if (sameDayContext(requestAccount, requestDay, requestSelectionEpoch)) {
         rows = committedRows;
         render();
+        if (data.changed === true && data.ledger_committed === true) {
+          verifiedHomeItemCount = rows.length;
+        }
       }
     }
     // Chat can change daily targets (diet/macros) — refresh rings
@@ -2099,6 +2106,11 @@ async function onSend() {
     ) {
       window.BBBoxes.loadValuesForDay(selectedDay);
     }
+    if (pendingToolConfirmation) {
+      window.BBHome?.set("reviewing", { itemCount: rows.length });
+    } else if (verifiedHomeItemCount != null) {
+      window.BBHome?.set("verified", { itemCount: verifiedHomeItemCount });
+    }
     const reply =
       (typeof data.reply === "string" && data.reply.trim()) ||
       (Array.isArray(data.notes) && data.notes.filter(Boolean).join(" "));
@@ -2124,6 +2136,7 @@ async function onSend() {
       conversationEpoch === requestConversationEpoch &&
       conversationId === requestConversationId
     ) {
+      window.BBHome?.set("error", { itemCount: rows.length });
       appendChat("bot", e.message || "The request failed. Please try again.", true);
     }
   } finally {
@@ -2181,6 +2194,7 @@ function render() {
   setText("tNa", fmt(t.sodium, 0));
   setText("tFoodCount", String(rows.length));
   setText("tFoodCount2", String(rows.length));
+  window.BBHome?.render({ itemCount: rows.length });
 }
 
 function setText(id, v) {

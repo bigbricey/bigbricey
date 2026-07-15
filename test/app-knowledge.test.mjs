@@ -28,6 +28,9 @@ test("the authoritative guide explains the real app surface and 30-day chart sem
   assert.match(APP_INTERFACE_GUIDE, /What BigBricey knows about me/i);
   assert.match(APP_INTERFACE_GUIDE, /add[^\n]{0,80}edit[^\n]{0,80}forgotten/i);
   assert.match(APP_INTERFACE_GUIDE, /inferred[^\n]{0,100}not silently saved/i);
+  assert.match(APP_INTERFACE_GUIDE, /companion[^\n]{0,180}ready[^\n]{0,100}tracking/i);
+  assert.match(APP_INTERFACE_GUIDE, /Saved[^\n]{0,160}committed/i);
+  assert.match(APP_INTERFACE_GUIDE, /Review[^\n]{0,160}approval/i);
 });
 
 test("the bounded current-dashboard manifest exposes exact tracker identity and position", () => {

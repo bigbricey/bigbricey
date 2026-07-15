@@ -15,7 +15,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
   <title>BigBricey</title>
-  <link rel="stylesheet" href="/styles.css?v=20260715a" />
+  <link rel="stylesheet" href="/styles.css?v=20260715b" />
 </head>
 <body class="tab-today">
   <div class="app-shell">
@@ -68,9 +68,17 @@
         </div>
       <section class="coach coach-hero">
         <div class="coach-head">
-          <div>
-            <div class="coach-title">BigBricey</div>
-            <div class="coach-tagline">Talk first. The log follows.</div>
+          <div class="companion-core" id="companionCore" role="status" aria-live="polite" aria-atomic="true">
+            <span class="companion-core-orb" aria-hidden="true">
+              <img src="/icon-192.png" alt="" width="34" height="34" />
+            </span>
+            <div class="companion-core-copy">
+              <div class="companion-title-row">
+                <span class="coach-title">BigBricey</span>
+                <strong class="companion-state-label" id="companionStateLabel">Ready</strong>
+              </div>
+              <div class="companion-state-detail" id="companionStateDetail">Tell me what you ate, did, or want to change.</div>
+            </div>
           </div>
           <div class="chat-head-actions">
             <button type="button" class="pill" id="btnChatHistory" title="Past chats">History</button>
@@ -680,12 +688,13 @@
   </div>
   <script src="/account-storage.js?v=20260714a"></script>
   <script src="/theme.js?v=20260714a"></script>
-  <script src="/scenes.js?v=20260713c"></script>
+  <script src="/scenes.js?v=20260715d"></script>
   <script src="/layout.js?v=20260714e"></script>
   <script src="/boxes.js?v=20260713c"></script>
   <script src="/food-storage.js?v=20260714a"></script>
   <script src="/chat-format.js?v=20260714b"></script>
   <script src="/vision.js?v=20260714d"></script>
-  <script src="/app.js?v=20260715a"></script>
+  <script src="/home.js?v=20260715a"></script>
+  <script src="/app.js?v=20260715b"></script>
 </body>
 </html>

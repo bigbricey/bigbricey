@@ -155,6 +155,28 @@
   let mode = null;
   let w = 0;
   let h = 0;
+  let motionMedia = null;
+  let motionMediaBound = false;
+
+  function reducedMotionMedia() {
+    if (!motionMedia && typeof window.matchMedia === "function") {
+      motionMedia = window.matchMedia("(prefers-reduced-motion: reduce)");
+    }
+    return motionMedia;
+  }
+
+  function prefersReducedMotion() {
+    return Boolean(reducedMotionMedia()?.matches);
+  }
+
+  function wireMotionPreference() {
+    const media = reducedMotionMedia();
+    if (!media || motionMediaBound) return;
+    motionMediaBound = true;
+    const refresh = () => applyScene(current, { persist: false, theme: false });
+    if (typeof media.addEventListener === "function") media.addEventListener("change", refresh);
+    else if (typeof media.addListener === "function") media.addListener(refresh);
+  }
 
   function storageKey() {
     try {
@@ -312,6 +334,11 @@
   }
 
   function tick() {
+    if (prefersReducedMotion()) {
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+      return;
+    }
     if (!ctx || !mode || mode === "none") return;
     ctx.clearRect(0, 0, w, h);
     for (let i = 0; i < particles.length; i++) {
@@ -471,6 +498,15 @@
       return current;
     }
 
+    if (prefersReducedMotion()) {
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+      if (canvas) canvas.style.display = "none";
+      if (persist) saveLocal();
+      syncUi();
+      return current;
+    }
+
     ensureCanvas();
     canvas.style.display = "block";
     mode = scene.particles;
@@ -540,6 +576,7 @@
 
   function initScenes() {
     quarantineLegacyPreference();
+    wireMotionPreference();
     const cloud = window.__ntUser?.scene;
     applyScene(cloud || loadLocal() || "none", { persist: false, theme: false });
     wireUi();
