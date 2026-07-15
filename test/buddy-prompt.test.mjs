@@ -57,6 +57,25 @@ test("native buddy prompt is conversationally broad and delegates app state to t
   assert.ok(prompt.length < 18_000, `prompt should stay focused, got ${prompt.length}`);
 });
 
+test("vague usual meals are resolved from verified saved-food reads without guessing", async () => {
+  const { buildBuddySystemPrompt } = await import(PROMPT_MODULE);
+  const prompt = buildBuddySystemPrompt();
+
+  assert.match(
+    prompt,
+    /usual[^\n]{0,100}regular[^\n]{0,160}list_saved_foods|regular[^\n]{0,100}usual[^\n]{0,160}list_saved_foods/i
+  );
+  assert.match(
+    prompt,
+    /log_saved_food[^\n]{0,180}exact[^\n]{0,100}saved_food_id|exact[^\n]{0,100}saved_food_id[^\n]{0,180}log_saved_food/i
+  );
+  assert.match(prompt, /one candidate[^\n]{0,100}clearly match/i);
+  assert.match(prompt, /multiple plausible[^\n]{0,160}clarification/i);
+  assert.match(prompt, /empty[^\n]{0,160}clarification/i);
+  assert.match(prompt, /omitted[^\n]{0,180}(?:hide|clarification)/i);
+  assert.match(prompt, /do not guess/i);
+});
+
 test("recent excluded conversation detail survives the prompt excerpt cap", async () => {
   const { buildBuddySystemPrompt } = await import(PROMPT_MODULE);
   const prompt = buildBuddySystemPrompt({

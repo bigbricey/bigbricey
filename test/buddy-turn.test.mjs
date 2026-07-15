@@ -149,3 +149,26 @@ test("empty second-pass text falls back only to verified executor wording", asyn
   });
   assert.equal(result.reply, "Saved the verified change.");
 });
+
+test("a no-tools voice pass strips any provider tool calls it was not allowed to make", async () => {
+  const result = await callBuddyAfterTools({
+    llm: async () => ({
+      content: "The verified change is saved.",
+      toolCalls: [
+        {
+          id: "unexpected_call",
+          type: "function",
+          function: { name: "set_scene", arguments: '{"scene":"snow"}' },
+        },
+      ],
+    }),
+    baseMessages: [],
+    assistantMessage: { role: "assistant", content: null, tool_calls: [] },
+    toolResultMessages: [],
+    tools: [],
+    fallbackReply: "The verified change is saved.",
+    allowToolCalls: false,
+  });
+
+  assert.deepEqual(result.toolCalls, []);
+});

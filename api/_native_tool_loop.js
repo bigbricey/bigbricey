@@ -103,7 +103,6 @@ export function actionFromValidatedToolCall(call) {
       action = {
         type: "remove_box",
         id: args.id,
-        name: args.match,
       };
       break;
     case "set_theme":
@@ -126,6 +125,223 @@ export function actionFromValidatedToolCall(call) {
   }
 
   return withToolMetadata(call, compactObject(action));
+}
+
+const ONE_ROUND_CONTINUATIONS = Object.freeze({
+  inspect_app: Object.freeze({
+    kind: "tracker_removal",
+    allowedToolNames: Object.freeze(["remove_tracker"]),
+  }),
+  list_saved_foods: Object.freeze({
+    kind: "saved_food_log",
+    allowedToolNames: Object.freeze(["log_saved_food"]),
+  }),
+});
+
+function emptyContinuationPlan(
+  sourceData = null,
+  { kind = null, blockedReason = null } = {}
+) {
+  return {
+    kind,
+    allowedToolNames: [],
+    allowedSavedFoodIds: [],
+    allowedTrackerIds: [],
+    sourceData,
+    blockedReason,
+  };
+}
+
+function requestedContinuationKind(evaluations = []) {
+  const kinds = new Set();
+  for (const evaluation of Array.isArray(evaluations) ? evaluations : []) {
+    if (!evaluation?.ok || evaluation.status !== "ready") continue;
+    if (
+      evaluation.tool_name === "inspect_app" &&
+      evaluation.arguments?.allow_removal === true
+    ) {
+      kinds.add("tracker_removal");
+    }
+    if (
+      evaluation.tool_name === "list_saved_foods" &&
+      evaluation.arguments?.for_logging === true
+    ) {
+      kinds.add("saved_food_log");
+    }
+  }
+  if (kinds.size === 1) return Array.from(kinds)[0];
+  return kinds.size > 1 ? "ambiguous_continuation" : null;
+}
+
+/** Permit only one explicitly designed read -> action continuation round. */
+export function continuationPlanForNativeReads({
+  initialEvaluations = [],
+  initialResults = [],
+} = {}) {
+  const requestedKind = requestedContinuationKind(initialEvaluations);
+  const onlyResult = initialResults.length === 1 ? initialResults[0] : null;
+  const sourceData =
+    onlyResult?.data && typeof onlyResult.data === "object"
+      ? onlyResult.data
+      : null;
+  if (initialEvaluations.length !== 1 || initialResults.length !== 1) {
+    return emptyContinuationPlan(sourceData, {
+      kind: requestedKind,
+      blockedReason: requestedKind ? "multiple_reads" : null,
+    });
+  }
+  const evaluation = initialEvaluations[0];
+  const result = initialResults[0];
+  if (
+    !evaluation?.ok ||
+    evaluation.status !== "ready" ||
+    result?.status !== "success"
+  ) {
+    return emptyContinuationPlan(sourceData, {
+      kind: requestedKind,
+      blockedReason: requestedKind ? "read_failed" : null,
+    });
+  }
+  const policy = ONE_ROUND_CONTINUATIONS[evaluation.tool_name];
+  if (!policy) return emptyContinuationPlan(sourceData);
+
+  if (
+    (evaluation.tool_name === "inspect_app" &&
+      evaluation.arguments?.allow_removal !== true) ||
+    (evaluation.tool_name === "list_saved_foods" &&
+      evaluation.arguments?.for_logging !== true)
+  ) {
+    return emptyContinuationPlan(sourceData);
+  }
+
+  if (evaluation.tool_name === "list_saved_foods") {
+    if (Number(sourceData?.omitted_count) > 0) {
+      return emptyContinuationPlan(sourceData, {
+        kind: policy.kind,
+        blockedReason: "partial_read",
+      });
+    }
+    const allowedSavedFoodIds = (Array.isArray(sourceData?.saved_foods)
+      ? sourceData.saved_foods
+      : []
+    )
+      .map((food) => String(food?.id || "").trim())
+      .filter(Boolean);
+    if (!allowedSavedFoodIds.length) {
+      return emptyContinuationPlan(sourceData, {
+        kind: policy.kind,
+        blockedReason: "empty_read",
+      });
+    }
+    return {
+      kind: policy.kind,
+      allowedToolNames: [...policy.allowedToolNames],
+      allowedSavedFoodIds,
+      allowedTrackerIds: [],
+      sourceData,
+      blockedReason: null,
+    };
+  }
+
+  const allowedTrackerIds = (Array.isArray(
+    sourceData?.current_dashboard?.trackers
+  )
+    ? sourceData.current_dashboard.trackers
+    : []
+  )
+    .map((tracker) => String(tracker?.id || "").trim())
+    .filter(Boolean);
+  if (!allowedTrackerIds.length) {
+    return emptyContinuationPlan(sourceData, {
+      kind: policy.kind,
+      blockedReason: "empty_read",
+    });
+  }
+
+  return {
+    kind: policy.kind,
+    allowedToolNames: [...policy.allowedToolNames],
+    allowedSavedFoodIds: [],
+    allowedTrackerIds,
+    sourceData,
+    blockedReason: null,
+  };
+}
+
+/** Validate the one provider follow-up against the verified read result. */
+export function selectNativeContinuation({
+  plan = emptyContinuationPlan(),
+  followupEvaluations = [],
+  continuationDepth = 1,
+} = {}) {
+  if (
+    continuationDepth !== 1 ||
+    !plan?.kind ||
+    !Array.isArray(plan.allowedToolNames) ||
+    followupEvaluations.length !== 1
+  ) {
+    return { ok: false, kind: null, evaluation: null };
+  }
+  const evaluation = followupEvaluations[0];
+  if (
+    !evaluation?.ok ||
+    !plan.allowedToolNames.includes(evaluation.tool_name)
+  ) {
+    return { ok: false, kind: null, evaluation: null };
+  }
+
+  if (plan.kind === "saved_food_log") {
+    const savedFoodId = String(
+      evaluation.arguments?.saved_food_id || ""
+    ).trim();
+    if (
+      evaluation.status !== "ready" ||
+      !savedFoodId ||
+      evaluation.arguments?.name != null ||
+      !plan.allowedSavedFoodIds.includes(savedFoodId)
+    ) {
+      return { ok: false, kind: null, evaluation: null };
+    }
+  } else if (
+    plan.kind === "tracker_removal" &&
+    (evaluation.status !== "needs_confirmation" ||
+      !String(evaluation.arguments?.id || "").trim() ||
+      evaluation.arguments?.match != null ||
+      !Array.isArray(plan.allowedTrackerIds) ||
+      !plan.allowedTrackerIds.includes(
+        String(evaluation.arguments.id).trim()
+      ))
+  ) {
+    return { ok: false, kind: null, evaluation: null };
+  }
+
+  return { ok: true, kind: plan.kind, evaluation };
+}
+
+/** Safe wording when an authorized read did not produce its required action. */
+export function unresolvedContinuationReply(plan = {}) {
+  if (plan?.kind === "saved_food_log") {
+    if (plan.blockedReason === "empty_read") {
+      return "I couldn't find a saved food matching that, so I didn't log anything. What is it called?";
+    }
+    if (plan.blockedReason === "read_failed") {
+      return "I couldn't safely read your saved foods, so I didn't log anything. Try that again in a moment.";
+    }
+    if (["partial_read", "multiple_reads"].includes(plan.blockedReason)) {
+      return "I found possible saved foods, but I couldn't verify one exact match, so I didn't log anything. Which saved food did you mean?";
+    }
+    return "I found your saved foods, but I didn't log anything because I couldn't verify one exact match. Which saved food did you mean?";
+  }
+  if (plan?.kind === "tracker_removal") {
+    if (plan.blockedReason === "empty_read") {
+      return "I couldn't find that tracker in the inspected dashboard, so I didn't remove anything. Nothing changed.";
+    }
+    if (["read_failed", "multiple_reads"].includes(plan.blockedReason)) {
+      return "I couldn't safely verify that tracker, so I didn't remove anything. Nothing changed.";
+    }
+    return "I inspected that part of the app, but I didn't remove anything. Nothing changed.";
+  }
+  return "I completed the read, but I didn't make any change.";
 }
 
 /** Rebuild the provider assistant message from canonical validated arguments. */

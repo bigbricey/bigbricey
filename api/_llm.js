@@ -24,6 +24,37 @@ export function llmConfig() {
   };
 }
 
+/** Normalize provider usage and keep one metering unit when counts are absent. */
+export function usageForMetering(usage = {}) {
+  const prompt_tokens = Math.max(
+    0,
+    Math.round(Number(usage?.prompt_tokens ?? usage?.input_tokens ?? 0) || 0)
+  );
+  const completion_tokens = Math.max(
+    0,
+    Math.round(
+      Number(usage?.completion_tokens ?? usage?.output_tokens ?? 0) || 0
+    )
+  );
+  const reportedTotal = Math.max(
+    0,
+    Math.round(Number(usage?.total_tokens) || 0)
+  );
+  const total_tokens = Math.max(
+    reportedTotal,
+    prompt_tokens + completion_tokens,
+    1
+  );
+  const rawCost = usage?.cost_usd;
+  const cost = rawCost == null ? null : Number(rawCost);
+  return {
+    prompt_tokens,
+    completion_tokens,
+    total_tokens,
+    cost_usd: cost != null && Number.isFinite(cost) ? cost : null,
+  };
+}
+
 /**
  * Chat completion — OpenRouter-compatible shape for now.
  * @param {{ messages: Array<object>, temperature?: number, title?: string,

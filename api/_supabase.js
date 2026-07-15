@@ -515,6 +515,7 @@ const FOOD_MEASURES = [
   "fat",
   "carbs",
   "fiber",
+  "sugars",
   "potassium",
   "magnesium",
   "sodium",
@@ -537,6 +538,7 @@ const MEASURE_UNITS = {
   fat: "g",
   carbs: "g",
   fiber: "g",
+  sugars: "g",
   potassium: "mg",
   magnesium: "mg",
   sodium: "mg",
@@ -561,12 +563,18 @@ const MEASURE_UNITS = {
 };
 
 export function foodRowToPayload(row) {
+  const grams =
+    row.grams == null || row.grams === "" ? null : Number(row.grams);
   return {
     label: row.label || row.food || "",
     amount: row.amount ?? null,
     unit: row.unit ?? null,
     source: row.source || row.db || null,
     fdcId: row.fdcId || row.fdc_id || null,
+    saved_food_id: row.saved_food_id
+      ? String(row.saved_food_id).trim().slice(0, 200)
+      : null,
+    grams: Number.isFinite(grams) ? grams : null,
     macros: Object.fromEntries(
       FOOD_MEASURES.filter((k) => row[k] != null && row[k] !== "").map((k) => [
         k,
@@ -642,6 +650,15 @@ function validateFoodRowsForSync(rows) {
       if (!Number.isFinite(value) || value < 0 || value > 1_000_000_000) {
         const error = new Error(`Invalid ${key} value.`);
         error.code = "invalid_food_measure_value";
+        error.status = 400;
+        throw error;
+      }
+    }
+    if (row.grams != null && row.grams !== "") {
+      const grams = Number(row.grams);
+      if (!Number.isFinite(grams) || grams < 0 || grams > 1_000_000_000) {
+        const error = new Error("Invalid grams value.");
+        error.code = "invalid_food_grams_value";
         error.status = 400;
         throw error;
       }
@@ -725,7 +742,7 @@ export async function syncFoodDay(
   }
 }
 
-function foodRowsFromEvents(events) {
+export function foodRowsFromEvents(events) {
   // Collapse only true DB glitches: multiple events with the same client_id.
   // Same shake logged twice = two client_ids = both kept.
   const byKey = new Map();
@@ -740,7 +757,13 @@ function foodRowsFromEvents(events) {
       label: p.label || ev.title || "Food",
       amount: p.amount,
       unit: p.unit,
+      ...(p.grams != null && Number.isFinite(Number(p.grams))
+        ? { grams: Number(p.grams) }
+        : {}),
       source: p.source,
+      ...(p.saved_food_id
+        ? { saved_food_id: String(p.saved_food_id).slice(0, 200) }
+        : {}),
       ...macros,
       extras: p.extras || undefined,
       occurred_at: ev.occurred_at,
@@ -2480,16 +2503,18 @@ function boundedEnvInteger(name, fallback, min, max) {
   return Math.min(max, Math.max(min, Math.round(value)));
 }
 
-export async function reserveLlmTurn(email) {
+export async function reserveLlmTurn(email, { reservedTokens } = {}) {
   const e = String(email || "").trim().toLowerCase();
   if (!e) throw new Error("email required");
   const limits = {
-    p_reserved_tokens: boundedEnvInteger(
-      "CHAT_RESERVED_TOKENS_PER_TURN",
-      20_000,
-      1_000,
-      100_000
-    ),
+    p_reserved_tokens: Number.isFinite(Number(reservedTokens))
+      ? Math.min(100_000, Math.max(1_000, Math.round(Number(reservedTokens))))
+      : boundedEnvInteger(
+          "CHAT_RESERVED_TOKENS_PER_TURN",
+          20_000,
+          1_000,
+          100_000
+        ),
     p_minute_limit: boundedEnvInteger("CHAT_REQUESTS_PER_MINUTE", 10, 1, 120),
     p_daily_request_limit: boundedEnvInteger(
       "CHAT_DAILY_REQUEST_LIMIT",
@@ -2516,6 +2541,40 @@ export async function reserveLlmTurn(email) {
       error.message = /minute/i.test(message)
         ? "You're sending messages too quickly. Wait a moment and try again."
         : "You've reached today's AI chat allowance. Try again tomorrow.";
+    }
+    throw error;
+  }
+}
+
+export async function reserveAdditionalLlmTokens(
+  email,
+  { reservedTokens } = {}
+) {
+  const e = String(email || "").trim().toLowerCase();
+  if (!e) throw new Error("email required");
+  const limits = {
+    p_reserved_tokens: Number.isFinite(Number(reservedTokens))
+      ? Math.min(100_000, Math.max(1_000, Math.round(Number(reservedTokens))))
+      : boundedEnvInteger(
+          "CHAT_RESERVED_TOKENS_PER_TURN",
+          20_000,
+          1_000,
+          100_000
+        ),
+    p_daily_token_budget: boundedEnvInteger(
+      "CHAT_DAILY_TOKEN_BUDGET",
+      2_000_000,
+      1_000,
+      1_000_000_000
+    ),
+  };
+  try {
+    return await sbRpc("reserve_llm_tokens", { p_email: e, ...limits });
+  } catch (error) {
+    if (/llm_daily_limit_reached/i.test(String(error?.message || ""))) {
+      error.code = "chat_daily_limit_reached";
+      error.status = 429;
+      error.message = "You've reached today's AI chat allowance. Try again tomorrow.";
     }
     throw error;
   }

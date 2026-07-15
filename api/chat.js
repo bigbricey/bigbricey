@@ -44,6 +44,7 @@ import {
   addMemoryNote,
   deleteProfileMemory,
   removeMemoryNote,
+  reserveAdditionalLlmTokens,
   reserveLlmTurn,
   logLlmUsage,
   latestDailyMeasureSeries,
@@ -51,7 +52,7 @@ import {
   sb,
 } from "./_supabase.js";
 import { submitFeedback, summarizeFeedback, isAdmin } from "./_members.js";
-import { llmConfig } from "./_llm.js";
+import { llmConfig, usageForMetering } from "./_llm.js";
 import {
   abilitiesReplyText,
   SCENE_IDS,
@@ -73,26 +74,23 @@ import {
   BIGBRICEY_TOOLS,
   buildNativeToolResultMessage,
   buildToolResultEnvelope,
-  getToolPolicy,
   validateNativeToolCall,
 } from "./_tool_contracts.js";
 import {
   actionFromValidatedToolCall,
   assistantMessageForValidatedCalls,
   classifyNativeToolExecution,
+  continuationPlanForNativeReads,
   invalidNativeToolExecution,
+  selectNativeContinuation,
   selectVerifiedNativeToolReply,
+  unresolvedContinuationReply,
 } from "./_native_tool_loop.js";
+import { executeSavedFoodContinuation } from "./_saved_food_continuation.js";
 import {
   createToolConfirmationToken,
   verifyToolConfirmationToken,
 } from "./_tool_confirmation.js";
-
-const CONFIRMATION_ONLY_TOOLS = Object.freeze(
-  BIGBRICEY_TOOLS.filter(
-    (tool) => tool?.function?.name === "remove_tracker"
-  )
-);
 
 /**
  * Conversational control of the food log.
@@ -2410,7 +2408,7 @@ export default async function handler(req, res) {
       );
     }
 
-    const executorDerivedReply = composeActionReply({
+    let executorDerivedReply = composeActionReply({
       modelReply: intent.reply,
       executionNotes: notes,
     });
@@ -2420,38 +2418,68 @@ export default async function handler(req, res) {
       intent?.nativeTurn?.assistantMessage &&
       toolResultMessages.length
     ) {
-      try {
-        const canContinueAfterRead =
-          !pendingConfirmation &&
-          nativeEvaluations.length > 0 &&
-          nativeEvaluations.every(
-            (evaluation) =>
-              evaluation?.ok &&
-              evaluation.status === "ready" &&
-              getToolPolicy(evaluation.tool_name)?.mutates === false
-          ) &&
-          verifiedToolResults.every((result) => result?.status === "success");
-        const finalTurn = await callBuddyAfterTools({
-          baseMessages: intent.nativeTurn.baseMessages,
-          assistantMessage: intent.nativeTurn.assistantMessage,
-          toolResultMessages,
-          tools: canContinueAfterRead
-            ? CONFIRMATION_ONLY_TOOLS
-            : BIGBRICEY_TOOLS,
-          fallbackReply: executorDerivedReply,
-          allowToolCalls: canContinueAfterRead,
-        });
-        if (canContinueAfterRead && finalTurn.toolCalls.length) {
-          const followupEvaluation =
-            finalTurn.toolCalls.length === 1
-              ? validateNativeToolCall(finalTurn.toolCalls[0])
-              : null;
-          if (
-            followupEvaluation?.ok &&
-            followupEvaluation.status === "needs_confirmation" &&
-            followupEvaluation.tool_name === "remove_tracker" &&
-            getToolPolicy(followupEvaluation.tool_name)?.destructive
-          ) {
+      const continuationPlan = pendingConfirmation
+        ? {
+            kind: null,
+            allowedToolNames: [],
+            allowedSavedFoodIds: [],
+            allowedTrackerIds: [],
+            sourceData: null,
+            blockedReason: null,
+          }
+        : continuationPlanForNativeReads({
+            initialEvaluations: nativeEvaluations,
+            initialResults: verifiedToolResults,
+          });
+      if (
+        continuationPlan.kind &&
+        continuationPlan.allowedToolNames.length === 0
+      ) {
+        candidateReply = unresolvedContinuationReply(continuationPlan);
+      } else {
+        try {
+          const continuationTools = BIGBRICEY_TOOLS.filter((tool) =>
+            continuationPlan.allowedToolNames.includes(tool?.function?.name)
+          );
+          await reserveAdditionalLlmTokens(session.email);
+          const planningTurn = await callBuddyAfterTools({
+            baseMessages: intent.nativeTurn.baseMessages,
+            assistantMessage: intent.nativeTurn.assistantMessage,
+            toolResultMessages,
+            tools: continuationTools,
+            fallbackReply: executorDerivedReply,
+            allowToolCalls: continuationPlan.allowedToolNames.length > 0,
+          });
+          if (session.email && planningTurn.output) {
+            logLlmUsage(
+              session.email,
+              usageForMetering(planningTurn.output.usage),
+              {
+                model: planningTurn.output.model,
+                provider: planningTurn.output.provider,
+                conversation_id: conversationId || null,
+                purpose: continuationPlan.allowedToolNames.length
+                  ? "chat_continuation_plan"
+                  : "chat_after_tools",
+              }
+            ).catch(() => {});
+          }
+
+        if (
+          continuationPlan.allowedToolNames.length > 0 &&
+          planningTurn.toolCalls.length
+        ) {
+          const followupEvaluations = planningTurn.toolCalls.map((call) =>
+            validateNativeToolCall(call)
+          );
+          const selectedContinuation = selectNativeContinuation({
+            plan: continuationPlan,
+            followupEvaluations,
+            continuationDepth: 1,
+          });
+          const followupEvaluation = selectedContinuation.evaluation;
+
+          if (selectedContinuation.kind === "tracker_removal") {
             let confirmation = {
               ...followupEvaluation.confirmation,
               prompt: trackerRemovalConfirmationPrompt(
@@ -2485,23 +2513,149 @@ export default async function handler(req, res) {
               confirmation,
             });
             candidateReply = confirmation.prompt;
+          } else if (selectedContinuation.kind === "saved_food_log") {
+            const stableRowId =
+              `chat:${requestId}:saved_food_continuation`.slice(0, 200);
+            let continuationReceipt;
+            try {
+              continuationReceipt = await executeSavedFoodContinuation({
+                email: session.email,
+                day: requestedDay,
+                rawText: text,
+                requestId,
+                stableRowId,
+                savedFoodId: followupEvaluation.arguments.saved_food_id,
+                servings: followupEvaluation.arguments.servings,
+                allowedSavedFoodIds: continuationPlan.allowedSavedFoodIds,
+                rows: next,
+                expectedRevision: foodDayRevision,
+                authoritativeRowsLoaded,
+                findSavedFoodById,
+                rowFromSavedFood,
+                syncFoodDay,
+                loadFoodDaySnapshot,
+              });
+            } catch {
+              continuationReceipt = {
+                status: "error",
+                changed: false,
+                committed: false,
+                reloaded: false,
+                rows: next,
+                revision: foodDayRevision,
+                notes: [
+                  "The saved food could not be safely added, so nothing was changed.",
+                ],
+                data: null,
+                error: {
+                  code: "TOOL_EXECUTION_FAILED",
+                  message:
+                    "The saved food could not be safely added, so nothing was changed.",
+                  retryable: false,
+                },
+              };
+            }
+
+            next = Array.isArray(continuationReceipt.rows)
+              ? continuationReceipt.rows
+              : next;
+            if (Number.isSafeInteger(Number(continuationReceipt.revision))) {
+              foodDayRevision = Number(continuationReceipt.revision);
+            }
+            ledgerCommitted =
+              ledgerCommitted || Boolean(continuationReceipt.committed);
+            ledgerReloaded =
+              ledgerReloaded || Boolean(continuationReceipt.reloaded);
+            if (Array.isArray(continuationReceipt.notes)) {
+              notes.push(...continuationReceipt.notes);
+            }
+
+            const continuationExecution = classifyNativeToolExecution({
+              toolName: followupEvaluation.tool_name,
+              notes: continuationReceipt.notes || [],
+              changed: Boolean(continuationReceipt.changed),
+              data: continuationReceipt.data || null,
+              result: {
+                status: continuationReceipt.status,
+                ok: continuationReceipt.status === "success",
+                error: continuationReceipt.error || null,
+              },
+            });
+            verifiedToolResults.push(continuationExecution);
+            const continuationSucceeded =
+              continuationExecution.status === "success";
+            const followupResultMessage = buildNativeToolResultMessage(
+              buildToolResultEnvelope({
+                toolCallId: followupEvaluation.tool_call_id,
+                toolName: followupEvaluation.tool_name,
+                status: continuationSucceeded ? "success" : "error",
+                changed: continuationExecution.changed,
+                data: continuationSucceeded
+                  ? {
+                      ...(continuationExecution.data || {}),
+                      notes: continuationExecution.notes || [],
+                      current_log: boundedLedgerToolRead(
+                        buildCurrentLogContext(next)
+                      ),
+                    }
+                  : null,
+                error: continuationSucceeded
+                  ? null
+                  : continuationExecution.error,
+              })
+            );
+
+            executorDerivedReply = composeActionReply({
+              modelReply: intent.reply,
+              executionNotes: notes,
+            });
+            candidateReply = executorDerivedReply;
+            try {
+              await reserveAdditionalLlmTokens(session.email);
+              const voiceTurn = await callBuddyAfterTools({
+                baseMessages: [
+                  ...intent.nativeTurn.baseMessages,
+                  intent.nativeTurn.assistantMessage,
+                  ...toolResultMessages,
+                ],
+                assistantMessage: assistantMessageForValidatedCalls([
+                  followupEvaluation,
+                ]),
+                toolResultMessages: [followupResultMessage],
+                tools: [],
+                fallbackReply: executorDerivedReply,
+                allowToolCalls: false,
+              });
+              candidateReply = voiceTurn.reply || executorDerivedReply;
+              if (session.email && voiceTurn.output) {
+                logLlmUsage(
+                  session.email,
+                  usageForMetering(voiceTurn.output.usage),
+                  {
+                    model: voiceTurn.output.model,
+                    provider: voiceTurn.output.provider,
+                    conversation_id: conversationId || null,
+                    purpose: "chat_continuation_voice",
+                  }
+                ).catch(() => {});
+              }
+            } catch {
+              // Keep the executor-derived receipt if the final voice pass fails.
+            }
           } else {
             verifiedToolResults.push(invalidNativeToolExecution());
             candidateReply = executorDerivedReply;
           }
         } else {
-          candidateReply = finalTurn.reply || executorDerivedReply;
+          candidateReply = continuationPlan.kind
+            ? unresolvedContinuationReply(continuationPlan)
+            : planningTurn.reply || executorDerivedReply;
         }
-        if (session.email && finalTurn.output?.usage) {
-          logLlmUsage(session.email, finalTurn.output.usage, {
-            model: finalTurn.output.model,
-            provider: finalTurn.output.provider,
-            conversation_id: conversationId || null,
-            purpose: "chat_after_tools",
-          }).catch(() => {});
+        } catch {
+          candidateReply = continuationPlan.kind
+            ? unresolvedContinuationReply(continuationPlan)
+            : executorDerivedReply;
         }
-      } catch {
-        // Executor-derived reply is the truthful fallback when the voice pass fails.
       }
     }
     let reply = selectVerifiedNativeToolReply({
@@ -3536,20 +3690,13 @@ async function interpretIntent(text, rows, ctx = {}) {
     });
     const out = turn.output;
     // Meter tokens per user (fire-and-forget)
-    if (ctx.email && out?.usage) {
-      logLlmUsage(ctx.email, out.usage, {
+    if (ctx.email && out) {
+      logLlmUsage(ctx.email, usageForMetering(out.usage), {
         model: out.model,
         provider: out.provider,
         conversation_id: ctx.conversationId || null,
         purpose: "chat",
       }).catch(() => {});
-    } else if (ctx.email && out && !out.usage) {
-      // Still record a hit if provider omitted usage
-      logLlmUsage(
-        ctx.email,
-        { prompt_tokens: 0, completion_tokens: 0, total_tokens: 1 },
-        { model: out.model, provider: out.provider, purpose: "chat_no_usage" }
-      ).catch(() => {});
     }
     const evaluations = turn.toolCalls.map((call) => {
       const checked = validateNativeToolCall(call);

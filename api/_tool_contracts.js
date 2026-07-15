@@ -34,7 +34,8 @@ const objectSchema = (properties, required = []) => ({
 const DEFINITIONS = [
   ["inspect_app", "Read the authoritative BigBricey interface guide and the user's exact current Today dashboard, including saved tracker definitions, positions, and computed chart summaries. Always use this before explaining what a visible panel, button, chart, label, or 'thing' in the app is or currently shows. Never guess from the user's wording.", objectSchema({
     focus: string("The user's short description of the visible app element or feature they mean."),
-  })],
+    allow_removal: { type: "boolean", description: "True only when the same user request explicitly asks to remove the inspected item." },
+  }, ["allow_removal"])],
   ["read_today", "Read the user's recorded ledger and home state for one day. Use this before answering totals or what-was-logged questions.", objectSchema({
     day: string("Calendar day in YYYY-MM-DD format."),
     include: array("Sections to return.", { type: "string", enum: INCLUDE_SECTIONS }, { maxItems: 5, uniqueItems: true }),
@@ -68,7 +69,8 @@ const DEFINITIONS = [
   ["list_saved_foods", "List the user's private saved foods.", objectSchema({
     query: string("Optional name filter."),
     limit: integer("Maximum results."),
-  })],
+    for_logging: { type: "boolean", description: "True only when the user's current request asks to log a saved food; false for browsing or listing." },
+  }, ["for_logging"])],
   ["delete_saved_food", "Request deletion of a reusable saved food now. Call this immediately; the app will collect confirmation before execution.", objectSchema({
     name: string("Saved food name."),
     saved_food_id: string("Saved food id."),
@@ -120,10 +122,9 @@ const DEFINITIONS = [
     chart: string("Chart style.", { enum: CHART_TYPES }),
     days: integer("Number of calendar days shown by a chart."),
   }, ["kind", "title"])],
-  ["remove_tracker", "Request removal of one custom dashboard counter or chart now. Supply exactly one identifier: use id when the dashboard manifest provides it, otherwise use match. Never send both. Call this immediately; the app will collect confirmation before execution.", objectSchema({
+  ["remove_tracker", "Request removal of one custom dashboard counter or chart now. Supply the exact id from the current dashboard manifest. Call this immediately; the app will collect confirmation before execution.", objectSchema({
     id: string("Exact custom panel id. Send id only; do not also send match."),
-    match: string("Distinctive tracker title or measurement id. Send match only when an exact id is unavailable."),
-  })],
+  }, ["id"])],
   ["set_theme", "Change the private app look using safe theme fields.", objectSchema({
     preset: string("Theme preset.", { enum: THEME_PRESETS }),
     accent: string("Hex accent color."),
@@ -332,6 +333,16 @@ function validateArguments(name, input) {
     if (error) return error;
   }
 
+  for (const key of ["allow_removal", "for_logging", "recompute", "reset"]) {
+    if (args[key] != null && typeof args[key] !== "boolean") {
+      return validationError(
+        "INVALID_TYPE",
+        `"${key}" must be true or false.`,
+        `function.arguments.${key}`
+      );
+    }
+  }
+
   if (name === "save_food") {
     if (!exactlyOne(args, ["source_entry_ids", "food_query"])) {
       const code = args.source_entry_ids != null && args.food_query != null ? "INVALID_COMBINATION" : "REQUIRED_FIELD";
@@ -419,13 +430,6 @@ function validateArguments(name, input) {
         return validationError("INVALID_VALUE", "Unknown tracker goal mode.", "function.arguments.mode");
       }
     }
-  }
-  if (name === "remove_tracker" && !exactlyOne(args, ["id", "match"])) {
-    return validationError(
-      args.id != null && args.match != null ? "INVALID_COMBINATION" : "REQUIRED_FIELD",
-      "Use exactly one tracker identifier.",
-      "function.arguments"
-    );
   }
   if (name === "remember" && args.kind != null && !["fact", "preference"].includes(args.kind)) {
     return validationError("INVALID_VALUE", "Unknown memory type.", "function.arguments.kind");

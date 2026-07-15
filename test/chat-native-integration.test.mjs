@@ -19,14 +19,33 @@ test("chat endpoint uses the native catalog and verified tool-result second pass
   assert.match(source, /type === "inspect_app"/);
   assert.match(source, /trackers:\s*boxesSnap/);
   assert.match(source, /layout:\s*layoutSnap/);
-  assert.match(source, /CONFIRMATION_ONLY_TOOLS/);
-  assert.match(source, /allowToolCalls:\s*canContinueAfterRead/);
+  assert.match(source, /continuationPlanForNativeReads/);
+  assert.match(source, /selectNativeContinuation/);
+  assert.match(source, /unresolvedContinuationReply/);
+  assert.match(source, /allowedToolNames/);
+  assert.match(source, /executeSavedFoodContinuation/);
+  assert.match(source, /chat:\$\{requestId\}:saved_food_continuation/);
+  assert.doesNotMatch(
+    source,
+    /chat:\$\{requestId\}:\$\{followupEvaluation\.tool_call_id\}/
+  );
+  assert.match(source, /allowedSavedFoodIds/);
+  assert.match(source, /allowToolCalls:\s*continuationPlan\.allowedToolNames\.length\s*>\s*0/);
   assert.match(source, /followupEvaluation/);
   assert.match(
     source,
-    /followupEvaluation\.tool_name === "remove_tracker"/
+    /selectedContinuation\.kind === "tracker_removal"/
+  );
+  assert.match(source, /selectedContinuation\.kind === "saved_food_log"/);
+  assert.match(source, /"chat_continuation_plan"/);
+  assert.match(source, /purpose:\s*"chat_continuation_voice"/);
+  assert.match(source, /allowToolCalls:\s*false/);
+  assert.match(
+    source,
+    /catch\s*\{[\s\S]{0,300}unresolvedContinuationReply\(continuationPlan\)/
   );
   assert.match(source, /trackerRemovalConfirmationPrompt/);
+  assert.doesNotMatch(source, /CONFIRMATION_ONLY_TOOLS/);
   assert.doesNotMatch(source, /OUTPUT FORMAT:/);
   assert.doesNotMatch(source, /use JSON actions when changing the app/i);
 });

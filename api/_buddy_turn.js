@@ -57,7 +57,10 @@ export async function callBuddyAfterTools({
 
   return {
     reply: safeAssistantReply(output?.content, fallbackReply),
-    toolCalls: Array.isArray(output?.toolCalls) ? output.toolCalls : [],
+    toolCalls:
+      allowToolCalls && Array.isArray(output?.toolCalls)
+        ? output.toolCalls
+        : [],
     output,
   };
 }

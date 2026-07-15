@@ -47,26 +47,49 @@ const EXPECTED_TOOLS = [
 
 test("inspect_app is a bounded read-only tool for exact interface questions", () => {
   const valid = validateNativeToolCall(
-    call("inspect_app", { focus: "the Weight (30-Day) panel below chat" })
+    call("inspect_app", {
+      focus: "the Weight (30-Day) panel below chat",
+      allow_removal: true,
+    })
   );
   assert.equal(valid.ok, true);
   assert.equal(valid.status, "ready");
   assert.equal(valid.policy.mutates, false);
   assert.deepEqual(valid.arguments, {
     focus: "the Weight (30-Day) panel below chat",
+    allow_removal: true,
   });
+  assert.equal(
+    validateNativeToolCall(
+      call("inspect_app", { focus: "weight" })
+    ).error.code,
+    "REQUIRED_FIELD"
+  );
 
   assert.equal(
     validateNativeToolCall(
-      call("inspect_app", { focus: "x".repeat(501) })
+      call("inspect_app", {
+        focus: "x".repeat(501),
+        allow_removal: false,
+      })
     ).error.code,
     "OUT_OF_RANGE"
   );
   assert.equal(
     validateNativeToolCall(
-      call("inspect_app", { focus: "weight", user_email: "other@example.com" })
+      call("inspect_app", {
+        focus: "weight",
+        allow_removal: false,
+        user_email: "other@example.com",
+      })
     ).error.code,
     "UNKNOWN_FIELD"
+  );
+  assert.equal(
+    validateNativeToolCall(
+      call("inspect_app", { focus: "weight", allow_removal: "yes" })
+    ).error.code,
+    "INVALID_TYPE"
   );
 });
 
@@ -313,13 +336,32 @@ test("saved-food log/list/delete contracts are strict and deletion needs confirm
   );
 
   const list = validateNativeToolCall(
-    call("list_saved_foods", { query: "shake", limit: 25 })
+    call("list_saved_foods", {
+      query: "shake",
+      limit: 25,
+      for_logging: true,
+    })
   );
   assert.equal(list.ok, true);
+  assert.equal(list.arguments.for_logging, true);
   assert.equal(list.policy.mutates, false);
   assert.equal(
-    validateNativeToolCall(call("list_saved_foods", { limit: 51 })).error.code,
+    validateNativeToolCall(
+      call("list_saved_foods", { query: "shake" })
+    ).error.code,
+    "REQUIRED_FIELD"
+  );
+  assert.equal(
+    validateNativeToolCall(
+      call("list_saved_foods", { limit: 51, for_logging: false })
+    ).error.code,
     "OUT_OF_RANGE"
+  );
+  assert.equal(
+    validateNativeToolCall(
+      call("list_saved_foods", { for_logging: "yes" })
+    ).error.code,
+    "INVALID_TYPE"
   );
 
   const deletion = validateNativeToolCall(
@@ -480,16 +522,21 @@ test("dashboard trackers create real bounded counters or charts and removal is c
   );
 
   const removal = validateNativeToolCall(
-    call("remove_tracker", { match: "30-day weight" })
+    call("remove_tracker", { id: "c_weight_30d" })
   );
   assert.equal(removal.status, "needs_confirmation");
   assert.equal(removal.policy.destructive, true);
+  assert.equal(
+    validateNativeToolCall(
+      call("remove_tracker", { match: "30-day weight" })
+    ).error.code,
+    "UNKNOWN_FIELD"
+  );
 
   const removeTool = BIGBRICEY_TOOLS.find(
     (tool) => tool.function.name === "remove_tracker"
   );
-  assert.match(removeTool.function.description, /exactly one/i);
-  assert.match(removeTool.function.description, /never[^\n]{0,20}both/i);
+  assert.match(removeTool.function.description, /exact id/i);
   assert.match(removeTool.function.parameters.properties.id.description, /id only/i);
 });
 

@@ -5,9 +5,12 @@ import {
   actionFromValidatedToolCall,
   assistantMessageForValidatedCalls,
   classifyNativeToolExecution,
+  continuationPlanForNativeReads,
   invalidNativeToolExecution,
+  selectNativeContinuation,
   safeAssistantReply,
   selectVerifiedNativeToolReply,
+  unresolvedContinuationReply,
 } from "../api/_native_tool_loop.js";
 
 function validated(toolName, args, overrides = {}) {
@@ -104,11 +107,11 @@ test("read and customization calls retain only canonical validated arguments", (
 
   assert.deepEqual(
     actionFromValidatedToolCall(
-      validated("remove_tracker", { match: "Weight trend" })
+      validated("remove_tracker", { id: "c_weight_trend" })
     ),
     {
       type: "remove_box",
-      name: "Weight trend",
+      id: "c_weight_trend",
       __tool_call_id: "call_remove_tracker",
       __tool_name: "remove_tracker",
     }
@@ -210,6 +213,289 @@ test("assistant tool-call message is rebuilt from canonical validated calls", ()
       },
     ],
   });
+});
+
+test("a successful saved-food read permits one exact-id logging continuation", () => {
+  const initialEvaluations = [
+    validated("list_saved_foods", {
+      query: "breakfast",
+      for_logging: true,
+    }),
+  ];
+  const initialResults = [
+    {
+      status: "success",
+      data: {
+        saved_foods: [
+          { id: "saved_breakfast_1", name: "Usual breakfast" },
+          { id: "saved_breakfast_2", name: "Weekend breakfast" },
+        ],
+      },
+    },
+  ];
+  const plan = continuationPlanForNativeReads({
+    initialEvaluations,
+    initialResults,
+  });
+
+  assert.deepEqual(plan.allowedToolNames, ["log_saved_food"]);
+  assert.deepEqual(plan.allowedSavedFoodIds, [
+    "saved_breakfast_1",
+    "saved_breakfast_2",
+  ]);
+  const selected = selectNativeContinuation({
+    plan,
+    followupEvaluations: [
+      validated("log_saved_food", {
+        saved_food_id: "saved_breakfast_1",
+        servings: 1,
+      }),
+    ],
+    continuationDepth: 1,
+  });
+  assert.equal(selected.ok, true);
+  assert.equal(selected.kind, "saved_food_log");
+  assert.equal(selected.evaluation.arguments.saved_food_id, "saved_breakfast_1");
+});
+
+test("native continuation policy fails closed outside its one bounded read-write path", () => {
+  const savedResult = {
+    status: "success",
+    data: { saved_foods: [{ id: "saved_1", name: "Breakfast" }] },
+  };
+  assert.deepEqual(
+    continuationPlanForNativeReads({
+      initialEvaluations: [validated("read_today", {})],
+      initialResults: [savedResult],
+    }).allowedToolNames,
+    []
+  );
+  assert.deepEqual(
+    continuationPlanForNativeReads({
+      initialEvaluations: [
+        validated("list_saved_foods", { for_logging: true }),
+      ],
+      initialResults: [{ status: "error", data: null }],
+    }).allowedToolNames,
+    []
+  );
+  const partialPlan = continuationPlanForNativeReads({
+    initialEvaluations: [
+      validated("list_saved_foods", { for_logging: true }),
+    ],
+    initialResults: [
+      {
+        status: "success",
+        data: {
+          saved_foods: [{ id: "saved_1", name: "Breakfast" }],
+          omitted_count: 1,
+        },
+      },
+    ],
+  });
+  assert.deepEqual(partialPlan.allowedToolNames, []);
+  assert.equal(partialPlan.kind, "saved_food_log");
+  assert.equal(partialPlan.blockedReason, "partial_read");
+  const plan = continuationPlanForNativeReads({
+    initialEvaluations: [
+      validated("list_saved_foods", { for_logging: true }),
+    ],
+    initialResults: [savedResult],
+  });
+  for (const followupEvaluations of [
+    [],
+    [
+      validated("log_saved_food", { name: "Breakfast" }),
+    ],
+    [
+      validated("log_saved_food", { saved_food_id: "not_returned" }),
+    ],
+    [validated("set_scene", { scene: "aurora" })],
+    [
+      validated("log_saved_food", { saved_food_id: "saved_1" }),
+      validated("log_saved_food", { saved_food_id: "saved_1" }),
+    ],
+  ]) {
+    assert.equal(
+      selectNativeContinuation({
+        plan,
+        followupEvaluations,
+        continuationDepth: 1,
+      }).ok,
+      false
+    );
+  }
+  assert.equal(
+    selectNativeContinuation({
+      plan,
+      followupEvaluations: [
+        validated("log_saved_food", { saved_food_id: "saved_1" }),
+      ],
+      continuationDepth: 2,
+    }).ok,
+    false
+  );
+});
+
+test("read continuations require explicit original-request authorization", () => {
+  const savedResult = {
+    status: "success",
+    data: { saved_foods: [{ id: "saved_1", name: "Breakfast" }] },
+  };
+  assert.equal(
+    continuationPlanForNativeReads({
+      initialEvaluations: [
+        validated("list_saved_foods", { for_logging: false }),
+      ],
+      initialResults: [savedResult],
+    }).kind,
+    null
+  );
+  assert.equal(
+    continuationPlanForNativeReads({
+      initialEvaluations: [
+        validated("inspect_app", {
+          focus: "weight chart",
+          allow_removal: false,
+        }),
+      ],
+      initialResults: [{ status: "success", data: { trackers: [] } }],
+    }).kind,
+    null
+  );
+  assert.equal(
+    continuationPlanForNativeReads({
+      initialEvaluations: [
+        validated("inspect_app", {
+          focus: "weight chart",
+          allow_removal: true,
+        }),
+      ],
+      initialResults: [{ status: "success", data: { trackers: [] } }],
+    }).kind,
+    "tracker_removal"
+  );
+});
+
+test("tracker removal continuation is bound to one exact inspected tracker id", () => {
+  const plan = continuationPlanForNativeReads({
+    initialEvaluations: [
+      validated("inspect_app", {
+        focus: "weight chart",
+        allow_removal: true,
+      }),
+    ],
+    initialResults: [
+      {
+        status: "success",
+        data: {
+          current_dashboard: {
+            trackers: [
+              { id: "c_weight", title: "Weight" },
+              { id: "c_steps", title: "Steps" },
+            ],
+          },
+        },
+      },
+    ],
+  });
+
+  assert.deepEqual(plan.allowedTrackerIds, ["c_weight", "c_steps"]);
+  assert.equal(
+    selectNativeContinuation({
+      plan,
+      followupEvaluations: [
+        validated("remove_tracker", { id: "c_weight" }, {
+          status: "needs_confirmation",
+        }),
+      ],
+    }).ok,
+    true
+  );
+  for (const args of [
+    { match: "weight" },
+    { id: "c_not_inspected" },
+  ]) {
+    assert.equal(
+      selectNativeContinuation({
+        plan,
+        followupEvaluations: [
+          validated("remove_tracker", args, {
+            status: "needs_confirmation",
+          }),
+        ],
+      }).ok,
+      false
+    );
+  }
+});
+
+test("authorized intent stays unresolved when its read cannot safely authorize a write", () => {
+  const emptyPlan = continuationPlanForNativeReads({
+    initialEvaluations: [
+      validated("list_saved_foods", { for_logging: true }),
+    ],
+    initialResults: [
+      { status: "success", data: { saved_foods: [], omitted_count: 0 } },
+    ],
+  });
+  assert.equal(emptyPlan.kind, "saved_food_log");
+  assert.equal(emptyPlan.blockedReason, "empty_read");
+  assert.deepEqual(emptyPlan.allowedToolNames, []);
+
+  const multiReadPlan = continuationPlanForNativeReads({
+    initialEvaluations: [
+      validated("list_saved_foods", { for_logging: true }),
+      validated("read_today", {}),
+    ],
+    initialResults: [
+      {
+        status: "success",
+        data: { saved_foods: [{ id: "saved_1", name: "Breakfast" }] },
+      },
+      { status: "success", data: { totals: {} } },
+    ],
+  });
+  assert.equal(multiReadPlan.kind, "saved_food_log");
+  assert.equal(multiReadPlan.blockedReason, "multiple_reads");
+  assert.deepEqual(multiReadPlan.allowedToolNames, []);
+});
+
+test("an authorized continuation with no tool call gets executor-owned no-change wording", () => {
+  assert.match(
+    unresolvedContinuationReply({
+      kind: "saved_food_log",
+      sourceData: {
+        saved_foods: [{ id: "saved_1", name: "Usual breakfast" }],
+      },
+    }),
+    /didn['’]t log anything/i
+  );
+  assert.match(
+    unresolvedContinuationReply({ kind: "tracker_removal" }),
+    /didn['’]t remove anything/i
+  );
+  assert.match(
+    unresolvedContinuationReply({
+      kind: "saved_food_log",
+      blockedReason: "empty_read",
+    }),
+    /couldn['’]t find[\s\S]+didn['’]t log anything/i
+  );
+  assert.doesNotMatch(
+    unresolvedContinuationReply({
+      kind: "saved_food_log",
+      blockedReason: "empty_read",
+    }),
+    /found your saved foods/i
+  );
+  assert.doesNotMatch(
+    unresolvedContinuationReply({
+      kind: "tracker_removal",
+      blockedReason: "read_failed",
+    }),
+    /I inspected/i
+  );
 });
 
 test("final assistant text is bounded and has a truthful fallback", () => {

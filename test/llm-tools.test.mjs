@@ -1,7 +1,44 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { llmChat } from "../api/_llm.js";
+import { llmChat, usageForMetering } from "../api/_llm.js";
+
+test("usage metering records a provider hit even when token counts are omitted", () => {
+  assert.deepEqual(usageForMetering(), {
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 1,
+    cost_usd: null,
+  });
+  assert.deepEqual(
+    usageForMetering({
+      prompt_tokens: 10,
+      completion_tokens: 4,
+      total_tokens: 14,
+      cost_usd: 0.002,
+    }),
+    {
+      prompt_tokens: 10,
+      completion_tokens: 4,
+      total_tokens: 14,
+      cost_usd: 0.002,
+    }
+  );
+  assert.deepEqual(
+    usageForMetering({
+      prompt_tokens: 10,
+      completion_tokens: 4,
+      total_tokens: 1,
+      cost_usd: null,
+    }),
+    {
+      prompt_tokens: 10,
+      completion_tokens: 4,
+      total_tokens: 14,
+      cost_usd: null,
+    }
+  );
+});
 
 test("llmChat forwards native tools and returns the complete assistant message", async () => {
   const priorFetch = globalThis.fetch;
