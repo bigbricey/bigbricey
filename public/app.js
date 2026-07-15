@@ -46,6 +46,9 @@ let pendingToolConfirmation = null;
 let daySelectionEpoch = 0;
 let conversationEpoch = 0;
 let conversationLoadEpoch = 0;
+let memoryRequestEpoch = 0;
+let memoryRecords = [];
+let memoryLoadedAccount = null;
 const dayRevisions = new Map();
 
 init();
@@ -56,6 +59,7 @@ async function init() {
   configureAccountStorage(window.__ntUser?.email);
   rows = loadLocal(selectedDay);
   initVisionCapture();
+  wireMemoryCenter();
 
   document.querySelectorAll("th.sortable").forEach((th) => {
     th.addEventListener("click", () => sortBy(th.dataset.key, th.dataset.type));
@@ -239,6 +243,7 @@ function setTab(tab) {
   });
   if (activeTab === "trends") loadCharts();
   if (activeTab === "goals") loadWatches();
+  if (activeTab === "you") loadMemories();
   if (activeTab === "you" && window.__ntUser?.admin) {
     loadFeedbackInbox();
     loadUsageInbox();
@@ -736,6 +741,12 @@ function pickGoalNums(g) {
 
 function configureAccountStorage(account) {
   const nextAccount = String(account || "").trim().toLowerCase() || null;
+  if (storageAccount !== nextAccount) {
+    memoryRequestEpoch += 1;
+    memoryRecords = [];
+    memoryLoadedAccount = null;
+    renderMemories();
+  }
   if (storageAccount && storageAccount !== nextAccount) {
     daySelectionEpoch += 1;
     conversationEpoch += 1;
@@ -1276,6 +1287,249 @@ async function requireAuth() {
   }
 }
 
+function setMemoryStatus(message, isError = false) {
+  const status = document.getElementById("memoryStatus");
+  if (!status) return;
+  status.textContent = String(message || "");
+  status.classList.toggle("is-error", Boolean(isError));
+}
+
+function setMemoryBusy(busy) {
+  document
+    .getElementById("memoryCenter")
+    ?.querySelectorAll("button, input, select")
+    .forEach((control) => {
+      control.disabled = Boolean(busy);
+    });
+}
+
+function memorySourceLabel(memory) {
+  const labels = {
+    user_chat: "You asked in chat",
+    user_ui: "Added here",
+    legacy: "Imported",
+    inferred: "Suggested pattern",
+  };
+  return labels[memory?.provenance] || "Saved memory";
+}
+
+function memoryDateLabel(memory) {
+  const raw = memory?.updated_at || memory?.created_at;
+  if (!raw || !Number.isFinite(Date.parse(raw))) return "";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(raw));
+}
+
+function memoryActionButton(label, className, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `text-btn ${className || ""}`.trim();
+  button.textContent = label;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function beginMemoryEdit(memory, card) {
+  if (!memory?.id || !card) return;
+  const form = document.createElement("form");
+  form.className = "memory-edit-form";
+
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "Memory type");
+  for (const [value, label] of [["preference", "Preference"], ["fact", "Fact"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = memory.kind === value;
+    select.appendChild(option);
+  }
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.maxLength = 300;
+  input.value = memory.text;
+  input.setAttribute("aria-label", "Memory text");
+
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.className = "btn-primary";
+  save.textContent = "Save";
+  const cancel = memoryActionButton("Cancel", "", () => renderMemories());
+
+  form.append(select, input, save, cancel);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await mutateMemory(
+      {
+        op: "update",
+        memory_id: memory.id,
+        kind: select.value,
+        text: input.value,
+      },
+      "Memory updated."
+    );
+  });
+  card.replaceChildren(form);
+  input.focus();
+  input.select();
+}
+
+function renderMemories() {
+  const list = document.getElementById("memoryList");
+  const count = document.getElementById("memoryCount");
+  if (!list) return;
+  list.replaceChildren();
+  if (count) count.textContent = String(memoryRecords.length);
+
+  if (!memoryRecords.length) {
+    const empty = document.createElement("div");
+    empty.className = "memory-empty";
+    empty.textContent =
+      "Nothing permanent yet. Ask BigBricey to remember something, or add it above.";
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const memory of memoryRecords) {
+    const card = document.createElement("article");
+    card.className = "memory-card";
+    card.setAttribute("role", "listitem");
+    card.dataset.memoryId = memory.id || "";
+
+    const main = document.createElement("div");
+    main.className = "memory-card-main";
+    const copy = document.createElement("div");
+    copy.className = "memory-copy";
+    const text = document.createElement("p");
+    text.className = "memory-text";
+    text.textContent = memory.text;
+    const meta = document.createElement("span");
+    meta.className = "memory-meta";
+    const kind = memory.kind === "preference" ? "Preference" : "Fact";
+    meta.textContent = [kind, memorySourceLabel(memory), memoryDateLabel(memory)]
+      .filter(Boolean)
+      .join(" · ");
+    copy.append(text, meta);
+
+    const actions = document.createElement("div");
+    actions.className = "memory-actions";
+    const edit = memoryActionButton("Edit", "", () => beginMemoryEdit(memory, card));
+    const forget = memoryActionButton("Forget", "forget", async () => {
+      if (!memory.id) return;
+      if (!confirm(`Forget “${memory.text}”?`)) return;
+      await mutateMemory(
+        { op: "delete", memory_id: memory.id },
+        "Memory forgotten."
+      );
+    });
+    actions.append(edit, forget);
+    main.append(copy, actions);
+    card.appendChild(main);
+    list.appendChild(card);
+  }
+}
+
+async function mutateMemory(mutation, successMessage) {
+  const requestAccount = storageAccount;
+  const requestEpoch = ++memoryRequestEpoch;
+  setMemoryBusy(true);
+  setMemoryStatus("Saving…");
+  try {
+    const response = await fetch("/api/memory", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(mutation),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || "Memory could not be saved.");
+    if (
+      storageAccount !== requestAccount ||
+      memoryRequestEpoch !== requestEpoch
+    ) {
+      return;
+    }
+    memoryRecords = Array.isArray(data.memories) ? data.memories : [];
+    memoryLoadedAccount = requestAccount;
+    renderMemories();
+    setMemoryStatus(successMessage || "Memory saved.");
+  } catch (error) {
+    if (
+      storageAccount === requestAccount &&
+      memoryRequestEpoch === requestEpoch
+    ) {
+      renderMemories();
+      setMemoryStatus(error.message || "Memory is temporarily unavailable.", true);
+    }
+  } finally {
+    if (
+      storageAccount === requestAccount &&
+      memoryRequestEpoch === requestEpoch
+    ) {
+      setMemoryBusy(false);
+    }
+  }
+}
+
+async function loadMemories({ force = false } = {}) {
+  if (!storageAccount) return;
+  if (!force && memoryLoadedAccount === storageAccount) {
+    renderMemories();
+    return;
+  }
+  const requestAccount = storageAccount;
+  const requestEpoch = ++memoryRequestEpoch;
+  setMemoryStatus("Loading memories…");
+  try {
+    const response = await fetch("/api/memory");
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || "Memory could not be loaded.");
+    if (
+      storageAccount !== requestAccount ||
+      memoryRequestEpoch !== requestEpoch
+    ) {
+      return;
+    }
+    memoryRecords = Array.isArray(data.memories) ? data.memories : [];
+    memoryLoadedAccount = requestAccount;
+    renderMemories();
+    setMemoryStatus("");
+  } catch (error) {
+    if (
+      storageAccount === requestAccount &&
+      memoryRequestEpoch === requestEpoch
+    ) {
+      memoryLoadedAccount = null;
+      renderMemories();
+      setMemoryStatus(error.message || "Memory is temporarily unavailable.", true);
+    }
+  }
+}
+
+function wireMemoryCenter() {
+  const form = document.getElementById("memoryForm");
+  if (!form || form.dataset.wired === "true") return;
+  form.dataset.wired = "true";
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const kind = document.getElementById("memoryKind")?.value || "preference";
+    const input = document.getElementById("memoryText");
+    const text = input?.value || "";
+    if (!text.trim()) {
+      setMemoryStatus("Tell BigBricey what to remember.", true);
+      input?.focus();
+      return;
+    }
+    await mutateMemory({ op: "create", kind, text }, "Memory saved.");
+    if (input && !document.getElementById("memoryStatus")?.classList.contains("is-error")) {
+      input.value = "";
+      input.focus();
+    }
+  });
+}
+
 async function exportStatsPack(days) {
   const box = document.getElementById("exportBox");
   try {
@@ -1746,6 +2000,7 @@ async function onSend() {
       if (!r.ok) throw new Error(j.message || "The request failed. Please try again.");
       return j;
     });
+    if (Array.isArray(data.memory_notes)) memoryLoadedAccount = null;
     setThinking(false);
     const conversationStillCurrent =
       storageAccount === requestAccount &&

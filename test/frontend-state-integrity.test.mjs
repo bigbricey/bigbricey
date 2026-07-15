@@ -149,3 +149,43 @@ test("custom charts never turn missing metric days into fake zero measurements",
   assert.match(source, /role="img"[^\n]{0,100}aria-label/);
   assert.doesNotMatch(source, /function setBoxes\(list,/);
 });
+
+test("the You tab exposes transparent, safely rendered, account-bound memory controls", async () => {
+  const html = await readFile(new URL("../public/app.html", import.meta.url), "utf8");
+  const source = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const privacy = await readFile(new URL("../public/privacy.html", import.meta.url), "utf8");
+
+  assert.match(html, /id="memoryCenter"/);
+  assert.match(html, /What BigBricey knows about me/);
+  assert.match(html, /id="memoryForm"/);
+  assert.match(html, /id="memoryStatus"[^>]+role="status"/);
+
+  const renderStart = source.indexOf("function renderMemories");
+  const renderEnd = source.indexOf("async function mutateMemory", renderStart);
+  const renderBlock = source.slice(renderStart, renderEnd);
+  assert.ok(renderStart > 0 && renderEnd > renderStart);
+  assert.match(renderBlock, /replaceChildren/);
+  assert.match(renderBlock, /textContent/);
+  assert.doesNotMatch(renderBlock, /innerHTML/);
+  assert.match(renderBlock, /memory\.id/);
+
+  const loadStart = source.indexOf("async function loadMemories");
+  const loadEnd = source.indexOf("function wireMemoryCenter", loadStart);
+  const loadBlock = source.slice(loadStart, loadEnd);
+  assert.match(loadBlock, /const requestAccount = storageAccount/);
+  assert.match(loadBlock, /const requestEpoch = \+\+memoryRequestEpoch/);
+  assert.match(loadBlock, /storageAccount !== requestAccount/);
+  assert.match(loadBlock, /memoryRequestEpoch !== requestEpoch/);
+  assert.match(loadBlock, /fetch\("\/api\/memory"/);
+
+  const storageStart = source.indexOf("function configureAccountStorage");
+  const storageEnd = source.indexOf("function conversationStorageKey", storageStart);
+  const storageBlock = source.slice(storageStart, storageEnd);
+  assert.match(storageBlock, /memoryRequestEpoch\s*\+=\s*1/);
+  assert.match(storageBlock, /memoryRecords\s*=\s*\[\]/);
+  assert.match(storageBlock, /memoryLoadedAccount\s*=\s*null/);
+
+  assert.match(source, /op:\s*"delete",\s*memory_id:/);
+  assert.match(privacy, /facts and preferences/i);
+  assert.match(privacy, /where the memory came from/i);
+});

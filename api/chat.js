@@ -42,6 +42,7 @@ import {
   buildChatContextForModel,
   getMemoryNotes,
   addMemoryNote,
+  deleteProfileMemory,
   removeMemoryNote,
   reserveLlmTurn,
   logLlmUsage,
@@ -237,6 +238,7 @@ export default async function handler(req, res) {
     let historyMessages = [];
     let chatSummary = null;
     let convMeta = null;
+    let currentUserMessageId = null;
     if (supabaseConfig().ok) {
       try {
         if (conversationId) {
@@ -250,7 +252,13 @@ export default async function handler(req, res) {
           conversationId = convMeta?.id || null;
         }
         if (conversationId) {
-          await appendMessage(session.email, conversationId, "user", text);
+          const userMessageRow = await appendMessage(
+            session.email,
+            conversationId,
+            "user",
+            text
+          );
+          currentUserMessageId = userMessageRow?.id || null;
           const ctx = await buildChatContextForModel(session.email, conversationId, {
             maxMessages: 24,
           });
@@ -697,7 +705,12 @@ export default async function handler(req, res) {
       ) {
         const note = action.note || action.message || action.text || action.fact;
         try {
-          const memoryResult = await addMemoryNote(session.email, note);
+          const memoryResult = await addMemoryNote(session.email, note, {
+            kind: action.kind || "fact",
+            provenance: "user_chat",
+            sourceConversationId: conversationId,
+            sourceMessageId: currentUserMessageId,
+          });
           memoryOut = memoryResult.notes;
           actionChanged = memoryResult.changed === true;
           toolData = { changed: actionChanged };
@@ -715,16 +728,33 @@ export default async function handler(req, res) {
       if (type === "forget" || type === "remove_memory" || type === "delete_memory") {
         const match = action.note || action.match || action.message || action.text;
         try {
-          const memoryResult = await removeMemoryNote(session.email, match);
+          let memoryResult;
+          if (action.memory_id) {
+            const deletion = await deleteProfileMemory(
+              session.email,
+              action.memory_id
+            );
+            memoryResult = {
+              ...deletion,
+              removed_count: deletion.deleted ? 1 : 0,
+              changed: deletion.deleted,
+              notes: await getMemoryNotes(session.email),
+            };
+          } else {
+            memoryResult = await removeMemoryNote(session.email, match);
+          }
           memoryOut = memoryResult.notes;
           actionChanged = memoryResult.removed_count > 0;
           toolData = {
             removed_count: memoryResult.removed_count,
             changed: actionChanged,
+            ambiguous: memoryResult.ambiguous === true,
           };
           notes.push(
             actionChanged
               ? `Removed ${memoryResult.removed_count} matching permanent note${memoryResult.removed_count === 1 ? "" : "s"}.`
+              : memoryResult.ambiguous
+                ? "More than one permanent memory matched. Nothing was removed; ask which one to forget."
               : "No permanent memory note matched that request."
           );
         } catch {

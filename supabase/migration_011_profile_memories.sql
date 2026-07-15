@@ -25,10 +25,54 @@ CREATE INDEX IF NOT EXISTS profile_memories_user_updated_idx
 CREATE UNIQUE INDEX IF NOT EXISTS profile_memories_user_text_unique_idx
   ON public.profile_memories (user_email, lower(btrim(text)));
 
+-- Keep the migration self-contained even when a project was assembled from
+-- incremental migrations instead of the full schema file.
+CREATE OR REPLACE FUNCTION public.touch_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
 DROP TRIGGER IF EXISTS profile_memories_touch ON public.profile_memories;
 CREATE TRIGGER profile_memories_touch
   BEFORE UPDATE ON public.profile_memories
   FOR EACH ROW EXECUTE FUNCTION public.touch_updated_at();
+
+-- Serialize inserts per account and keep the bounded prompt/UI contract true
+-- even if two requests arrive at the same time or bypass the API preflight.
+CREATE OR REPLACE FUNCTION public.enforce_profile_memory_limit()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(NEW.user_email, 0));
+  IF EXISTS (
+    SELECT 1
+    FROM public.profile_memories
+    WHERE user_email = NEW.user_email
+      AND lower(btrim(text)) = lower(btrim(NEW.text))
+  ) THEN
+    RETURN NEW;
+  END IF;
+  IF (SELECT count(*) FROM public.profile_memories WHERE user_email = NEW.user_email) >= 40 THEN
+    IF NEW.provenance = 'legacy' THEN
+      RETURN NULL;
+    END IF;
+    RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'profile_memory_limit';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.enforce_profile_memory_limit() FROM PUBLIC;
+DROP TRIGGER IF EXISTS profile_memories_limit ON public.profile_memories;
+CREATE TRIGGER profile_memories_limit
+  BEFORE INSERT ON public.profile_memories
+  FOR EACH ROW EXECUTE FUNCTION public.enforce_profile_memory_limit();
 
 ALTER TABLE public.profile_memories ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.profile_memories FROM PUBLIC, anon, authenticated;
@@ -60,6 +104,7 @@ CROSS JOIN LATERAL jsonb_array_elements_text(
       THEN p.prefs -> 'memory_notes'
     ELSE '[]'::JSONB
   END
-) AS note(value)
+) WITH ORDINALITY AS note(value, ordinal)
 WHERE btrim(note.value) <> ''
+  AND note.ordinal <= 40
 ON CONFLICT DO NOTHING;

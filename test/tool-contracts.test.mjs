@@ -560,11 +560,15 @@ test("layout accepts known panels and sizes while rejecting duplicates or nested
 
 test("memory notes are bounded and forgetting memory is destructive", () => {
   const remember = validateNativeToolCall(
-    call("remember", { note: "  Call me B and skip canned pep talks.  " })
+    call("remember", {
+      note: "  Call me B and skip canned pep talks.  ",
+      kind: "preference",
+    })
   );
   assert.equal(remember.ok, true);
   assert.deepEqual(remember.arguments, {
     note: "Call me B and skip canned pep talks.",
+    kind: "preference",
   });
   assert.equal(
     validateNativeToolCall(call("remember", { note: "x".repeat(301) })).error
@@ -577,6 +581,27 @@ test("memory notes are bounded and forgetting memory is destructive", () => {
   );
   assert.equal(forget.status, "needs_confirmation");
   assert.equal(forget.policy.destructive, true);
+
+  const byId = validateNativeToolCall(
+    call("forget_memory", {
+      memory_id: "8d9b0195-9f4c-4d66-a9cc-83d868e2b8c2",
+    })
+  );
+  assert.equal(byId.status, "needs_confirmation");
+  assert.equal(
+    validateNativeToolCall(
+      call("forget_memory", {
+        memory_id: "8d9b0195-9f4c-4d66-a9cc-83d868e2b8c2",
+        match: "canned pep talks",
+      })
+    ).error.code,
+    "INVALID_COMBINATION"
+  );
+  assert.equal(
+    validateNativeToolCall(call("remember", { note: "Maybe hungry", kind: "inference" }))
+      .error.code,
+    "INVALID_VALUE"
+  );
 });
 
 test("every destructive tool carries explicit confirmation metadata", () => {

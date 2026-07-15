@@ -126,6 +126,33 @@ test("read and customization calls retain only canonical validated arguments", (
       __tool_name: "set_theme",
     }
   );
+
+  assert.deepEqual(
+    actionFromValidatedToolCall(
+      validated("remember", { note: "Be direct", kind: "preference" })
+    ),
+    {
+      type: "remember",
+      note: "Be direct",
+      kind: "preference",
+      __tool_call_id: "call_remember",
+      __tool_name: "remember",
+    }
+  );
+
+  assert.deepEqual(
+    actionFromValidatedToolCall(
+      validated("forget_memory", {
+        memory_id: "8d9b0195-9f4c-4d66-a9cc-83d868e2b8c2",
+      })
+    ),
+    {
+      type: "forget",
+      memory_id: "8d9b0195-9f4c-4d66-a9cc-83d868e2b8c2",
+      __tool_call_id: "call_forget_memory",
+      __tool_name: "forget_memory",
+    }
+  );
 });
 
 test("confirmation-gated and invalid calls never become executable actions", () => {
@@ -344,6 +371,20 @@ test("native execution truth preserves real success and valid empty reads", () =
       harmless
     );
   }
+});
+
+test("ambiguous permanent memory removal cannot become a success claim", () => {
+  const result = classifyNativeToolExecution({
+    toolName: "forget_memory",
+    notes: [
+      "More than one permanent memory matched. Nothing was removed; ask which one to forget.",
+    ],
+    changed: false,
+  });
+
+  assert.equal(result.status, "error");
+  assert.equal(result.changed, false);
+  assert.equal(result.error.code, "TOOL_REQUIRED_DETAILS");
 });
 
 test("explicit failed commits and invalid calls fail closed deterministically", () => {

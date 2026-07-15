@@ -91,6 +91,16 @@ function installFakeSupabase({ messages = [], conversationSummary = null, memory
       ]);
     }
 
+    if (table === "profile_memories" && method === "GET") {
+      return responseJson(
+        {
+          code: "PGRST205",
+          message: "Could not find the table 'public.profile_memories' in the schema cache",
+        },
+        404
+      );
+    }
+
     throw new Error(`Unexpected fake Supabase request: ${method} ${table}`);
   };
 

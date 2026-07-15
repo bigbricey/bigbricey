@@ -251,6 +251,34 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION enforce_profile_memory_limit()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(NEW.user_email, 0));
+  IF EXISTS (
+    SELECT 1
+    FROM profile_memories
+    WHERE user_email = NEW.user_email
+      AND lower(btrim(text)) = lower(btrim(NEW.text))
+  ) THEN
+    RETURN NEW;
+  END IF;
+  IF (SELECT count(*) FROM profile_memories WHERE user_email = NEW.user_email) >= 40 THEN
+    IF NEW.provenance = 'legacy' THEN
+      RETURN NULL;
+    END IF;
+    RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'profile_memory_limit';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION enforce_profile_memory_limit() FROM PUBLIC;
+
 DROP TRIGGER IF EXISTS events_touch ON events;
 CREATE TRIGGER events_touch BEFORE UPDATE ON events
   FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
@@ -262,6 +290,10 @@ CREATE TRIGGER profiles_touch BEFORE UPDATE ON profiles
 DROP TRIGGER IF EXISTS profile_memories_touch ON profile_memories;
 CREATE TRIGGER profile_memories_touch BEFORE UPDATE ON profile_memories
   FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+
+DROP TRIGGER IF EXISTS profile_memories_limit ON profile_memories;
+CREATE TRIGGER profile_memories_limit BEFORE INSERT ON profile_memories
+  FOR EACH ROW EXECUTE FUNCTION enforce_profile_memory_limit();
 
 -- Service role does everything from Vercel; lock down anon
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;

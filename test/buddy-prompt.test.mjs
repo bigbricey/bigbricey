@@ -47,7 +47,7 @@ test("native buddy prompt is conversationally broad and delegates app state to t
   assert.match(prompt, /30d[^\n]{0,160}(?:display|window|range)/i);
   assert.match(prompt, /CURRENT DASHBOARD MANIFEST/i);
   assert.match(prompt, /Weight \(30-Day\)/);
-  assert.match(prompt, /"position":2/);
+  assert.match(prompt, /\["c_weight_30d",2,"Weight \(30-Day\)"/);
   assert.match(prompt, /call inspect_app/i);
   assert.match(prompt, /don['’]?t want[^\n]{0,160}remove_tracker/i);
   assert.match(prompt, /remove_tracker[^\n]{0,180}exact id only/i);
@@ -134,6 +134,43 @@ test("the newest live tracker and recent context both survive worst-case prompt 
 
   assert.match(prompt, /Tracker 19/);
   assert.match(prompt, /newest-dashboard-continuity-sentinel/);
+  assert.ok(prompt.length <= 18_000);
+});
+
+test("maximum-length tracker metadata cannot crowd the newest conversation turn out", async () => {
+  const { buildBuddySystemPrompt } = await import(PROMPT_MODULE);
+  const trackers = Array.from({ length: 20 }, (_, index) => ({
+    id: `c_${String(index).padStart(2, "0")}_${"i".repeat(40)}`,
+    kind: "chart",
+    title: `Tracker ${index} ${"t".repeat(70)}`,
+    measure_id: `metric_${index}_${"m".repeat(60)}`,
+    measures: [`metric_${index}_${"m".repeat(60)}`],
+    unit: "u".repeat(24),
+    days: 1095,
+    chart: "line",
+  }));
+  const prompt = buildBuddySystemPrompt({
+    personBlock: "profile ".repeat(1_000),
+    memoryNotes: Array.from({ length: 20 }, (_, index) =>
+      `memory ${index} ${"m".repeat(200)}`
+    ),
+    chatSummary:
+      "Earlier conversation excerpts:\n" +
+      "old detail ".repeat(2_000) +
+      "\nuser: maximum-pressure-newest-sentinel",
+    currentLog: {
+      items: Array.from({ length: 40 }, (_, index) => ({
+        id: `row-${index}-${"x".repeat(100)}`,
+        label: `Food ${index} ${"l".repeat(100)}`,
+        grams: index + 1,
+      })),
+    },
+    layout: { order: ["chat", ...trackers.map((tracker) => tracker.id)] },
+    trackers,
+  });
+
+  assert.match(prompt, /Tracker 19/);
+  assert.match(prompt, /maximum-pressure-newest-sentinel/);
   assert.ok(prompt.length <= 18_000);
 });
 

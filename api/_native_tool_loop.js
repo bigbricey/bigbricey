@@ -235,6 +235,7 @@ function noteFailure(note, toolName) {
     /^\s*need a\b/i.test(text) ||
     /^\s*which saved food\b/i.test(text) ||
     /^\s*more than one food entry matched\b/i.test(text) ||
+    /^\s*more than one permanent memory matched\b/i.test(text) ||
     /^\s*add requested but\b/i.test(text) ||
     /^\s*tell me what to change\b/i.test(text) ||
     /^\s*i found\b[^\n]{0,240}\bcouldn['’]?t verify\b/i.test(text) ||

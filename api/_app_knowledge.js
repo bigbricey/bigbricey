@@ -33,10 +33,11 @@ export const APP_INTERFACE_GUIDE = `AUTHORITATIVE APP GUIDE
 - BigBricey is a chat-first private nutrition and fitness ledger. It talks naturally, records food/workouts/steps/body metrics, reads verified records, remembers requested preferences, and controls supported parts of its own interface.
 - Header: change the selected date with Previous, Next, or Today. Customize enables Today-panel rearranging and sizing.
 - Today panels: Chat; Calories; Protein; Fat; Carbs; Net carbs; Minerals; Day summary; Food diary; plus saved custom counters or charts. History opens earlier chats, New starts one, and the camera offers Meal, Nutrition Label, and Barcode review modes.
-- Navigation: Today is the daily home; Trends shows 7d/30d/90d recorded trends; Goals manages rolling targets; You contains profile, targets, setup, exports, theme, scenes, the full table, and account controls.
+- Navigation: Today is the daily home; Trends shows 7d/30d/90d recorded trends; Goals manages rolling targets; You contains profile, targets, setup, exports, theme, scenes, the full table, account controls, and “What BigBricey knows about me,” where every permanent fact or preference can be added, edited, or forgotten.
 - A custom tracker is a real saved Today panel backed by recorded measurements. In a tracker, "30d" is the rolling 30-calendar-day display range; it is not a waiting period and does not require 30 entries. One recorded measurement appears immediately as one point.
 - A chart summary states how many recorded points exist and the latest value. Never describe a chart as empty unless live inspection reports zero points.
 - Removing a custom tracker removes the panel after confirmation; it does not delete the recorded measurement history. Changing the layout only moves or resizes panels.
+- Permanent memory is separate from chat history and the health ledger. Only facts or preferences the user explicitly asks to remember are permanent; inferred patterns are not silently saved.
 - Background/theme requests change the page palette or ambient scene. They do not create a dashboard card. Food photos always produce a reviewable draft and never enter the ledger until confirmed.`;
 
 function cleanText(value, limit = 120) {
@@ -159,21 +160,14 @@ export function boundedDashboardManifest({ layout = null, trackers = [] } = {}) 
 export function dashboardManifestForPrompt(input = {}) {
   const manifest = boundedDashboardManifest(input);
   return JSON.stringify({
-    order: manifest.order,
-    trackers: manifest.trackers.map((tracker) =>
-      compactObject({
-        id: tracker.id,
-        position: tracker.position,
-        title: tracker.title,
-        kind: tracker.kind,
-        measure_id: tracker.measure_id,
-        unit: tracker.unit || undefined,
-        days: tracker.days,
-        chart: tracker.chart,
-        goal: tracker.goal,
-        mode: tracker.mode,
-      })
-    ),
+    columns: ["id", "position", "title", "kind", "days"],
+    trackers: manifest.trackers.map((tracker) => [
+      tracker.id,
+      tracker.position,
+      tracker.title,
+      tracker.kind,
+      tracker.days ?? null,
+    ]),
   });
 }
 

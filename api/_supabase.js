@@ -2285,18 +2285,32 @@ export async function createProfileMemory(
 ) {
   const e = memoryEmail(email);
   const record = memoryInput({ kind, text, provenance });
-  const rows = await sb("profile_memories", {
-    method: "POST",
-    body: {
-      user_email: e,
-      kind: record.kind,
-      text: record.text,
-      provenance: record.provenance,
-      confidence: 1,
-      source_conversation_id: optionalMemorySourceId(sourceConversationId),
-      source_message_id: optionalMemorySourceId(sourceMessageId),
-    },
-  });
+  let rows;
+  try {
+    rows = await sb("profile_memories", {
+      method: "POST",
+      body: {
+        user_email: e,
+        kind: record.kind,
+        text: record.text,
+        provenance: record.provenance,
+        confidence: 1,
+        source_conversation_id: optionalMemorySourceId(sourceConversationId),
+        source_message_id: optionalMemorySourceId(sourceMessageId),
+      },
+    });
+  } catch (error) {
+    if (
+      error?.detail?.code === "P0001" &&
+      String(error?.detail?.message || error?.message).includes("profile_memory_limit")
+    ) {
+      const limitError = new Error("BigBricey can remember up to 40 permanent items.");
+      limitError.code = "memory_limit_reached";
+      limitError.status = 409;
+      throw limitError;
+    }
+    throw error;
+  }
   const created = normalizeMemoryRecords(rows, { limit: 1 })[0];
   if (!created) throw new Error("memory_create_failed");
   return created;
@@ -2315,7 +2329,14 @@ export async function updateProfileMemory(email, memoryId, { kind, text } = {}) 
   const rows = await sb("profile_memories", {
     method: "PATCH",
     query: { id: `eq.${id}`, user_email: `eq.${e}` },
-    body: { kind: record.kind, text: record.text, confidence: 1 },
+    body: {
+      kind: record.kind,
+      text: record.text,
+      provenance: "user_ui",
+      confidence: 1,
+      source_conversation_id: null,
+      source_message_id: null,
+    },
   });
   const updated = normalizeMemoryRecords(rows, { limit: 1 })[0];
   if (!updated) {
@@ -2356,14 +2377,25 @@ async function legacyMemoryRecords(email) {
   }
 }
 
+function isMissingProfileMemoryTable(error) {
+  const code = String(error?.detail?.code || error?.code || "").toUpperCase();
+  if (code === "42P01" || code === "PGRST205") return true;
+  const message = String(error?.detail?.message || error?.message || "");
+  return (
+    Number(error?.status) === 404 &&
+    /profile_memories/i.test(message) &&
+    /(?:schema cache|does not exist|unknown table)/i.test(message)
+  );
+}
+
 export async function getMemoryRecords(email) {
   const e = String(email || "").trim().toLowerCase();
   if (!e) return [];
   try {
-    const records = await listProfileMemories(e);
-    if (records.length) return records;
-  } catch {
+    return await listProfileMemories(e);
+  } catch (error) {
     // Compatibility release: production code may briefly precede migration 011.
+    if (!isMissingProfileMemoryTable(error)) throw error;
   }
   return legacyMemoryRecords(e);
 }

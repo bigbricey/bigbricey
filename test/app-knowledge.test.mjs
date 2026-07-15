@@ -7,6 +7,7 @@ import {
   CORE_TODAY_PANELS,
   buildAppInspection,
   boundedDashboardManifest,
+  dashboardManifestForPrompt,
   trackerRemovalConfirmationPrompt,
 } from "../api/_app_knowledge.js";
 
@@ -24,6 +25,9 @@ test("the authoritative guide explains the real app surface and 30-day chart sem
   assert.match(APP_INTERFACE_GUIDE, /remove[^\n]{0,160}does not delete[^\n]{0,80}(?:history|measurements)/i);
   assert.match(APP_INTERFACE_GUIDE, /Meal[^\n]{0,80}Nutrition Label[^\n]{0,80}Barcode/i);
   assert.match(APP_INTERFACE_GUIDE, /Today[^\n]{0,80}Trends[^\n]{0,80}Goals[^\n]{0,80}You/i);
+  assert.match(APP_INTERFACE_GUIDE, /What BigBricey knows about me/i);
+  assert.match(APP_INTERFACE_GUIDE, /add[^\n]{0,80}edit[^\n]{0,80}forgotten/i);
+  assert.match(APP_INTERFACE_GUIDE, /inferred[^\n]{0,100}not silently saved/i);
 });
 
 test("the bounded current-dashboard manifest exposes exact tracker identity and position", () => {
@@ -63,6 +67,30 @@ test("the bounded current-dashboard manifest exposes exact tracker identity and 
     days: 30,
   });
   assert.doesNotMatch(JSON.stringify(manifest), /must-not-leak|arbitrary_private_field/);
+});
+
+test("the prompt dashboard manifest stays compact without losing the newest exact tracker id", () => {
+  const trackers = Array.from({ length: 20 }, (_, index) => ({
+    id: `c_${String(index).padStart(2, "0")}_${"i".repeat(40)}`,
+    kind: "chart",
+    title: `Tracker ${index} ${"t".repeat(70)}`,
+    measure_id: `metric_${index}_${"m".repeat(60)}`,
+    unit: "units",
+    days: 30,
+    chart: "line",
+  }));
+  const promptManifest = dashboardManifestForPrompt({
+    layout: { order: ["chat", ...trackers.map((tracker) => tracker.id)] },
+    trackers,
+  });
+  const parsed = JSON.parse(promptManifest);
+
+  assert.deepEqual(parsed.columns, ["id", "position", "title", "kind", "days"]);
+  assert.equal(parsed.trackers.length, 20);
+  assert.equal(parsed.trackers.at(-1)[0], trackers.at(-1).id);
+  assert.equal(parsed.trackers.at(-1)[1], 21);
+  assert.match(parsed.trackers.at(-1)[2], /Tracker 19/);
+  assert.ok(promptManifest.length < 4_000, `manifest should stay compact, got ${promptManifest.length}`);
 });
 
 test("live inspection reports the exact one-point weight chart instead of inventing a wait period", async () => {

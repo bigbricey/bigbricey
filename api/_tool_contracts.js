@@ -143,8 +143,14 @@ const DEFINITIONS = [
     sizes: { type: "object", description: "Panel size overrides.", properties: Object.fromEntries(PANELS.map((id) => [id, { type: "string", enum: PANEL_SIZES }])), additionalProperties: false },
     reset: { type: "boolean", description: "Reset the layout." },
   })],
-  ["remember", "Save a short user-requested preference or fact as permanent memory.", objectSchema({ note: string("Short memory note.") }, ["note"])],
-  ["forget_memory", "Request removal of matching permanent memory now. Call this immediately; the app will collect confirmation before execution.", objectSchema({ match: string("Text to match." ) }, ["match"])],
+  ["remember", "Save a short user-requested preference or fact as permanent memory.", objectSchema({
+    note: string("Short memory note."),
+    kind: string("Whether this is a fact or a communication/preference setting.", { enum: ["fact", "preference"] }),
+  }, ["note"])],
+  ["forget_memory", "Request removal of one permanent memory now. Use memory_id when available; otherwise use one distinctive text match. Call this immediately; the app will collect confirmation before execution.", objectSchema({
+    memory_id: string("Exact permanent memory id."),
+    match: string("Distinctive text to match when an exact id is unavailable."),
+  })],
 ];
 
 export const BIGBRICEY_TOOL_NAMES = Object.freeze(DEFINITIONS.map(([name]) => name));
@@ -272,7 +278,7 @@ function validateArguments(name, input) {
     food_query: { max: 500 }, serving_label: { max: 120 }, description: { max: 500 },
     id: { max: 48, pattern: /^c_[a-z0-9_]+$/ }, unit: { max: 32 }, title: { max: 160 }, category: { max: 60, pattern: /^[a-z0-9_ -]+$/i },
     notes: { max: 500 }, measure_id: { max: 80, pattern: /^[a-z0-9_]+$/ }, label: { max: 120 }, style: { max: 60, pattern: /^[a-z0-9_ -]+$/i },
-    note: { max: 300 }, match: { max: 300 }, focus: { max: 500 }, kind: { max: 16 }, mode: { max: 16 }, chart: { max: 16 }, color: { max: 9 }, icon: { max: 8 },
+    note: { max: 300 }, match: { max: 300 }, memory_id: { min: 36, max: 36, pattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i }, focus: { max: 500 }, kind: { max: 16 }, mode: { max: 16 }, chart: { max: 16 }, color: { max: 9 }, icon: { max: 8 },
   };
   for (const [key, rules] of Object.entries(textRules)) {
     const error = stringField(args, key, rules);
@@ -418,6 +424,18 @@ function validateArguments(name, input) {
     return validationError(
       args.id != null && args.match != null ? "INVALID_COMBINATION" : "REQUIRED_FIELD",
       "Use exactly one tracker identifier.",
+      "function.arguments"
+    );
+  }
+  if (name === "remember" && args.kind != null && !["fact", "preference"].includes(args.kind)) {
+    return validationError("INVALID_VALUE", "Unknown memory type.", "function.arguments.kind");
+  }
+  if (name === "forget_memory" && !exactlyOne(args, ["memory_id", "match"])) {
+    return validationError(
+      args.memory_id != null && args.match != null
+        ? "INVALID_COMBINATION"
+        : "REQUIRED_FIELD",
+      "Use exactly one memory identifier.",
       "function.arguments"
     );
   }

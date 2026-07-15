@@ -9,6 +9,7 @@ import {
 import {
   createProfileMemory,
   deleteProfileMemory,
+  getMemoryRecords,
   listProfileMemories,
   updateProfileMemory,
 } from "../api/_supabase.js";
@@ -138,6 +139,11 @@ test("profile memory table access is account scoped and explicit memories force 
     assert.equal(createBody.confidence, 1);
     assert.equal(createBody.provenance, "user_ui");
 
+    const updateBody = JSON.parse(requests[2].options.body);
+    assert.equal(updateBody.provenance, "user_ui");
+    assert.equal(updateBody.source_conversation_id, null);
+    assert.equal(updateBody.source_message_id, null);
+
     for (const request of requests.slice(2)) {
       assert.equal(
         request.url.searchParams.get("user_email"),
@@ -145,6 +151,88 @@ test("profile memory table access is account scoped and explicit memories force 
       );
       assert.equal(request.url.searchParams.get("id"), `eq.${row.id}`);
     }
+  } finally {
+    restoreEnvironment();
+  }
+});
+
+test("an intentionally empty memory table never resurrects legacy notes", async () => {
+  process.env.SUPABASE_URL = "https://example.supabase.test";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-key";
+  const requests = [];
+  globalThis.fetch = async (rawUrl) => {
+    const url = new URL(rawUrl);
+    requests.push(url);
+    if (url.pathname.endsWith("/profile_memories")) return responseJson([]);
+    return responseJson([
+      { email: "brice@example.com", prefs: { memory_notes: ["Should stay deleted"] } },
+    ]);
+  };
+
+  try {
+    assert.deepEqual(await getMemoryRecords("brice@example.com"), []);
+    assert.equal(requests.length, 1, "a successful empty table read must not consult legacy prefs");
+  } finally {
+    restoreEnvironment();
+  }
+});
+
+test("legacy memory fallback is limited to a known pre-migration missing-table error", async () => {
+  process.env.SUPABASE_URL = "https://example.supabase.test";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-key";
+  let requests = 0;
+  globalThis.fetch = async (rawUrl) => {
+    requests += 1;
+    const url = new URL(rawUrl);
+    if (url.pathname.endsWith("/profile_memories")) {
+      return responseJson(
+        {
+          code: "PGRST205",
+          message: "Could not find the table 'public.profile_memories' in the schema cache",
+        },
+        404
+      );
+    }
+    return responseJson([
+      { email: "brice@example.com", prefs: { memory_notes: ["Legacy bridge"] } },
+    ]);
+  };
+
+  try {
+    assert.equal((await getMemoryRecords("brice@example.com"))[0].text, "Legacy bridge");
+    assert.equal(requests, 2);
+
+    requests = 0;
+    globalThis.fetch = async () => {
+      requests += 1;
+      return responseJson({ code: "XX000", message: "temporary database error" }, 503);
+    };
+    await assert.rejects(
+      getMemoryRecords("brice@example.com"),
+      /temporary database error/
+    );
+    assert.equal(requests, 1, "unexpected table failures must fail closed");
+  } finally {
+    restoreEnvironment();
+  }
+});
+
+test("the database memory ceiling becomes a safe public error", async () => {
+  process.env.SUPABASE_URL = "https://example.supabase.test";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-key";
+  globalThis.fetch = async () =>
+    responseJson({ code: "P0001", message: "profile_memory_limit" }, 400);
+
+  try {
+    await assert.rejects(
+      createProfileMemory("brice@example.com", { text: "One memory too many" }),
+      (error) => {
+        assert.equal(error.code, "memory_limit_reached");
+        assert.equal(error.status, 409);
+        assert.match(error.message, /40/);
+        return true;
+      }
+    );
   } finally {
     restoreEnvironment();
   }
@@ -159,7 +247,26 @@ test("profile memory migration backfills legacy notes and locks browser roles ou
   assert.match(migration, /CREATE TABLE IF NOT EXISTS public\.profile_memories/i);
   assert.match(migration, /provenance[^;]+user_chat[^;]+user_ui[^;]+legacy[^;]+inferred/is);
   assert.match(migration, /jsonb_array_elements_text[^;]+memory_notes/is);
+  assert.match(migration, /CREATE OR REPLACE FUNCTION public\.touch_updated_at/i);
+  assert.match(migration, /enforce_profile_memory_limit/i);
+  assert.match(migration, /pg_advisory_xact_lock/i);
+  assert.match(migration, /count\(\*\)[^;]+>=\s*40/is);
+  assert.match(migration, /provenance\s*=\s*'legacy'[^;]+RETURN NULL/is);
   assert.match(migration, /ENABLE ROW LEVEL SECURITY/i);
   assert.match(migration, /REVOKE ALL ON TABLE public\.profile_memories FROM PUBLIC, anon, authenticated/i);
   assert.match(migration, /GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public\.profile_memories TO service_role/i);
+});
+
+test("chat memories retain explicit type and source message provenance", async () => {
+  const chat = await readFile(new URL("../api/chat.js", import.meta.url), "utf8");
+
+  assert.match(chat, /const userMessageRow = await appendMessage/);
+  assert.match(chat, /kind:\s*action\.kind \|\| "fact"/);
+  assert.match(chat, /provenance:\s*"user_chat"/);
+  assert.match(chat, /sourceConversationId:\s*conversationId/);
+  assert.match(chat, /sourceMessageId:\s*currentUserMessageId/);
+  assert.match(
+    chat,
+    /deleteProfileMemory\(\s*session\.email,\s*action\.memory_id\s*\)/
+  );
 });

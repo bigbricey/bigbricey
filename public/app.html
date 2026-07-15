@@ -15,7 +15,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
   <title>BigBricey</title>
-  <link rel="stylesheet" href="/styles.css?v=20260714g" />
+  <link rel="stylesheet" href="/styles.css?v=20260715a" />
 </head>
 <body class="tab-today">
   <div class="app-shell">
@@ -557,6 +557,28 @@
         </p>
       </div>
 
+      <section class="block memory-center" id="memoryCenter" aria-labelledby="memoryCenterTitle">
+        <div class="block-head">
+          <h2 id="memoryCenterTitle">What BigBricey knows about me</h2>
+          <span class="memory-count" id="memoryCount">0</span>
+        </div>
+        <p class="panel-lead memory-lead">
+          Everything permanently remembered is visible here. Add it, correct it, or make BigBricey forget it.
+        </p>
+        <form class="memory-form" id="memoryForm">
+          <label class="sr-only" for="memoryKind">Memory type</label>
+          <select id="memoryKind" aria-label="Memory type">
+            <option value="preference">Preference</option>
+            <option value="fact">Fact</option>
+          </select>
+          <label class="sr-only" for="memoryText">What should BigBricey remember?</label>
+          <input id="memoryText" maxlength="300" autocomplete="off" placeholder="Remember that I prefer short, direct answers" />
+          <button type="submit" class="btn-primary" id="memoryAdd">Remember</button>
+        </form>
+        <div class="memory-list" id="memoryList" role="list" aria-label="Permanent memories"></div>
+        <p class="memory-status" id="memoryStatus" role="status" aria-live="polite"></p>
+      </section>
+
       <div class="block theme-block">
         <div class="block-head">
           <h2>Look &amp; theme</h2>
@@ -664,6 +686,6 @@
   <script src="/food-storage.js?v=20260714a"></script>
   <script src="/chat-format.js?v=20260714b"></script>
   <script src="/vision.js?v=20260714d"></script>
-  <script src="/app.js?v=20260714g"></script>
+  <script src="/app.js?v=20260715a"></script>
 </body>
 </html>
