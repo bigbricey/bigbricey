@@ -199,6 +199,19 @@ test("the newest permanent memory remains visible after the ten-note prompt cap"
 
   assert.match(prompt, /newest-memory-sentinel/);
   assert.doesNotMatch(prompt, /oldest-memory-sentinel/);
+  assert.match(prompt, /showing 10 of 11/i);
+  assert.match(prompt, /1 older item omitted/i);
+});
+
+test("an ordinary permanent memory reaches the model without mid-sentence clipping", async () => {
+  const { buildBuddySystemPrompt } = await import(PROMPT_MODULE);
+  const memory =
+    "Currently following a traditional ketogenic diet (high fat, adequate protein, very low carb). Don't second-guess lower protein intake.";
+  const prompt = buildBuddySystemPrompt({ memoryNotes: [memory] });
+
+  assert.match(prompt, new RegExp(memory.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(prompt, /showing 1 of 1/i);
+  assert.match(prompt, /never claim[^\n]{0,120}complete list[^\n]{0,120}omitted/i);
 });
 
 test("domain contract describes native tools rather than pseudo-JSON actions", () => {
