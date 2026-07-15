@@ -45,6 +45,8 @@ import {
   removeMemoryNote,
   reserveLlmTurn,
   logLlmUsage,
+  latestDailyMeasureSeries,
+  measureUsesLatestDailyValue,
   sb,
 } from "./_supabase.js";
 import { submitFeedback, summarizeFeedback, isAdmin } from "./_members.js";
@@ -61,11 +63,16 @@ import {
   prepareModelHistory,
 } from "./_chat_wrapper.js";
 import { buildBuddySystemPrompt } from "./_buddy_prompt.js";
+import {
+  buildAppInspection,
+  trackerRemovalConfirmationPrompt,
+} from "./_app_knowledge.js";
 import { callBuddyAfterTools, callBuddyFirstPass } from "./_buddy_turn.js";
 import {
   BIGBRICEY_TOOLS,
   buildNativeToolResultMessage,
   buildToolResultEnvelope,
+  getToolPolicy,
   validateNativeToolCall,
 } from "./_tool_contracts.js";
 import {
@@ -79,6 +86,12 @@ import {
   createToolConfirmationToken,
   verifyToolConfirmationToken,
 } from "./_tool_confirmation.js";
+
+const CONFIRMATION_ONLY_TOOLS = Object.freeze(
+  BIGBRICEY_TOOLS.filter(
+    (tool) => tool?.function?.name === "remove_tracker"
+  )
+);
 
 /**
  * Conversational control of the food log.
@@ -322,6 +335,8 @@ export default async function handler(req, res) {
       conversationId,
       currentDate: requestedDay,
       confirmedNativeCall,
+      layout: layoutSnap,
+      trackers: boxesSnap,
     });
 
     if (intent?.error === "model_failed") {
@@ -526,6 +541,35 @@ export default async function handler(req, res) {
         !authoritativeRowsLoaded
       ) {
         notes.push("Couldn't change food because the authoritative ledger is temporarily unavailable. Nothing changed.");
+        continue;
+      }
+
+      if (type === "inspect_app") {
+        if (!profileSnapshotLoaded) {
+          notes.push(
+            "Couldn't inspect the current app interface because the private profile state is temporarily unavailable."
+          );
+          continue;
+        }
+        try {
+          toolData = await buildAppInspection({
+            currentDate: requestedDay,
+            scene: sceneOut ?? sceneSnap ?? "none",
+            theme: themeOut ?? themeSnap ?? null,
+            layout: layoutOut ?? layoutSnap ?? null,
+            trackers: boxesOut ?? boxesSnap,
+            loadMeasureSeries: (measureId, from, to) =>
+              loadMeasureSeriesForAppInspection(
+                session.email,
+                measureId,
+                from,
+                to
+              ),
+          });
+          notes.push("Inspected the current BigBricey interface and dashboard.");
+        } catch {
+          notes.push("Couldn't inspect the current app interface right now.");
+        }
         continue;
       }
 
@@ -2123,6 +2167,7 @@ export default async function handler(req, res) {
             Boolean(
               action.__tool_name &&
                 action.__tool_name !== "read_today" &&
+                action.__tool_name !== "inspect_app" &&
                 action.__tool_name !== "list_saved_foods" &&
                 action.__tool_name !== "remember" &&
                 action.__tool_name !== "forget_memory"
@@ -2241,13 +2286,24 @@ export default async function handler(req, res) {
     const toolResultMessages = [];
     const verifiedToolResults = [];
     let pendingConfirmation = null;
+    const appInspectionData = nativeEvaluations
+      .filter((evaluation) => evaluation?.ok && evaluation.tool_name === "inspect_app")
+      .map((evaluation) => executionByCall.get(evaluation.tool_call_id)?.data)
+      .find(Boolean) || null;
     for (const evaluation of nativeEvaluations) {
       if (!evaluation?.ok) {
         verifiedToolResults.push(invalidNativeToolExecution());
         continue;
       }
       if (evaluation.status === "needs_confirmation") {
-        let confirmation = evaluation.confirmation;
+        let confirmation = {
+          ...evaluation.confirmation,
+          prompt: trackerRemovalConfirmationPrompt(
+            appInspectionData,
+            evaluation,
+            evaluation.confirmation?.prompt
+          ),
+        };
         try {
           const token = createToolConfirmationToken({
             email: session.email,
@@ -2335,14 +2391,77 @@ export default async function handler(req, res) {
       toolResultMessages.length
     ) {
       try {
+        const canContinueAfterRead =
+          !pendingConfirmation &&
+          nativeEvaluations.length > 0 &&
+          nativeEvaluations.every(
+            (evaluation) =>
+              evaluation?.ok &&
+              evaluation.status === "ready" &&
+              getToolPolicy(evaluation.tool_name)?.mutates === false
+          ) &&
+          verifiedToolResults.every((result) => result?.status === "success");
         const finalTurn = await callBuddyAfterTools({
           baseMessages: intent.nativeTurn.baseMessages,
           assistantMessage: intent.nativeTurn.assistantMessage,
           toolResultMessages,
-          tools: BIGBRICEY_TOOLS,
+          tools: canContinueAfterRead
+            ? CONFIRMATION_ONLY_TOOLS
+            : BIGBRICEY_TOOLS,
           fallbackReply: executorDerivedReply,
+          allowToolCalls: canContinueAfterRead,
         });
-        candidateReply = finalTurn.reply || executorDerivedReply;
+        if (canContinueAfterRead && finalTurn.toolCalls.length) {
+          const followupEvaluation =
+            finalTurn.toolCalls.length === 1
+              ? validateNativeToolCall(finalTurn.toolCalls[0])
+              : null;
+          if (
+            followupEvaluation?.ok &&
+            followupEvaluation.status === "needs_confirmation" &&
+            followupEvaluation.tool_name === "remove_tracker" &&
+            getToolPolicy(followupEvaluation.tool_name)?.destructive
+          ) {
+            let confirmation = {
+              ...followupEvaluation.confirmation,
+              prompt: trackerRemovalConfirmationPrompt(
+                appInspectionData,
+                followupEvaluation,
+                followupEvaluation.confirmation?.prompt
+              ),
+            };
+            try {
+              const token = createToolConfirmationToken({
+                email: session.email,
+                validatedCall: followupEvaluation,
+                secret: getAuthSecret(),
+              });
+              pendingConfirmation = {
+                token,
+                tool_call_id: followupEvaluation.tool_call_id,
+                tool_name: followupEvaluation.tool_name,
+                prompt: confirmation.prompt,
+              };
+            } catch {
+              confirmation = {
+                ...confirmation,
+                state: "unavailable",
+                prompt: "I couldn't create a safe confirmation. Ask me to try that again.",
+              };
+            }
+            verifiedToolResults.push({
+              status: "needs_confirmation",
+              changed: false,
+              confirmation,
+            });
+            candidateReply = confirmation.prompt;
+          } else {
+            verifiedToolResults.push(invalidNativeToolExecution());
+            candidateReply = executorDerivedReply;
+          }
+        } else {
+          candidateReply = finalTurn.reply || executorDerivedReply;
+        }
         if (session.email && finalTurn.output?.usage) {
           logLlmUsage(session.email, finalTurn.output.usage, {
             model: finalTurn.output.model,
@@ -3246,6 +3365,44 @@ function boundedLedgerToolRead(log = {}) {
   };
 }
 
+async function loadMeasureSeriesForAppInspection(
+  email,
+  measureId,
+  from,
+  to
+) {
+  const account = String(email || "").toLowerCase();
+  const metric = String(measureId || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, "");
+  if (
+    !account ||
+    !metric ||
+    !normalizeRequestedDay(from) ||
+    !normalizeRequestedDay(to) ||
+    from > to
+  ) {
+    throw new Error("invalid_app_inspection_range");
+  }
+  if (measureUsesLatestDailyValue(metric)) {
+    return latestDailyMeasureSeries(account, metric, from, to);
+  }
+  const rows =
+    (await sb("day_totals", {
+      query: {
+        select: "day_key,measure_id,total,unit",
+        user_email: `eq.${account}`,
+        measure_id: `eq.${metric}`,
+        day_key: `gte.${from}`,
+        order: "day_key.asc",
+        limit: "1096",
+      },
+    })) || [];
+  return rows.filter(
+    (row) => row?.day_key && row.day_key >= from && row.day_key <= to
+  );
+}
+
 function projectPrivateReadEvent(event = {}) {
   const payload =
     event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
@@ -3314,6 +3471,8 @@ async function interpretIntent(text, rows, ctx = {}) {
     memoryNotes: ctx.memoryNotes,
     chatSummary: ctx.chatSummary,
     currentLog: buildCurrentLogContext(rows),
+    layout: ctx.layout,
+    trackers: ctx.trackers,
   });
   const baseMessages = [
     { role: "system", content: system },

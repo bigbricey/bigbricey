@@ -32,6 +32,9 @@ const objectSchema = (properties, required = []) => ({
 });
 
 const DEFINITIONS = [
+  ["inspect_app", "Read the authoritative BigBricey interface guide and the user's exact current Today dashboard, including saved tracker definitions, positions, and computed chart summaries. Always use this before explaining what a visible panel, button, chart, label, or 'thing' in the app is or currently shows. Never guess from the user's wording.", objectSchema({
+    focus: string("The user's short description of the visible app element or feature they mean."),
+  })],
   ["read_today", "Read the user's recorded ledger and home state for one day. Use this before answering totals or what-was-logged questions.", objectSchema({
     day: string("Calendar day in YYYY-MM-DD format."),
     include: array("Sections to return.", { type: "string", enum: INCLUDE_SECTIONS }, { maxItems: 5, uniqueItems: true }),
@@ -117,9 +120,9 @@ const DEFINITIONS = [
     chart: string("Chart style.", { enum: CHART_TYPES }),
     days: integer("Number of calendar days shown by a chart."),
   }, ["kind", "title"])],
-  ["remove_tracker", "Request removal of one custom dashboard counter or chart now. Call this immediately; the app will collect confirmation before execution.", objectSchema({
-    id: string("Custom panel id."),
-    match: string("Distinctive tracker title or measurement id."),
+  ["remove_tracker", "Request removal of one custom dashboard counter or chart now. Supply exactly one identifier: use id when the dashboard manifest provides it, otherwise use match. Never send both. Call this immediately; the app will collect confirmation before execution.", objectSchema({
+    id: string("Exact custom panel id. Send id only; do not also send match."),
+    match: string("Distinctive tracker title or measurement id. Send match only when an exact id is unavailable."),
   })],
   ["set_theme", "Change the private app look using safe theme fields.", objectSchema({
     preset: string("Theme preset.", { enum: THEME_PRESETS }),
@@ -180,7 +183,7 @@ const CONFIRMATIONS = {
   },
 };
 
-const READ_ONLY = new Set(["read_today", "list_saved_foods"]);
+const READ_ONLY = new Set(["inspect_app", "read_today", "list_saved_foods"]);
 
 export function getToolPolicy(name) {
   const toolName = String(name || "");
@@ -269,7 +272,7 @@ function validateArguments(name, input) {
     food_query: { max: 500 }, serving_label: { max: 120 }, description: { max: 500 },
     id: { max: 48, pattern: /^c_[a-z0-9_]+$/ }, unit: { max: 32 }, title: { max: 160 }, category: { max: 60, pattern: /^[a-z0-9_ -]+$/i },
     notes: { max: 500 }, measure_id: { max: 80, pattern: /^[a-z0-9_]+$/ }, label: { max: 120 }, style: { max: 60, pattern: /^[a-z0-9_ -]+$/i },
-    note: { max: 300 }, match: { max: 300 }, kind: { max: 16 }, mode: { max: 16 }, chart: { max: 16 }, color: { max: 9 }, icon: { max: 8 },
+    note: { max: 300 }, match: { max: 300 }, focus: { max: 500 }, kind: { max: 16 }, mode: { max: 16 }, chart: { max: 16 }, color: { max: 9 }, icon: { max: 8 },
   };
   for (const [key, rules] of Object.entries(textRules)) {
     const error = stringField(args, key, rules);

@@ -52,6 +52,20 @@ test("ready native food calls map to the existing validated executor shape", () 
 test("read and customization calls retain only canonical validated arguments", () => {
   assert.deepEqual(
     actionFromValidatedToolCall(
+      validated("inspect_app", {
+        focus: "the Weight (30-Day) panel below chat",
+      })
+    ),
+    {
+      type: "inspect_app",
+      focus: "the Weight (30-Day) panel below chat",
+      __tool_call_id: "call_inspect_app",
+      __tool_name: "inspect_app",
+    }
+  );
+
+  assert.deepEqual(
+    actionFromValidatedToolCall(
       validated("read_today", {
         day: "2026-07-13",
         include: ["food", "totals"],

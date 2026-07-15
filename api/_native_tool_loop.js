@@ -28,6 +28,9 @@ export function actionFromValidatedToolCall(call) {
   let action;
 
   switch (call.tool_name) {
+    case "inspect_app":
+      action = { type: "inspect_app", ...args };
+      break;
     case "read_today":
       action = { type: "read_today", ...args };
       break;

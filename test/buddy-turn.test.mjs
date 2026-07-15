@@ -92,6 +92,50 @@ test("tool completion performs a verified second pass with tool choice disabled"
     ...toolResultMessages,
   ]);
   assert.equal(result.reply, "Done — aurora is on.");
+  assert.deepEqual(result.toolCalls, []);
+});
+
+test("a successful read can continue the original request with confirmation-only tools", async () => {
+  const calls = [];
+  const followupCall = {
+    id: "call_remove_tracker",
+    type: "function",
+    function: {
+      name: "remove_tracker",
+      arguments: '{"id":"c_weight_30d"}',
+    },
+  };
+  const result = await callBuddyAfterTools({
+    llm: async (options) => {
+      calls.push(options);
+      return { content: "", toolCalls: [followupCall] };
+    },
+    baseMessages: [{ role: "user", content: "What is this, and remove it?" }],
+    assistantMessage: {
+      role: "assistant",
+      content: null,
+      tool_calls: [
+        {
+          id: "call_inspect",
+          type: "function",
+          function: { name: "inspect_app", arguments: "{}" },
+        },
+      ],
+    },
+    toolResultMessages: [
+      {
+        role: "tool",
+        tool_call_id: "call_inspect",
+        content: '{"status":"success"}',
+      },
+    ],
+    tools,
+    allowToolCalls: true,
+    fallbackReply: "Inspected the app.",
+  });
+
+  assert.equal(calls[0].toolChoice, "auto");
+  assert.deepEqual(result.toolCalls, [followupCall]);
 });
 
 test("empty second-pass text falls back only to verified executor wording", async () => {

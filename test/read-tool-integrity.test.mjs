@@ -18,6 +18,20 @@ test("read_today fails closed when requested private state is unavailable", asyn
   assert.doesNotMatch(block, /catch \{\s*readRows = \[\];\s*\}/);
 });
 
+test("inspect_app fails closed and returns computed dashboard truth only after the profile loads", async () => {
+  const source = await readFile(new URL("../api/chat.js", import.meta.url), "utf8");
+  const start = source.indexOf('if (type === "inspect_app")');
+  const end = source.indexOf('if (type === "read_today")', start);
+  const block = source.slice(start, end);
+
+  assert.ok(start > 0, "inspect_app executor must exist");
+  assert.match(block, /profileSnapshotLoaded/);
+  assert.match(block, /buildAppInspection/);
+  assert.match(block, /loadMeasureSeriesForAppInspection/);
+  assert.match(block, /Couldn't inspect the current app interface/);
+  assert.doesNotMatch(block, /toolData\s*=\s*\{\s*trackers:\s*\[\]/);
+});
+
 test("read tool results stay bounded and are not duplicated into the voice pass", async () => {
   const source = await readFile(new URL("../api/chat.js", import.meta.url), "utf8");
   assert.doesNotMatch(

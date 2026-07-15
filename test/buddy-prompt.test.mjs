@@ -12,6 +12,23 @@ test("native buddy prompt is conversationally broad and delegates app state to t
     currentDate: "2026-07-14",
     scene: "ocean",
     memoryNotes: ["Prefers concise answers"],
+    layout: {
+      order: ["chat", "c_weight_30d", "kcal", "food"],
+      sizes: { chat: "full", c_weight_30d: "full" },
+    },
+    trackers: [
+      {
+        id: "c_weight_30d",
+        kind: "chart",
+        title: "Weight (30-Day)",
+        measure_id: "weight_lb",
+        measures: ["weight_lb"],
+        unit: "lb",
+        days: 30,
+        chart: "line",
+        size: "full",
+      },
+    ],
   });
 
   assert.match(prompt, /answer ordinary questions/i);
@@ -26,6 +43,16 @@ test("native buddy prompt is conversationally broad and delegates app state to t
   assert.match(prompt, /set_tracker[^\n]{0,160}actually created/i);
   assert.match(prompt, /honor the user['’]s stated eating style/i);
   assert.match(prompt, /skip ceremonial openings/i);
+  assert.match(prompt, /AUTHORITATIVE APP GUIDE/i);
+  assert.match(prompt, /30d[^\n]{0,160}(?:display|window|range)/i);
+  assert.match(prompt, /CURRENT DASHBOARD MANIFEST/i);
+  assert.match(prompt, /Weight \(30-Day\)/);
+  assert.match(prompt, /"position":2/);
+  assert.match(prompt, /call inspect_app/i);
+  assert.match(prompt, /don['’]?t want[^\n]{0,160}remove_tracker/i);
+  assert.match(prompt, /remove_tracker[^\n]{0,180}exact id only/i);
+  assert.match(prompt, /never[^\n]{0,100}(?:id and match|both)/i);
+  assert.match(prompt, /after (?:a )?successful read[^\n]{0,180}original request/i);
   assert.doesNotMatch(prompt, /OUTPUT FORMAT|\{"reply"|JSON actions/i);
   assert.ok(prompt.length < 18_000, `prompt should stay focused, got ${prompt.length}`);
 });
@@ -65,6 +92,48 @@ test("recent excluded detail survives a full profile, memory list, and ledger", 
   });
 
   assert.match(prompt, /newest-stress-sentinel/);
+  assert.ok(prompt.length <= 18_000);
+});
+
+test("the newest live tracker and recent context both survive worst-case prompt pressure", async () => {
+  const { buildBuddySystemPrompt } = await import(PROMPT_MODULE);
+  const prompt = buildBuddySystemPrompt({
+    personBlock: "profile ".repeat(1_000),
+    memoryNotes: Array.from(
+      { length: 20 },
+      (_, index) => `memory ${index} ${"m".repeat(200)}`
+    ),
+    chatSummary:
+      "Earlier conversation excerpts:\n" +
+      "old detail ".repeat(2_000) +
+      "\nuser: newest-dashboard-continuity-sentinel",
+    currentLog: {
+      items: Array.from({ length: 40 }, (_, index) => ({
+        id: `row-${index}-${"x".repeat(100)}`,
+        label: `Food ${index} ${"l".repeat(100)}`,
+        grams: index + 1,
+      })),
+    },
+    layout: {
+      order: [
+        "chat",
+        ...Array.from({ length: 20 }, (_, index) => `c_tracker_${index}`),
+      ],
+    },
+    trackers: Array.from({ length: 20 }, (_, index) => ({
+      id: `c_tracker_${index}`,
+      kind: "chart",
+      title: `Tracker ${index}`,
+      measure_id: `metric_${index}`,
+      measures: [`metric_${index}`],
+      unit: "units",
+      days: 30,
+      chart: "line",
+    })),
+  });
+
+  assert.match(prompt, /Tracker 19/);
+  assert.match(prompt, /newest-dashboard-continuity-sentinel/);
   assert.ok(prompt.length <= 18_000);
 });
 

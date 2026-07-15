@@ -22,6 +22,7 @@ function call(name, args, id = `call_${name}`) {
 }
 
 const EXPECTED_TOOLS = [
+  "inspect_app",
   "read_today",
   "add_food",
   "update_food",
@@ -43,6 +44,31 @@ const EXPECTED_TOOLS = [
   "remember",
   "forget_memory",
 ];
+
+test("inspect_app is a bounded read-only tool for exact interface questions", () => {
+  const valid = validateNativeToolCall(
+    call("inspect_app", { focus: "the Weight (30-Day) panel below chat" })
+  );
+  assert.equal(valid.ok, true);
+  assert.equal(valid.status, "ready");
+  assert.equal(valid.policy.mutates, false);
+  assert.deepEqual(valid.arguments, {
+    focus: "the Weight (30-Day) panel below chat",
+  });
+
+  assert.equal(
+    validateNativeToolCall(
+      call("inspect_app", { focus: "x".repeat(501) })
+    ).error.code,
+    "OUT_OF_RANGE"
+  );
+  assert.equal(
+    validateNativeToolCall(
+      call("inspect_app", { focus: "weight", user_email: "other@example.com" })
+    ).error.code,
+    "UNKNOWN_FIELD"
+  );
+});
 
 test("native catalog exposes only the allowlisted core tools with closed schemas", () => {
   assert.deepEqual(BIGBRICEY_TOOL_NAMES, EXPECTED_TOOLS);
@@ -458,6 +484,13 @@ test("dashboard trackers create real bounded counters or charts and removal is c
   );
   assert.equal(removal.status, "needs_confirmation");
   assert.equal(removal.policy.destructive, true);
+
+  const removeTool = BIGBRICEY_TOOLS.find(
+    (tool) => tool.function.name === "remove_tracker"
+  );
+  assert.match(removeTool.function.description, /exactly one/i);
+  assert.match(removeTool.function.description, /never[^\n]{0,20}both/i);
+  assert.match(removeTool.function.parameters.properties.id.description, /id only/i);
 });
 
 test("theme and scene contracts reject arbitrary CSS and nonexistent scenes", () => {

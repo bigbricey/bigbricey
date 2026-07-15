@@ -38,6 +38,7 @@ export async function callBuddyAfterTools({
   toolResultMessages = [],
   tools = [],
   fallbackReply = "",
+  allowToolCalls = false,
 } = {}) {
   const messages = [
     ...(Array.isArray(baseMessages) ? baseMessages : []),
@@ -49,13 +50,14 @@ export async function callBuddyAfterTools({
     title: "BigBricey-Chat-After-Tools",
     messages,
     tools,
-    toolChoice: "none",
+    toolChoice: allowToolCalls ? "auto" : "none",
     parallelToolCalls: false,
     maxTokens: 700,
   });
 
   return {
     reply: safeAssistantReply(output?.content, fallbackReply),
+    toolCalls: Array.isArray(output?.toolCalls) ? output.toolCalls : [],
     output,
   };
 }

@@ -15,6 +15,18 @@ test("chat endpoint uses the native catalog and verified tool-result second pass
   assert.match(source, /invalidNativeToolExecution/);
   assert.match(source, /selectVerifiedNativeToolReply/);
   assert.match(source, /verifiedToolResults/);
+  assert.match(source, /buildAppInspection/);
+  assert.match(source, /type === "inspect_app"/);
+  assert.match(source, /trackers:\s*boxesSnap/);
+  assert.match(source, /layout:\s*layoutSnap/);
+  assert.match(source, /CONFIRMATION_ONLY_TOOLS/);
+  assert.match(source, /allowToolCalls:\s*canContinueAfterRead/);
+  assert.match(source, /followupEvaluation/);
+  assert.match(
+    source,
+    /followupEvaluation\.tool_name === "remove_tracker"/
+  );
+  assert.match(source, /trackerRemovalConfirmationPrompt/);
   assert.doesNotMatch(source, /OUTPUT FORMAT:/);
   assert.doesNotMatch(source, /use JSON actions when changing the app/i);
 });
