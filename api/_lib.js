@@ -460,6 +460,55 @@ export function round(n) {
   return Math.round((Number(n) || 0) * 10) / 10;
 }
 
+const FOOD_ROW_NUTRIENTS = [
+  "kcal",
+  "protein",
+  "fat",
+  "carbs",
+  "fiber",
+  "sugars",
+  "potassium",
+  "magnesium",
+  "sodium",
+];
+
+/** Build a ledger-ready row from verified per-100g nutrition. */
+export function foodRowFromPer100(food, grams, { label } = {}) {
+  const weight = Number(grams);
+  if (!Number.isFinite(weight) || weight <= 0 || weight > 100_000) return null;
+  const nutrients = food?.nutrients || {};
+  const row = {
+    id: crypto.randomUUID(),
+    label: String(label || `${round(weight)} g ${food?.description || "Food"}`).slice(
+      0,
+      300
+    ),
+    source: food?._src || food?.dataType || "lookup",
+    fdcId: food?.fdcId || null,
+    grams: round(weight),
+  };
+  const known = [];
+  for (const key of FOOD_ROW_NUTRIENTS) {
+    const value = nutrients[key];
+    if (value == null || value === "" || !Number.isFinite(Number(value))) continue;
+    row[key] = round(Number(value) * (weight / 100));
+    known.push(key);
+  }
+  if (known.length) row.extras = { known_nutrients: known };
+  return row;
+}
+
+function rowHasUsefulNutrition(row) {
+  if (!row) return false;
+  const energyOrMacro = [row.kcal, row.protein, row.fat, row.carbs];
+  return (
+    energyOrMacro.some((value) => Number(value) > 0) ||
+    energyOrMacro.every(
+      (value) => value != null && Number.isFinite(Number(value))
+    )
+  );
+}
+
 export async function parseFood(text) {
   try {
     const { llmChat, llmConfig } = await import("./_llm.js");
@@ -654,6 +703,234 @@ export async function foodSearch(q) {
   return { query: q, foods: results, errors };
 }
 
+/** Resolve a visually estimated food at a known gram amount without reparsing it. */
+export async function resolveFoodAtGrams(query, grams, opts = {}) {
+  const q = String(query || "").replace(/\s+/g, " ").trim().slice(0, 160);
+  const weight = Number(grams);
+  if (!q || !Number.isFinite(weight) || weight <= 0 || weight > 100_000) {
+    return { match: null, row: null, note: "A food name and a valid gram amount are required." };
+  }
+
+  const custom = matchCustomFood(q);
+  if (custom?.perServing?.grams > 0) {
+    const servings = weight / Number(custom.perServing.grams);
+    const row = rowFromCustom({ amount: servings, unit: "serving" }, custom);
+    row.label = `${round(weight)} g ${custom.description}`;
+    row.grams = round(weight);
+    return {
+      match: { description: custom.description, source: "custom" },
+      row,
+      note: null,
+    };
+  }
+
+  if (opts.email && typeof opts.findSavedFood === "function") {
+    try {
+      const saved = await opts.findSavedFood(opts.email, q);
+      const savedGrams = Number(saved?.grams);
+      if (
+        saved &&
+        Number.isFinite(savedGrams) &&
+        savedGrams > 0 &&
+        typeof opts.rowFromSavedFood === "function"
+      ) {
+        const row = opts.rowFromSavedFood(saved, weight / savedGrams);
+        row.label = `${round(weight)} g ${saved.name}`;
+        row.grams = round(weight);
+        return {
+          match: { description: saved.name, source: "saved" },
+          row,
+          note: null,
+        };
+      }
+    } catch {
+      /* continue to public food databases */
+    }
+  }
+
+  const expanded = expandQuery(q);
+  const queries =
+    expanded.toLowerCase() === q.toLowerCase() ? [q] : [expanded, q];
+  try {
+    const searches = await Promise.all(queries.map((value) => foodSearch(value)));
+    const foods = searches
+      .flatMap((result) => result.foods || [])
+      .sort((a, b) => b.score - a.score);
+    const best = pickBestFood(foods, q);
+    if (!best) {
+      return {
+        match: null,
+        row: null,
+        note: "No credible nutrition database match was found.",
+        detail: searches.flatMap((result) => result.errors || []),
+      };
+    }
+    const row = foodRowFromPer100(best, weight);
+    if (!rowHasUsefulNutrition(row)) {
+      return {
+        match: best,
+        row: null,
+        note: "The matching database entry did not contain usable nutrition.",
+      };
+    }
+    return { match: best, row, note: null };
+  } catch (error) {
+    return {
+      match: null,
+      row: null,
+      note: "Food lookup failed — try again.",
+      detail: error?.detail || String(error?.message || error),
+    };
+  }
+}
+
+/** Normalize and validate a UPC/EAN/GTIN, including its check digit. */
+export function normalizeBarcode(value) {
+  const code = String(value || "").replace(/[^0-9]/g, "");
+  if (![8, 12, 13, 14].includes(code.length)) return null;
+  const digits = code.split("").map(Number);
+  const supplied = digits.pop();
+  let sum = 0;
+  for (let i = digits.length - 1, position = 0; i >= 0; i -= 1, position += 1) {
+    sum += digits[i] * (position % 2 === 0 ? 3 : 1);
+  }
+  const expected = (10 - (sum % 10)) % 10;
+  return supplied === expected ? code : null;
+}
+
+function gramsFromServing(value, unit, text) {
+  const amount = Number(value);
+  const normalizedUnit = String(unit || "").trim().toLowerCase();
+  if (Number.isFinite(amount) && amount > 0) {
+    if (["g", "gram", "grams", "grm"].includes(normalizedUnit)) return amount;
+    if (["oz", "ounce", "ounces"].includes(normalizedUnit)) return amount * 28.3495;
+  }
+  const match = String(text || "").match(/([0-9]+(?:\.[0-9]+)?)\s*(g|grams?|oz|ounces?)\b/i);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return /^oz|ounce/i.test(match[2]) ? parsed * 28.3495 : parsed;
+}
+
+function barcodeFoodScore(food) {
+  const nutrients = food?.nutrients || {};
+  const macroCount = ["kcal", "protein", "fat", "carbs"].filter((key) =>
+    Number.isFinite(Number(nutrients[key]))
+  ).length;
+  const detailCount = FOOD_ROW_NUTRIENTS.filter((key) =>
+    Number.isFinite(Number(nutrients[key]))
+  ).length;
+  return macroCount * 20 + detailCount + (food?.servingGrams ? 8 : 0);
+}
+
+export async function openFoodFactsBarcode(value) {
+  const code = normalizeBarcode(value);
+  if (!code) return null;
+  const fields = [
+    "code",
+    "product_name",
+    "generic_name",
+    "brands",
+    "quantity",
+    "serving_size",
+    "serving_quantity",
+    "serving_quantity_unit",
+    "nutriments",
+  ].join(",");
+  const url = `https://world.openfoodfacts.org/api/v3/product/${encodeURIComponent(code)}?fields=${encodeURIComponent(fields)}`;
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "BigBricey/1.0 (https://www.bigbricey.com; barcode lookup)",
+    },
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok || data?.status !== "success" || !data?.product) return null;
+  const product = data.product;
+  const description =
+    product.product_name || product.generic_name || product.brands || "Packaged food";
+  return {
+    fdcId: String(product.code || code),
+    description,
+    brandOwner: product.brands || null,
+    dataType: "OpenFoodFactsBarcode",
+    nutrients: offNutrients(product.nutriments || {}),
+    servingGrams: gramsFromServing(
+      product.serving_quantity,
+      product.serving_quantity_unit,
+      product.serving_size
+    ),
+    servingText: product.serving_size || null,
+    packageQuantity: product.quantity || null,
+    sourceUrl: `https://world.openfoodfacts.org/product/${encodeURIComponent(code)}`,
+    _src: "openfoodfacts-barcode",
+  };
+}
+
+function sameGtin(a, b) {
+  const left = String(a || "").replace(/\D/g, "").replace(/^0+/, "");
+  const right = String(b || "").replace(/\D/g, "").replace(/^0+/, "");
+  return Boolean(left && right && left === right);
+}
+
+export async function usdaBarcodeSearch(value) {
+  const code = normalizeBarcode(value);
+  const key = process.env.USDA_API_KEY;
+  if (!code || !key) return null;
+  const url = new URL("https://api.nal.usda.gov/fdc/v1/foods/search");
+  url.searchParams.set("query", code);
+  url.searchParams.set("pageSize", "10");
+  url.searchParams.set("dataType", "Branded");
+  url.searchParams.set("api_key", key);
+  const response = await fetch(url);
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !Array.isArray(data?.foods)) return null;
+  const food = data.foods.find((item) => sameGtin(item.gtinUpc, code));
+  if (!food) return null;
+  return {
+    fdcId: food.fdcId,
+    description: food.description || "Packaged food",
+    brandOwner: food.brandOwner || food.brandName || null,
+    dataType: "USDABarcode",
+    nutrients: pickNutrients(food.foodNutrients || []),
+    servingGrams: gramsFromServing(
+      food.servingSize,
+      food.servingSizeUnit,
+      food.householdServingFullText
+    ),
+    servingText: food.householdServingFullText || null,
+    sourceUrl: `https://fdc.nal.usda.gov/food-details/${encodeURIComponent(food.fdcId)}/nutrients`,
+    _src: "usda-barcode",
+  };
+}
+
+const barcodeCache = new Map();
+
+/** Exact product lookup. This never substitutes a fuzzy text-search result. */
+export async function lookupBarcode(value) {
+  const code = normalizeBarcode(value);
+  if (!code) return { code: null, food: null, errors: ["invalid_barcode"] };
+  const cached = barcodeCache.get(code);
+  if (cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.value;
+  const settled = await Promise.allSettled([
+    openFoodFactsBarcode(code),
+    usdaBarcodeSearch(code),
+  ]);
+  const foods = settled
+    .filter((result) => result.status === "fulfilled" && result.value)
+    .map((result) => result.value)
+    .sort((a, b) => barcodeFoodScore(b) - barcodeFoodScore(a));
+  const result = {
+    code,
+    food: foods[0] || null,
+    alternatives: foods.slice(1),
+    errors: settled
+      .filter((entry) => entry.status === "rejected")
+      .map((entry) => String(entry.reason?.message || entry.reason)),
+  };
+  barcodeCache.set(code, { at: Date.now(), value: result });
+  return result;
+}
+
 /**
  * Resolve food text → nutrition row.
  * @param {string} text
@@ -804,10 +1081,28 @@ export function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-export async function readBody(req) {
-  if (req.body && typeof req.body === "object") return req.body;
+export async function readBody(req, { maxBytes = Infinity } = {}) {
+  if (req.body && typeof req.body === "object") {
+    if (Buffer.byteLength(JSON.stringify(req.body), "utf8") > maxBytes) {
+      const error = new Error("Request body is too large.");
+      error.code = "request_too_large";
+      error.status = 413;
+      throw error;
+    }
+    return req.body;
+  }
   const chunks = [];
-  for await (const c of req) chunks.push(c);
+  let total = 0;
+  for await (const c of req) {
+    total += c.length;
+    if (total > maxBytes) {
+      const error = new Error("Request body is too large.");
+      error.code = "request_too_large";
+      error.status = 413;
+      throw error;
+    }
+    chunks.push(c);
+  }
   const raw = Buffer.concat(chunks).toString("utf8");
   if (!raw) return {};
   try {

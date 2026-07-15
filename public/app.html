@@ -15,7 +15,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
   <title>BigBricey</title>
-  <link rel="stylesheet" href="/styles.css?v=20260714f" />
+  <link rel="stylesheet" href="/styles.css?v=20260714g" />
 </head>
 <body class="tab-today">
   <div class="app-shell">
@@ -88,7 +88,34 @@
           <div class="chat-empty">New conversation</div>
         </div>
         <div id="chatStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+        <div class="photo-mode-tray" id="photoModeTray" hidden>
+          <div class="photo-mode-head">
+            <div>
+              <strong>What are you photographing?</strong>
+              <span>BigBricey makes a draft. You approve the log.</span>
+            </div>
+            <button type="button" class="photo-mode-close" id="photoModeClose" aria-label="Close photo choices">×</button>
+          </div>
+          <div class="photo-mode-list" role="menu" aria-label="Photo type">
+            <button type="button" class="photo-mode-choice" data-vision-mode="meal" role="menuitem">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h16M6 13a6 6 0 0 1 12 0M3 17h18M12 7V5" /></svg>
+              <span><strong>Meal or plate</strong><small>Identify foods and estimate portions</small></span>
+            </button>
+            <button type="button" class="photo-mode-choice" data-vision-mode="label" role="menuitem">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18H6zM9 8h6M9 12h6M9 16h4" /></svg>
+              <span><strong>Nutrition label</strong><small>Copy the printed per-serving values</small></span>
+            </button>
+            <button type="button" class="photo-mode-choice" data-vision-mode="barcode" role="menuitem">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5v14M7 5v14M11 5v14M14 5v14M18 5v14M20 5v14" /></svg>
+              <span><strong>Barcode</strong><small>Find the exact packaged product</small></span>
+            </button>
+          </div>
+        </div>
+        <input id="photoInput" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" hidden />
         <div class="composer">
+          <button id="photoBtn" class="composer-photo-btn" type="button" aria-label="Add a food photo" aria-controls="photoModeTray" aria-expanded="false" title="Add a food photo">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l1.5-2h7L17 7h3v12H4z" /><circle cx="12" cy="13" r="3.5" /></svg>
+          </button>
           <label class="sr-only" for="foodInput">Message BigBricey</label>
           <textarea id="foodInput" rows="2" enterkeyhint="send" autocomplete="off"
             placeholder="Message BigBricey…"
@@ -636,6 +663,7 @@
   <script src="/boxes.js?v=20260713c"></script>
   <script src="/food-storage.js?v=20260714a"></script>
   <script src="/chat-format.js?v=20260714b"></script>
-  <script src="/app.js?v=20260714f"></script>
+  <script src="/vision.js?v=20260714d"></script>
+  <script src="/app.js?v=20260714g"></script>
 </body>
 </html>

@@ -148,3 +148,38 @@ test("llmChat forwards tool-result messages for the verified final-answer pass",
     else process.env.OPENROUTER_API_KEY = priorKey;
   }
 });
+
+test("llmChat can route a vision request to a model without changing the chat model", async () => {
+  const priorFetch = globalThis.fetch;
+  const priorKey = process.env.OPENROUTER_API_KEY;
+  const priorModel = process.env.OPENROUTER_MODEL;
+  let requestBody = null;
+  process.env.OPENROUTER_API_KEY = "test-key";
+  process.env.OPENROUTER_MODEL = "z-ai/glm-5.2";
+  globalThis.fetch = async (_url, init) => {
+    requestBody = JSON.parse(init.body);
+    return {
+      ok: true,
+      async json() {
+        return {
+          model: requestBody.model,
+          choices: [{ message: { role: "assistant", content: "{}" } }],
+        };
+      },
+    };
+  };
+  try {
+    await llmChat({
+      model: "google/gemini-3.1-flash-lite",
+      messages: [{ role: "user", content: "look" }],
+    });
+    assert.equal(requestBody.model, "google/gemini-3.1-flash-lite");
+    assert.equal(process.env.OPENROUTER_MODEL, "z-ai/glm-5.2");
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (priorKey == null) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = priorKey;
+    if (priorModel == null) delete process.env.OPENROUTER_MODEL;
+    else process.env.OPENROUTER_MODEL = priorModel;
+  }
+});

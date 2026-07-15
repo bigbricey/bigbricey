@@ -87,17 +87,21 @@ When he asks whether work is saved for other AIs — **write docs + git push**, 
 - Shipped **verified food-logging feedback**: receipt with calories/macros, real dashboard reaction, background = real page atmosphere (not a fake kingdom box).
 - Git `main` at handoff time: `7586f4a` *Improve verified food logging feedback* (working tree clean).
 
-### What Codex designed but did NOT build
-Photo / barcode food logging architecture:
+### What Codex built after the design
+Photo / barcode food logging architecture and release:
 
 1. **Chat brain:** keep `z-ai/glm-5.2` (text).
-2. **Vision model (separate env):** recommend `google/gemini-3.1-flash-lite` via OpenRouter; cheaper alt `google/gemini-2.5-flash-lite`. Do **not** replace GLM for all chat.
+2. **Vision model (separate env):** `google/gemini-3.1-flash-lite` via OpenRouter, with `google/gemini-2.5-flash` fallback. GLM remains the normal chat model.
 3. **Pipeline:** photo or barcode or nutrition label → identify → **nutrition DB** (saved foods → Open Food Facts → USDA) → editable confirm card → log. Models never invent macros from pixels alone.
-4. **Build order:** barcode + label first (high accuracy), then guided plate estimation (scale/geometry problem; web search ≠ weight).
-5. **Missing today:** camera/upload UI, barcode button, `OPENROUTER_VISION_MODEL` (or equivalent), confirm-before-log for vision results.
+4. **Meal path:** vision identifies components and honest gram ranges; saved foods/Open Food Facts/USDA supply nutrition. Official web search is a bounded branded-food fallback, never a silent macro invention.
+5. **Label path:** copies only clearly printed per-serving values; unread nutrients remain unknown.
+6. **Barcode path:** validates the GTIN check digit and requires an exact Open Food Facts v3 or USDA match. Missing serving weight requires the user to enter grams.
+7. **Safety/UI:** the camera opens three explicit modes, every result is an editable draft, and nothing reaches the ledger until the user confirms. Async results are bound to the initiating account/day/conversation.
+8. **Calibration:** meaningful meal-portion corrections are stored as bounded profile hints for later estimates; photos are not written to the account or ledger.
+9. **Verification:** the real vision model accepted image + strict JSON input, a live Nutella barcode resolved through Open Food Facts, the browser preview rescaled 180 g → 200 g correctly, deselection worked, and only the confirmed item entered the mock ledger. Full suite: 150 tests.
 
 ### Product goal (Brice — durable)
 Sellable private AI buddy home for food + workouts; customizable atmosphere (e.g. kid-friendly themes); **not** a general agent that builds SaaS or answers anything. Curated themes/scenes — not arbitrary user HTML/JS. Family/kids mode later (COPPA-real).
 
-### Next when Brice says go
-Implement barcode + label scan path first, then plate photo estimation.
+### Next vision work
+Use real-world plate and label photos in production, collect correction patterns, and tune prompts/model choice from measured failure cases rather than guessing.

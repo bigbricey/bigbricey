@@ -55,6 +55,7 @@ async function init() {
   if (!ok) return;
   configureAccountStorage(window.__ntUser?.email);
   rows = loadLocal(selectedDay);
+  initVisionCapture();
 
   document.querySelectorAll("th.sortable").forEach((th) => {
     th.addEventListener("click", () => sortBy(th.dataset.key, th.dataset.type));
@@ -289,6 +290,85 @@ function sameDayContext(account, day, selectionEpoch = daySelectionEpoch) {
     selectedDay === day &&
     daySelectionEpoch === selectionEpoch
   );
+}
+
+function visionContext() {
+  return {
+    account: storageAccount,
+    day: selectedDay,
+    selectionEpoch: daySelectionEpoch,
+    conversationId,
+    conversationEpoch,
+  };
+}
+
+function visionContextMatches(context) {
+  return Boolean(
+    context &&
+      sameDayContext(context.account, context.day, context.selectionEpoch) &&
+      conversationId === context.conversationId &&
+      conversationEpoch === context.conversationEpoch
+  );
+}
+
+async function commitVisionRows(proposedRows, context) {
+  if (!visionContextMatches(context)) {
+    return {
+      ok: false,
+      stale: true,
+      message: "The selected day or conversation changed. Scan the photo again here.",
+    };
+  }
+  const additions = (Array.isArray(proposedRows) ? proposedRows : [])
+    .filter((row) => row && typeof row === "object")
+    .slice(0, 8)
+    .map((row) => ({ ...row, id: newId() }));
+  if (!additions.length) {
+    return { ok: false, message: "Choose at least one complete item to log." };
+  }
+  const previousRows = rows.map((row) => ({ ...row }));
+  const expectedRevision = getDayRevision(context.day, context.account);
+  const nextRows = ensureUniqueIds([...previousRows, ...additions]);
+  rows = nextRows;
+  saveLocalRows(context.day, nextRows, context.account);
+  render();
+  const result = await syncCloud(true, {
+    day: context.day,
+    rows: nextRows,
+    expectedRevision,
+  });
+  const stillVisible = visionContextMatches(context);
+  if (result?.ok) {
+    if (stillVisible) {
+      render();
+      pulseVerifiedLogUpdate(additions);
+      appendChat("bot", "Logged from your photo after your review.", false, {
+        receipt: buildVerifiedLogReceipt(additions, context.day),
+      });
+    }
+    return { ok: true, committedRows: additions, stale: !stillVisible };
+  }
+  if (!result?.conflict && stillVisible) {
+    rows = previousRows;
+    saveLocalRows(context.day, previousRows, context.account);
+    render();
+  }
+  return {
+    ok: false,
+    conflict: Boolean(result?.conflict),
+    message: result?.conflict
+      ? "The day changed somewhere else, so I reloaded it. Review the photo again before logging."
+      : "I couldn't safely save those foods, so nothing was added.",
+  };
+}
+
+function initVisionCapture() {
+  window.BBVision?.init({
+    appendChat,
+    getContext: visionContext,
+    contextMatches: visionContextMatches,
+    commitRows: commitVisionRows,
+  });
 }
 
 function updateDayLabel() {
@@ -1102,6 +1182,7 @@ function appendChat(role, text, isError = false, options = {}) {
   }
   bubble.appendChild(who);
   bubble.appendChild(body);
+  if (options.attachment?.nodeType === 1) bubble.appendChild(options.attachment);
   if (options.receipt?.nodeType === 1) bubble.appendChild(options.receipt);
   chatLog.appendChild(bubble);
   if (options.scroll !== false) {

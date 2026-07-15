@@ -28,6 +28,7 @@ export function llmConfig() {
  * Chat completion — OpenRouter-compatible shape for now.
  * @param {{ messages: Array<object>, temperature?: number, title?: string,
  * tools?: Array<object>, toolChoice?: string|object, parallelToolCalls?: boolean,
+ * model?: string,
  * maxTokens?: number, responseFormat?: object, reasoning?: object }} opts
  * @returns {Promise<{ content: string, message: object, toolCalls: Array<object>, model: string, provider: string, raw: any }>}
  */
@@ -35,6 +36,7 @@ export async function llmChat({
   messages,
   temperature = 0,
   title = "BigBricey",
+  model,
   tools,
   toolChoice,
   parallelToolCalls,
@@ -52,7 +54,7 @@ export async function llmChat({
   if (cfg.provider === "openrouter" || cfg.provider === "or") {
     return openRouterChat({
       apiKey: cfg.apiKey,
-      model: cfg.model,
+      model: String(model || cfg.model),
       messages,
       temperature,
       title,
@@ -68,7 +70,7 @@ export async function llmChat({
   // Fallback: treat unknown providers as OpenRouter-compatible gateway
   return openRouterChat({
     apiKey: cfg.apiKey,
-    model: cfg.model,
+    model: String(model || cfg.model),
     messages,
     temperature,
     title,
