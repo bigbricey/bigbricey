@@ -2,6 +2,16 @@ const DEFAULT_SUMMARY_CHAR_LIMIT = 12000;
 const DEFAULT_MESSAGE_CHAR_LIMIT = 400;
 
 export const MEMORY_NOTES_MAX = 40;
+export const MEMORY_KINDS = Object.freeze(["fact", "preference", "inference"]);
+export const MEMORY_PROVENANCE = Object.freeze([
+  "user_chat",
+  "user_ui",
+  "legacy",
+  "inferred",
+]);
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function compareText(left, right) {
   const a = String(left || "");
@@ -115,21 +125,96 @@ export function sanitizeMemoryNoteText(note) {
     .slice(0, 400);
 }
 
+function safeIsoDate(value) {
+  const text = String(value || "").trim();
+  if (!text || !Number.isFinite(Date.parse(text))) return null;
+  return new Date(text).toISOString();
+}
+
+export function sanitizeMemoryRecord(value) {
+  if (typeof value === "string") {
+    const text = sanitizeMemoryNoteText(value).slice(0, 300);
+    return text
+      ? {
+          id: null,
+          text,
+          kind: "fact",
+          provenance: "legacy",
+          confidence: 1,
+          created_at: null,
+          updated_at: null,
+        }
+      : null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+
+  const text = sanitizeMemoryNoteText(value).slice(0, 300);
+  const suppliedId = value.id == null ? "" : String(value.id).trim();
+  const id = suppliedId && UUID_PATTERN.test(suppliedId) ? suppliedId.toLowerCase() : null;
+  const kind = String(value.kind || "fact").trim().toLowerCase();
+  const provenance = String(value.provenance || "legacy").trim().toLowerCase();
+  if (!text || (suppliedId && !id)) return null;
+  if (!MEMORY_KINDS.includes(kind) || !MEMORY_PROVENANCE.includes(provenance)) {
+    return null;
+  }
+
+  const confidenceNumber = Number(value.confidence);
+  const confidence = Number.isFinite(confidenceNumber)
+    ? Math.min(1, Math.max(0, confidenceNumber))
+    : 1;
+  return {
+    id,
+    text,
+    kind,
+    provenance,
+    confidence,
+    created_at: safeIsoDate(value.created_at),
+    updated_at: safeIsoDate(value.updated_at),
+  };
+}
+
+export function normalizeMemoryRecords(
+  records,
+  { limit = MEMORY_NOTES_MAX } = {}
+) {
+  const normalized = [];
+  const seenText = new Set();
+  const seenIds = new Set();
+  for (const value of Array.isArray(records) ? records : []) {
+    const record = sanitizeMemoryRecord(value);
+    if (!record) continue;
+    const textKey = record.text.toLocaleLowerCase("en-US");
+    if (seenText.has(textKey) || (record.id && seenIds.has(record.id))) continue;
+    seenText.add(textKey);
+    if (record.id) seenIds.add(record.id);
+    normalized.push(record);
+    if (normalized.length >= positiveInteger(limit, MEMORY_NOTES_MAX)) break;
+  }
+  return normalized;
+}
+
+export function selectUniqueMemoryMatch(records, match) {
+  const needle = sanitizeMemoryNoteText(match).toLocaleLowerCase("en-US");
+  if (!needle) return { status: "not_found", matches: [] };
+  const normalized = normalizeMemoryRecords(records);
+  const exact = normalized.filter(
+    (record) => record.text.toLocaleLowerCase("en-US") === needle
+  );
+  const matches = exact.length
+    ? exact
+    : normalized.filter((record) =>
+        record.text.toLocaleLowerCase("en-US").includes(needle)
+      );
+  if (!matches.length) return { status: "not_found", matches: [] };
+  if (matches.length > 1) return { status: "ambiguous", matches };
+  return { status: "found", memory: matches[0], matches };
+}
+
 /**
  * profiles.prefs is JSONB, so this accepts both legacy strings and future
  * `{ text }` records without a database migration. The existing public return
  * type remains a string array for compatibility with the prompt layer.
  */
 export function normalizeMemoryNotes(notes, { limit = MEMORY_NOTES_MAX } = {}) {
-  const normalized = [];
-  const seen = new Set();
-  for (const note of Array.isArray(notes) ? notes : []) {
-    const text = sanitizeMemoryNoteText(note);
-    const key = text.toLocaleLowerCase("en-US");
-    if (!text || seen.has(key)) continue;
-    seen.add(key);
-    normalized.push(text);
-    if (normalized.length >= positiveInteger(limit, MEMORY_NOTES_MAX)) break;
-  }
-  return normalized;
+  return normalizeMemoryRecords(notes, { limit }).map((record) => record.text);
 }

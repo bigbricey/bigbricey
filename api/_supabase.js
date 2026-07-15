@@ -7,8 +7,9 @@ import { assertFoodDayMayBeCleared } from "./_ledger_safety.js";
 
 import {
   messagesInChronologicalOrder,
-  normalizeMemoryNotes,
+  normalizeMemoryRecords,
   sanitizeMemoryNoteText,
+  selectUniqueMemoryMatch,
   selectChatContextWindow,
 } from "./_chat_memory.js";
 
@@ -2229,62 +2230,213 @@ export async function buildChatContextForModel(email, conversationId, { maxMessa
   };
 }
 
-export async function getMemoryNotes(email) {
-  const e = String(email || "").toLowerCase();
-  if (!e) return [];
+const PROFILE_MEMORY_SELECT =
+  "id,user_email,kind,text,provenance,confidence,source_conversation_id,source_message_id,created_at,updated_at";
+const PROFILE_MEMORY_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function memoryEmail(email) {
+  const value = String(email || "").trim().toLowerCase();
+  if (!value) throw new Error("email required");
+  return value;
+}
+
+function memoryInput({ kind = "fact", text, provenance = "user_ui" } = {}) {
+  const record = normalizeMemoryRecords([
+    { kind, text, provenance, confidence: 1 },
+  ])[0];
+  if (!record || record.kind === "inference" || record.provenance === "inferred") {
+    const error = new Error("Invalid explicit memory.");
+    error.code = "invalid_memory";
+    error.status = 400;
+    throw error;
+  }
+  return record;
+}
+
+function optionalMemorySourceId(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return PROFILE_MEMORY_UUID.test(text) ? text : null;
+}
+
+export async function listProfileMemories(email, { limit = 40 } = {}) {
+  const e = memoryEmail(email);
+  const max = Math.min(40, Math.max(1, Math.floor(Number(limit) || 40)));
+  const rows = await sb("profile_memories", {
+    query: {
+      user_email: `eq.${e}`,
+      select: PROFILE_MEMORY_SELECT,
+      order: "updated_at.desc,id.desc",
+      limit: String(max),
+    },
+  });
+  return normalizeMemoryRecords(rows, { limit: max });
+}
+
+export async function createProfileMemory(
+  email,
+  {
+    kind = "fact",
+    text,
+    provenance = "user_ui",
+    sourceConversationId = null,
+    sourceMessageId = null,
+  } = {}
+) {
+  const e = memoryEmail(email);
+  const record = memoryInput({ kind, text, provenance });
+  const rows = await sb("profile_memories", {
+    method: "POST",
+    body: {
+      user_email: e,
+      kind: record.kind,
+      text: record.text,
+      provenance: record.provenance,
+      confidence: 1,
+      source_conversation_id: optionalMemorySourceId(sourceConversationId),
+      source_message_id: optionalMemorySourceId(sourceMessageId),
+    },
+  });
+  const created = normalizeMemoryRecords(rows, { limit: 1 })[0];
+  if (!created) throw new Error("memory_create_failed");
+  return created;
+}
+
+export async function updateProfileMemory(email, memoryId, { kind, text } = {}) {
+  const e = memoryEmail(email);
+  const id = optionalMemorySourceId(memoryId);
+  if (!id) {
+    const error = new Error("Invalid memory id.");
+    error.code = "invalid_memory_id";
+    error.status = 400;
+    throw error;
+  }
+  const record = memoryInput({ kind, text, provenance: "user_ui" });
+  const rows = await sb("profile_memories", {
+    method: "PATCH",
+    query: { id: `eq.${id}`, user_email: `eq.${e}` },
+    body: { kind: record.kind, text: record.text, confidence: 1 },
+  });
+  const updated = normalizeMemoryRecords(rows, { limit: 1 })[0];
+  if (!updated) {
+    const error = new Error("Memory not found.");
+    error.code = "memory_not_found";
+    error.status = 404;
+    throw error;
+  }
+  return updated;
+}
+
+export async function deleteProfileMemory(email, memoryId) {
+  const e = memoryEmail(email);
+  const id = optionalMemorySourceId(memoryId);
+  if (!id) {
+    const error = new Error("Invalid memory id.");
+    error.code = "invalid_memory_id";
+    error.status = 400;
+    throw error;
+  }
+  const rows = await sb("profile_memories", {
+    method: "DELETE",
+    query: { id: `eq.${id}`, user_email: `eq.${e}` },
+  });
+  return { deleted: Array.isArray(rows) && rows.length === 1, id };
+}
+
+async function legacyMemoryRecords(email) {
   try {
-    const profile = await getProfile(e);
+    const profile = await getProfile(email);
     const prefs =
       profile?.prefs && typeof profile.prefs === "object" ? profile.prefs : {};
-    const notes = Array.isArray(prefs.memory_notes) ? prefs.memory_notes : [];
-    return normalizeMemoryNotes(notes);
+    return normalizeMemoryRecords(
+      Array.isArray(prefs.memory_notes) ? prefs.memory_notes : []
+    ).reverse();
   } catch {
     return [];
   }
 }
 
-export async function saveMemoryNotes(email, notes) {
-  const e = String(email || "").toLowerCase();
-  if (!e) throw new Error("email required");
-  const list = normalizeMemoryNotes(notes);
-  await mergeProfilePrefs(e, { memory_notes: list });
-  return list;
+export async function getMemoryRecords(email) {
+  const e = String(email || "").trim().toLowerCase();
+  if (!e) return [];
+  try {
+    const records = await listProfileMemories(e);
+    if (records.length) return records;
+  } catch {
+    // Compatibility release: production code may briefly precede migration 011.
+  }
+  return legacyMemoryRecords(e);
 }
 
-export async function addMemoryNote(email, note) {
-  const text = sanitizeMemoryNoteText(note);
+export async function getMemoryNotes(email) {
+  const records = await getMemoryRecords(email);
+  return records.slice().reverse().map((record) => record.text);
+}
+
+export async function addMemoryNote(
+  email,
+  note,
+  { kind = "fact", provenance = "user_chat", sourceConversationId, sourceMessageId } = {}
+) {
+  const text = sanitizeMemoryNoteText(note).slice(0, 300);
   if (!text) {
-    return { notes: await getMemoryNotes(email), changed: false };
+    return {
+      memories: await getMemoryRecords(email),
+      notes: await getMemoryNotes(email),
+      changed: false,
+    };
   }
-  const result = await sbRpc("mutate_memory_note", {
-    p_email: String(email || "").trim().toLowerCase(),
-    p_action: "add",
-    p_text: text,
+  const existing = selectUniqueMemoryMatch(await getMemoryRecords(email), text);
+  if (
+    existing.status === "found" &&
+    existing.memory.text.toLocaleLowerCase("en-US") ===
+      text.toLocaleLowerCase("en-US")
+  ) {
+    const memories = await getMemoryRecords(email);
+    return {
+      memories,
+      notes: memories.slice().reverse().map((record) => record.text),
+      changed: false,
+    };
+  }
+  const created = await createProfileMemory(email, {
+    kind,
+    text,
+    provenance,
+    sourceConversationId,
+    sourceMessageId,
   });
+  const memories = await getMemoryRecords(email);
   return {
-    notes: normalizeMemoryNotes(result?.notes || []),
-    changed: result?.changed === true,
+    memory: created,
+    memories,
+    notes: memories.slice().reverse().map((record) => record.text),
+    changed: true,
   };
 }
 
 export async function removeMemoryNote(email, match) {
-  const m = String(match || "").toLowerCase().trim();
-  if (!m) {
+  const records = await getMemoryRecords(email);
+  const selection = selectUniqueMemoryMatch(records, match);
+  if (selection.status !== "found" || !selection.memory.id) {
     return {
-      notes: await getMemoryNotes(email),
+      memories: records,
+      notes: records.slice().reverse().map((record) => record.text),
       removed_count: 0,
       changed: false,
+      ambiguous: selection.status === "ambiguous",
+      match_count: selection.matches?.length || 0,
     };
   }
-  const result = await sbRpc("mutate_memory_note", {
-    p_email: String(email || "").trim().toLowerCase(),
-    p_action: "remove",
-    p_text: m,
-  });
+  const deleted = await deleteProfileMemory(email, selection.memory.id);
+  const memories = await getMemoryRecords(email);
   return {
-    notes: normalizeMemoryNotes(result?.notes || []),
-    removed_count: Math.max(0, Number(result?.removed_count) || 0),
-    changed: result?.changed === true,
+    memories,
+    notes: memories.slice().reverse().map((record) => record.text),
+    removed_count: deleted.deleted ? 1 : 0,
+    changed: deleted.deleted,
+    ambiguous: false,
+    match_count: 1,
   };
 }
 

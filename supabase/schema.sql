@@ -165,6 +165,30 @@ CREATE INDEX IF NOT EXISTS chat_messages_conv_created_idx
   ON chat_messages (conversation_id, created_at ASC);
 
 -- ---------------------------------------------------------------------------
+-- Transparent permanent memory (explicit facts/preferences first)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS profile_memories (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_email TEXT NOT NULL REFERENCES profiles(email) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'fact'
+    CHECK (kind IN ('fact', 'preference', 'inference')),
+  text TEXT NOT NULL CHECK (char_length(btrim(text)) BETWEEN 1 AND 300),
+  provenance TEXT NOT NULL DEFAULT 'user_ui'
+    CHECK (provenance IN ('user_chat', 'user_ui', 'legacy', 'inferred')),
+  confidence NUMERIC(4,3) NOT NULL DEFAULT 1
+    CHECK (confidence >= 0 AND confidence <= 1),
+  source_conversation_id UUID REFERENCES chat_conversations(id) ON DELETE SET NULL,
+  source_message_id UUID REFERENCES chat_messages(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS profile_memories_user_updated_idx
+  ON profile_memories (user_email, updated_at DESC, id DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS profile_memories_user_text_unique_idx
+  ON profile_memories (user_email, lower(btrim(text)));
+
+-- ---------------------------------------------------------------------------
 -- Helpers: ensure category / measure exists (called from API)
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION ensure_category(
@@ -235,6 +259,10 @@ DROP TRIGGER IF EXISTS profiles_touch ON profiles;
 CREATE TRIGGER profiles_touch BEFORE UPDATE ON profiles
   FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 
+DROP TRIGGER IF EXISTS profile_memories_touch ON profile_memories;
+CREATE TRIGGER profile_memories_touch BEFORE UPDATE ON profile_memories
+  FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+
 -- Service role does everything from Vercel; lock down anon
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE categories ENABLE ROW LEVEL SECURITY;
@@ -244,6 +272,7 @@ ALTER TABLE event_measures ENABLE ROW LEVEL SECURITY;
 ALTER TABLE day_totals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_conversations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE profile_memories ENABLE ROW LEVEL SECURITY;
 
 -- No public policies: only service_role (bypasses RLS) via our API.
 -- Intentionally empty RLS = deny all for anon/authenticated keys from browsers.
