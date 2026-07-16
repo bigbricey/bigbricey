@@ -39,7 +39,7 @@ export const APP_INTERFACE_GUIDE = `AUTHORITATIVE APP GUIDE
 - A chart summary states how many recorded points exist and the latest value. Never describe a chart as empty unless live inspection reports zero points.
 - Removing a custom tracker removes the panel after confirmation; it does not delete the recorded measurement history. Changing the layout only moves or resizes panels.
 - Permanent memory is separate from chat history and the health ledger. Only facts or preferences the user explicitly asks to remember are permanent; inferred patterns are not silently saved.
-- Background/theme requests change the page palette or ambient scene. They do not create a dashboard card. Food photos always produce a reviewable draft and never enter the ledger until confirmed. Voice dictation never sends or logs by itself; the user reviews the transcript and presses Send, then normal confirmation rules still apply.`;
+- Background/theme requests change the page palette or ambient scene. They do not create a dashboard card. Food photos always produce a reviewable draft and never enter the ledger until confirmed. Voice dictation only fills an editable draft. Pressing Send handles it like typed text: ordinary additions may commit, while destructive requests pause for confirmation.`;
 
 function cleanText(value, limit = 120) {
   return String(value || "")

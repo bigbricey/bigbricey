@@ -107,7 +107,7 @@ export function capabilitiesForSystemPrompt() {
 APP ACTIONS ARE LIMITED to these native tools (this scopes actions, not conversation):\n${toolLines.join("\n")}
 SCENES you may set: none, rain, snow, desert, ocean, matrix, stars, confetti, fireflies, aurora, mist, neon_city.
 UI-ONLY CONTROLS (not native tools):\n${uiLines.join("\n")}
-Voice dictation only creates an editable draft. Nothing is sent or logged until the user presses Send and completes any required confirmation.
+Voice dictation only creates an editable draft. Pressing Send treats it like typed text: ordinary additions may commit, while destructive requests still require confirmation.
 If user asks "what can you do / abilities", reply with the full friendly list — empty actions.
 Conversation remains broad: answer ordinary questions, jokes, explanations, and casual chat naturally.
 You do NOT invent freeform website code. You pick named themes/scenes/actions we already support.`;
@@ -126,7 +126,7 @@ Here's what you can do here:
 
 ${body}
 
-Chat history is controlled with the History/New buttons in the app; it is not a chat command. Voice dictation makes an editable draft and never sends or logs by itself.
+Chat history is controlled with the History/New buttons in the app; it is not a chat command. Voice dictation makes an editable draft. Ordinary additions may commit after Send; destructive requests still require confirmation.
 
 I cannot (yet): upload photos as live wallpaper, invent unlimited freeform 3D games, browse the open web, or diagnose medical conditions.
 

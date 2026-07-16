@@ -6,6 +6,7 @@ import {
   abilitiesReplyText,
   capabilitiesForSystemPrompt,
 } from "../api/_capabilities.js";
+import { APP_INTERFACE_GUIDE } from "../api/_app_knowledge.js";
 import { DOMAIN_CONTRACT } from "../api/_llm.js";
 
 const unsupportedClaims = /export|watch(?:es)?|feedback|backlog/i;
@@ -64,4 +65,11 @@ test("ongoing goals are not advertised as per-day overrides", () => {
   const copy = `${DOMAIN_CONTRACT}\n${capabilitiesForSystemPrompt()}\n${abilitiesReplyText()}`;
   assert.match(copy, /ongoing[^\n]{0,80}(?:goal|target)|(?:goal|target)[^\n]{0,80}ongoing/i);
   assert.doesNotMatch(copy, /goals?[^\n]{0,100}(?:any day|today[- ]only|today)|(?:any day|today[- ]only)[^\n]{0,100}goals?/i);
+});
+
+test("voice copy distinguishes ordinary sends from destructive confirmation", () => {
+  const copy = `${APP_INTERFACE_GUIDE}\n${capabilitiesForSystemPrompt()}\n${abilitiesReplyText()}`;
+  assert.match(copy, /ordinary addition[^\n]{0,100}(?:commit|saved)/i);
+  assert.match(copy, /destructive[^\n]{0,100}confirmation/i);
+  assert.doesNotMatch(copy, /every (?:change|action)[^\n]{0,100}confirmation/i);
 });
