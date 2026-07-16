@@ -1,3 +1,5 @@
+import { isKnownReadOnlyToolName } from "./_read_tool_repair.js";
+
 function compactObject(value) {
   return Object.fromEntries(
     Object.entries(value || {}).filter(([, item]) => item !== undefined)
@@ -243,7 +245,7 @@ export function continuationPlanForNativeReads({
     };
   }
 
-  const allowedTrackerIds = (Array.isArray(
+  const inspectedTrackerIds = (Array.isArray(
     sourceData?.current_dashboard?.trackers
   )
     ? sourceData.current_dashboard.trackers
@@ -251,10 +253,23 @@ export function continuationPlanForNativeReads({
   )
     .map((tracker) => String(tracker?.id || "").trim())
     .filter(Boolean);
-  if (!allowedTrackerIds.length) {
+  if (!inspectedTrackerIds.length) {
     return emptyContinuationPlan(sourceData, {
       kind: policy.kind,
       blockedReason: "empty_read",
+    });
+  }
+  const focusedTrackerId = String(
+    sourceData?.focus_resolution?.tracker_id || ""
+  ).trim();
+  if (
+    sourceData?.focus_resolution?.status !== "matched" ||
+    !focusedTrackerId ||
+    !inspectedTrackerIds.includes(focusedTrackerId)
+  ) {
+    return emptyContinuationPlan(sourceData, {
+      kind: policy.kind,
+      blockedReason: "ambiguous_read",
     });
   }
 
@@ -262,7 +277,7 @@ export function continuationPlanForNativeReads({
     kind: policy.kind,
     allowedToolNames: [...policy.allowedToolNames],
     allowedSavedFoodIds: [],
-    allowedTrackerIds,
+    allowedTrackerIds: [focusedTrackerId],
     sourceData,
     blockedReason: null,
   };
@@ -551,15 +566,18 @@ export function classifyNativeToolExecution({
 }
 
 /** A malformed or disallowed provider tool call always has the same safe result. */
-export function invalidNativeToolExecution() {
+export function invalidNativeToolExecution({ toolName = "" } = {}) {
+  const message = isKnownReadOnlyToolName(toolName)
+    ? "I couldn't safely read that part of the app. Nothing changed."
+    : INVALID_NATIVE_TOOL_MESSAGE;
   return {
     status: "error",
     changed: false,
-    notes: [INVALID_NATIVE_TOOL_MESSAGE],
+    notes: [message],
     data: null,
     error: {
       code: "INVALID_TOOL_CALL",
-      message: INVALID_NATIVE_TOOL_MESSAGE,
+      message,
       retryable: false,
     },
   };

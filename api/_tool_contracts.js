@@ -261,6 +261,15 @@ function exactlyOne(args, keys) {
 
 function validateArguments(name, input) {
   const args = { ...input };
+  // These two booleans authorize a narrowly bounded read -> action
+  // continuation. Missing or malformed values must fail closed to a plain
+  // read, not make an otherwise harmless read tool unusable.
+  if (name === "inspect_app" && args.allow_removal !== true) {
+    args.allow_removal = false;
+  }
+  if (name === "list_saved_foods" && args.for_logging !== true) {
+    args.for_logging = false;
+  }
   const tool = BIGBRICEY_TOOLS.find((item) => item.function.name === name);
   const allowed = Object.keys(tool.function.parameters.properties || {});
   for (const key of Object.keys(args)) {

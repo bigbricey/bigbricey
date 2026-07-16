@@ -59,12 +59,11 @@ test("inspect_app is a bounded read-only tool for exact interface questions", ()
     focus: "the Weight (30-Day) panel below chat",
     allow_removal: true,
   });
-  assert.equal(
-    validateNativeToolCall(
-      call("inspect_app", { focus: "weight" })
-    ).error.code,
-    "REQUIRED_FIELD"
+  const omittedRemovalGate = validateNativeToolCall(
+    call("inspect_app", { focus: "weight" })
   );
+  assert.equal(omittedRemovalGate.ok, true);
+  assert.equal(omittedRemovalGate.arguments.allow_removal, false);
 
   assert.equal(
     validateNativeToolCall(
@@ -85,12 +84,11 @@ test("inspect_app is a bounded read-only tool for exact interface questions", ()
     ).error.code,
     "UNKNOWN_FIELD"
   );
-  assert.equal(
-    validateNativeToolCall(
-      call("inspect_app", { focus: "weight", allow_removal: "yes" })
-    ).error.code,
-    "INVALID_TYPE"
+  const malformedRemovalGate = validateNativeToolCall(
+    call("inspect_app", { focus: "weight", allow_removal: "yes" })
   );
+  assert.equal(malformedRemovalGate.ok, true);
+  assert.equal(malformedRemovalGate.arguments.allow_removal, false);
 });
 
 test("native catalog exposes only the allowlisted core tools with closed schemas", () => {
@@ -345,24 +343,22 @@ test("saved-food log/list/delete contracts are strict and deletion needs confirm
   assert.equal(list.ok, true);
   assert.equal(list.arguments.for_logging, true);
   assert.equal(list.policy.mutates, false);
-  assert.equal(
-    validateNativeToolCall(
-      call("list_saved_foods", { query: "shake" })
-    ).error.code,
-    "REQUIRED_FIELD"
+  const omittedLoggingGate = validateNativeToolCall(
+    call("list_saved_foods", { query: "shake" })
   );
+  assert.equal(omittedLoggingGate.ok, true);
+  assert.equal(omittedLoggingGate.arguments.for_logging, false);
   assert.equal(
     validateNativeToolCall(
       call("list_saved_foods", { limit: 51, for_logging: false })
     ).error.code,
     "OUT_OF_RANGE"
   );
-  assert.equal(
-    validateNativeToolCall(
-      call("list_saved_foods", { for_logging: "yes" })
-    ).error.code,
-    "INVALID_TYPE"
+  const malformedLoggingGate = validateNativeToolCall(
+    call("list_saved_foods", { for_logging: "yes" })
   );
+  assert.equal(malformedLoggingGate.ok, true);
+  assert.equal(malformedLoggingGate.arguments.for_logging, false);
 
   const deletion = validateNativeToolCall(
     call("delete_saved_food", { saved_food_id: "saved_1" })

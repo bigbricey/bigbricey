@@ -99,6 +99,7 @@ test("the prompt dashboard manifest stays compact without losing the newest exac
 test("live inspection reports the exact one-point weight chart instead of inventing a wait period", async () => {
   const inspection = await buildAppInspection({
     currentDate: "2026-07-15",
+    focus: "Weight (30-Day) card below chat",
     scene: "fireflies",
     theme: { preset: "forest" },
     layout: {
@@ -142,6 +143,38 @@ test("live inspection reports the exact one-point weight chart instead of invent
   assert.equal(tracker.summary.status, "showing_recorded_data");
   assert.equal(inspection.current_dashboard.scene, "fireflies");
   assert.equal(inspection.current_dashboard.theme.preset, "forest");
+  assert.deepEqual(inspection.focus_resolution, {
+    focus: "Weight (30-Day) card below chat",
+    status: "matched",
+    tracker_id: "c_weight_30d",
+  });
+});
+
+test("inspection refuses to focus one tracker when the user's reference is ambiguous", async () => {
+  const inspection = await buildAppInspection({
+    currentDate: "2026-07-15",
+    focus: "weight chart",
+    trackers: [
+      {
+        id: "c_weight_7d",
+        kind: "chart",
+        title: "Weight (7-Day)",
+        measure_id: "weight_lb",
+        days: 7,
+      },
+      {
+        id: "c_weight_30d",
+        kind: "chart",
+        title: "Weight (30-Day)",
+        measure_id: "weight_lb",
+        days: 30,
+      },
+    ],
+    loadMeasureSeries: async () => [],
+  });
+
+  assert.equal(inspection.focus_resolution.status, "ambiguous");
+  assert.equal(inspection.focus_resolution.tracker_id, null);
 });
 
 test("live inspection distinguishes a truly empty chart from one that has data", async () => {

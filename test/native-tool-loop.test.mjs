@@ -389,6 +389,10 @@ test("tracker removal continuation is bound to one exact inspected tracker id", 
       {
         status: "success",
         data: {
+          focus_resolution: {
+            status: "matched",
+            tracker_id: "c_weight",
+          },
           current_dashboard: {
             trackers: [
               { id: "c_weight", title: "Weight" },
@@ -400,7 +404,7 @@ test("tracker removal continuation is bound to one exact inspected tracker id", 
     ],
   });
 
-  assert.deepEqual(plan.allowedTrackerIds, ["c_weight", "c_steps"]);
+  assert.deepEqual(plan.allowedTrackerIds, ["c_weight"]);
   assert.equal(
     selectNativeContinuation({
       plan,
@@ -414,6 +418,7 @@ test("tracker removal continuation is bound to one exact inspected tracker id", 
   );
   for (const args of [
     { match: "weight" },
+    { id: "c_steps" },
     { id: "c_not_inspected" },
   ]) {
     assert.equal(
@@ -428,6 +433,35 @@ test("tracker removal continuation is bound to one exact inspected tracker id", 
       false
     );
   }
+});
+
+test("tracker removal continuation fails closed without one focused inspected id", () => {
+  const plan = continuationPlanForNativeReads({
+    initialEvaluations: [
+      validated("inspect_app", {
+        focus: "weight chart",
+        allow_removal: true,
+      }),
+    ],
+    initialResults: [
+      {
+        status: "success",
+        data: {
+          focus_resolution: { status: "ambiguous", tracker_id: null },
+          current_dashboard: {
+            trackers: [
+              { id: "c_weight_7d", title: "Weight (7-Day)" },
+              { id: "c_weight_30d", title: "Weight (30-Day)" },
+            ],
+          },
+        },
+      },
+    ],
+  });
+
+  assert.equal(plan.kind, "tracker_removal");
+  assert.deepEqual(plan.allowedTrackerIds, []);
+  assert.equal(plan.blockedReason, "ambiguous_read");
 });
 
 test("authorized intent stays unresolved when its read cannot safely authorize a write", () => {

@@ -86,7 +86,13 @@ import {
   selectVerifiedNativeToolReply,
   unresolvedContinuationReply,
 } from "./_native_tool_loop.js";
+import {
+  isKnownReadOnlyToolName,
+  repairInvalidReadTurn,
+  shouldRepairInvalidReadCalls,
+} from "./_read_tool_repair.js";
 import { executeSavedFoodContinuation } from "./_saved_food_continuation.js";
+import { removeDashboardTrackers } from "./_tracker_mutation.js";
 import {
   createToolConfirmationToken,
   verifyToolConfirmationToken,
@@ -560,6 +566,7 @@ export default async function handler(req, res) {
         try {
           toolData = await buildAppInspection({
             currentDate: requestedDay,
+            focus: action.focus,
             scene: sceneOut ?? sceneSnap ?? "none",
             theme: themeOut ?? themeSnap ?? null,
             layout: layoutOut ?? layoutSnap ?? null,
@@ -1324,23 +1331,16 @@ export default async function handler(req, res) {
             )
               .toLowerCase()
               .replace(/[^a-z0-9_]+/g, "_");
-            const before = boxes.length;
-            boxes = boxes.filter((b) => {
-              const id = String(b.id || "").toLowerCase();
-              const mid = String(b.measure_id || "").toLowerCase();
-              const title = String(b.title || "")
-                .toLowerCase()
-                .replace(/[^a-z0-9_]+/g, "_")
-                .replace(/^_+|_+$/g, "");
-              return (
-                id !== key &&
-                mid !== key &&
-                title !== key &&
-                id !== "c_" + key &&
-                !title.includes(key)
-              );
+            const removal = removeDashboardTrackers(boxes, {
+              selector: action.id || key,
+              exactIdOnly: action.__tool_name === "remove_tracker",
             });
-            if (boxes.length === before) {
+            boxes = removal.trackers;
+            const nativeExactRemoval = action.__tool_name === "remove_tracker";
+            if (
+              removal.removedCount === 0 ||
+              (nativeExactRemoval && removal.removedCount !== 1)
+            ) {
               notes.push(`No custom box matched “${key}”.`);
               continue;
             }
@@ -2320,7 +2320,9 @@ export default async function handler(req, res) {
       .find(Boolean) || null;
     for (const evaluation of nativeEvaluations) {
       if (!evaluation?.ok) {
-        verifiedToolResults.push(invalidNativeToolExecution());
+        verifiedToolResults.push(
+          invalidNativeToolExecution({ toolName: evaluation?.tool_name })
+        );
         continue;
       }
       if (evaluation.status === "needs_confirmation") {
@@ -3682,7 +3684,7 @@ async function interpretIntent(text, rows, ctx = {}) {
   }
 
   try {
-    const turn = await callBuddyFirstPass({
+    let turn = await callBuddyFirstPass({
       systemPrompt: system,
       history: priorCapped,
       userText: text,
@@ -3698,7 +3700,7 @@ async function interpretIntent(text, rows, ctx = {}) {
         purpose: "chat",
       }).catch(() => {});
     }
-    const evaluations = turn.toolCalls.map((call) => {
+    let evaluations = turn.toolCalls.map((call) => {
       const checked = validateNativeToolCall(call);
       if (checked.ok) {
         if (
@@ -3716,15 +3718,55 @@ async function interpretIntent(text, rows, ctx = {}) {
         tool_name: String(call?.function?.name || "").slice(0, 100),
       };
     });
+    if (shouldRepairInvalidReadCalls(evaluations)) {
+      try {
+        await reserveAdditionalLlmTokens(ctx.email);
+        const repair = await repairInvalidReadTurn({
+          evaluations,
+          runTurn: ({ tools }) =>
+            callBuddyFirstPass({
+              systemPrompt: system,
+              history: priorCapped,
+              userText: text,
+              tools,
+            }),
+        });
+        if (ctx.email && repair.turn?.output) {
+          logLlmUsage(
+            ctx.email,
+            usageForMetering(repair.turn.output.usage),
+            {
+              model: repair.turn.output.model,
+              provider: repair.turn.output.provider,
+              conversation_id: ctx.conversationId || null,
+              purpose: "chat_read_repair",
+            }
+          ).catch(() => {});
+        }
+        if (repair.repaired) {
+          turn = repair.turn;
+          evaluations = repair.evaluations;
+        }
+      } catch {
+        // Keep the original failed-closed evaluations and truthful read error.
+      }
+    }
     const valid = evaluations.filter((evaluation) => evaluation.ok);
     const allCallsValid = evaluations.every((evaluation) => evaluation.ok);
     const executableCalls = allCallsValid ? valid : [];
     const actions = executableCalls
       .map(actionFromValidatedToolCall)
       .filter(Boolean);
+    const invalidCallsAreReadOnly =
+      evaluations.length > 0 &&
+      evaluations.every((evaluation) =>
+        isKnownReadOnlyToolName(evaluation?.tool_name)
+      );
     const reply = allCallsValid
       ? turn.reply || ""
-      : "I couldn't safely use that app action. Nothing changed.";
+      : invalidCallsAreReadOnly
+        ? "I couldn't safely read that part of the app. Nothing changed."
+        : "I couldn't safely use that app action. Nothing changed.";
     return {
       reply,
       actions,

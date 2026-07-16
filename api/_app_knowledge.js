@@ -67,6 +67,62 @@ function compactObject(value) {
   );
 }
 
+const FOCUS_STOP_WORDS = new Set([
+  "a", "an", "the", "this", "that", "card", "panel", "box", "chart",
+  "tracker", "thing", "below", "under", "above", "chat", "please",
+  "remove", "delete", "get", "rid", "of", "current", "actual", "show",
+  "shows", "what", "does", "exactly", "day",
+]);
+
+function referenceWords(value) {
+  return cleanText(value, 500)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function resolveTrackerFocus(trackers, focus) {
+  const cleanFocus = cleanText(focus, 500);
+  const focusWords = referenceWords(cleanFocus);
+  const meaningful = focusWords.filter((word) => !FOCUS_STOP_WORDS.has(word));
+  if (!cleanFocus || !meaningful.length) {
+    return { focus: cleanFocus, status: "unresolved", tracker_id: null };
+  }
+
+  const focusReference = focusWords.join(" ");
+  const matches = trackers.filter((tracker) => {
+    const references = [
+      tracker.id,
+      String(tracker.id || "").replace(/^c_/, ""),
+      tracker.title,
+      tracker.measure_id,
+      ...(Array.isArray(tracker.measures) ? tracker.measures : []),
+    ]
+      .map((value) => referenceWords(value).join(" "))
+      .filter(Boolean);
+    if (
+      references.some(
+        (reference) =>
+          focusReference === reference ||
+          focusReference.includes(reference) ||
+          reference.includes(focusReference)
+      )
+    ) {
+      return true;
+    }
+    const candidateWords = new Set(references.flatMap(referenceWords));
+    return meaningful.every((word) => candidateWords.has(word));
+  });
+
+  return {
+    focus: cleanFocus,
+    status: matches.length === 1 ? "matched" : matches.length ? "ambiguous" : "not_found",
+    tracker_id: matches.length === 1 ? matches[0].id : null,
+  };
+}
+
 function safeTheme(theme) {
   if (!theme || typeof theme !== "object" || Array.isArray(theme)) return null;
   const out = {};
@@ -258,6 +314,7 @@ async function loadSeriesInBatches(requests, loadMeasureSeries) {
 
 export async function buildAppInspection({
   currentDate,
+  focus = "",
   scene = "none",
   theme = null,
   layout = null,
@@ -342,6 +399,7 @@ export async function buildAppInspection({
     },
     interface_guide: APP_INTERFACE_GUIDE,
     core_today_panels: CORE_TODAY_PANELS,
+    focus_resolution: resolveTrackerFocus(inspectedTrackers, focus),
     current_dashboard: {
       date: day,
       scene: cleanText(scene || "none", 40) || "none",
