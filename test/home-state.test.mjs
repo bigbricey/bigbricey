@@ -46,6 +46,10 @@ test("home view states use bounded truthful copy", async () => {
     }
   );
   assert.equal(api.homeView({ state: "thinking" }).detail, "Reading your request.");
+  assert.equal(
+    api.homeView({ state: "listening" }).detail,
+    "Speak naturally. Review before sending."
+  );
   assert.equal(api.homeView({ state: "verified" }).detail, "Verified in your log.");
   assert.equal(
     api.homeView({ state: "reviewing" }).detail,
@@ -80,6 +84,10 @@ test("controller writes one state to the compact companion and body dataset", as
   api.set("thinking", { itemCount: 3 });
   assert.equal(body.dataset.homeState, "thinking");
   assert.equal(companion.dataset.state, "thinking");
+
+  api.set("listening", { itemCount: 3 });
+  assert.equal(body.dataset.homeState, "listening");
+  assert.equal(label.textContent, "Listening");
 
   api.set("verified", { itemCount: 4 });
   assert.equal(body.dataset.homeState, "verified");

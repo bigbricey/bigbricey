@@ -8,6 +8,7 @@
   const VALID_STATES = new Set([
     "ready",
     "tracking",
+    "listening",
     "thinking",
     "verified",
     "reviewing",
@@ -22,6 +23,10 @@
     thinking: Object.freeze({
       label: "Working",
       detail: "Reading your request.",
+    }),
+    listening: Object.freeze({
+      label: "Listening",
+      detail: "Speak naturally. Review before sending.",
     }),
     verified: Object.freeze({
       label: "Saved",

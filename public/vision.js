@@ -535,9 +535,10 @@
     close?.addEventListener("click", () => setTray(false));
     tray.addEventListener("click", (event) => event.stopPropagation());
     tray.querySelectorAll("[data-vision-mode]").forEach((choice) => {
-      choice.addEventListener("click", () => {
+      choice.addEventListener("click", async () => {
         pendingMode = choice.dataset.visionMode;
         setTray(false);
+        await adapter.stopVoice?.();
         input.value = "";
         input.click();
       });

@@ -29,6 +29,7 @@ test("system and user capability copy claim only supported product abilities", (
     assert.match(copy, /layout/i);
     assert.match(copy, /memory|remember/i);
     assert.match(copy, /chat history/i);
+    assert.match(copy, /voice|dictat|microphone/i);
   }
 });
 
@@ -46,13 +47,17 @@ test("catalog distinguishes native actions from UI-only chat history", () => {
     "scenes",
     "memory",
     "chat_history",
+    "voice_dictation",
   ]);
 
   const history = CAPABILITY_CATALOG.find((item) => item.id === "chat_history");
   const normalChat = CAPABILITY_CATALOG.find((item) => item.id === "normal_chat");
+  const voice = CAPABILITY_CATALOG.find((item) => item.id === "voice_dictation");
   assert.equal(normalChat?.kind, "conversation");
   assert.equal(history?.kind, "ui");
+  assert.equal(voice?.kind, "ui");
   assert.doesNotMatch(capabilitiesForSystemPrompt(), /chat_history:[^\n]*(?:tool|action)/i);
+  assert.doesNotMatch(capabilitiesForSystemPrompt(), /voice_dictation:[^\n]*(?:tool|action)/i);
 });
 
 test("ongoing goals are not advertised as per-day overrides", () => {

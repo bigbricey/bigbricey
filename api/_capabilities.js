@@ -83,6 +83,13 @@ export const CAPABILITY_CATALOG = [
     examples: ["use History or New"],
     kind: "ui",
   },
+  {
+    id: "voice_dictation",
+    title: "Voice dictation",
+    summary: "Use the microphone to turn speech into an editable message draft, then review it and press Send.",
+    examples: ["tap the microphone and speak naturally"],
+    kind: "ui",
+  },
 ];
 
 /** Compact block for every system prompt */
@@ -93,10 +100,14 @@ export function capabilitiesForSystemPrompt() {
   const toolLines = CAPABILITY_CATALOG.filter(
     (capability) => capability.kind === "tool"
   ).map((c) => `- ${c.id}: ${c.title} — ${c.summary}`);
+  const uiLines = CAPABILITY_CATALOG.filter(
+    (capability) => capability.kind === "ui"
+  ).map((c) => `- ${c.id}: ${c.title} — ${c.summary}`);
   return `CONVERSATION: ${conversation?.summary || "Talk naturally and answer normal questions."}
 APP ACTIONS ARE LIMITED to these native tools (this scopes actions, not conversation):\n${toolLines.join("\n")}
 SCENES you may set: none, rain, snow, desert, ocean, matrix, stars, confetti, fireflies, aurora, mist, neon_city.
-UI-ONLY: Chat history is managed with the History/New controls; do not claim a tool changed conversations.
+UI-ONLY CONTROLS (not native tools):\n${uiLines.join("\n")}
+Voice dictation only creates an editable draft. Nothing is sent or logged until the user presses Send and completes any required confirmation.
 If user asks "what can you do / abilities", reply with the full friendly list — empty actions.
 Conversation remains broad: answer ordinary questions, jokes, explanations, and casual chat naturally.
 You do NOT invent freeform website code. You pick named themes/scenes/actions we already support.`;
@@ -115,7 +126,7 @@ Here's what you can do here:
 
 ${body}
 
-Chat history is controlled with the History/New buttons in the app; it is not a chat command.
+Chat history is controlled with the History/New buttons in the app; it is not a chat command. Voice dictation makes an editable draft and never sends or logs by itself.
 
 I cannot (yet): upload photos as live wallpaper, invent unlimited freeform 3D games, browse the open web, or diagnose medical conditions.
 

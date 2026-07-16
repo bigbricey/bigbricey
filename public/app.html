@@ -15,7 +15,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
   <title>BigBricey</title>
-  <link rel="stylesheet" href="/styles.css?v=20260715b" />
+  <link rel="stylesheet" href="/styles.css?v=20260716a" />
 </head>
 <body class="tab-today">
   <div class="app-shell">
@@ -124,11 +124,15 @@
           <button id="photoBtn" class="composer-photo-btn" type="button" aria-label="Add a food photo" aria-controls="photoModeTray" aria-expanded="false" title="Add a food photo">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l1.5-2h7L17 7h3v12H4z" /><circle cx="12" cy="13" r="3.5" /></svg>
           </button>
+          <button id="voiceBtn" class="composer-photo-btn composer-voice-btn" type="button" aria-label="Start voice dictation" aria-pressed="false" title="Dictate a message" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6" /></svg>
+          </button>
           <label class="sr-only" for="foodInput">Message BigBricey</label>
           <textarea id="foodInput" rows="2" enterkeyhint="send" autocomplete="off"
             placeholder="Message BigBricey…"
             autofocus></textarea>
           <button id="addBtn" type="button" aria-label="Send message">Send</button>
+          <span id="voiceStatus" class="sr-only" role="status" aria-live="polite"></span>
         </div>
         <p id="addMsg" class="msg" hidden></p>
       </section>
@@ -693,8 +697,9 @@
   <script src="/boxes.js?v=20260713c"></script>
   <script src="/food-storage.js?v=20260714a"></script>
   <script src="/chat-format.js?v=20260714b"></script>
-  <script src="/vision.js?v=20260714d"></script>
-  <script src="/home.js?v=20260715a"></script>
-  <script src="/app.js?v=20260715b"></script>
+  <script src="/vision.js?v=20260716a"></script>
+  <script src="/home.js?v=20260716a"></script>
+  <script src="/voice.js?v=20260716a"></script>
+  <script src="/app.js?v=20260716a"></script>
 </body>
 </html>

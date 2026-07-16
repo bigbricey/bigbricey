@@ -41,6 +41,7 @@ const DEFAULT_GOALS = {
 let dayGoals = { ...DEFAULT_GOALS };
 let pendingDeleteId = null;
 let sending = false;
+let sendPreparing = false;
 let conversationId = null;
 let pendingToolConfirmation = null;
 let daySelectionEpoch = 0;
@@ -59,6 +60,7 @@ async function init() {
   configureAccountStorage(window.__ntUser?.email);
   rows = loadLocal(selectedDay);
   window.BBHome?.init({ itemCount: rows.length });
+  initVoiceInput();
   initVisionCapture();
   wireMemoryCenter();
 
@@ -232,6 +234,7 @@ function personalizeWelcome() {
 
 function setTab(tab) {
   activeTab = tab || "today";
+  if (activeTab !== "today") window.BBVoice?.abort?.("tab_change");
   document.body.className = "tab-" + activeTab;
   ["today", "trends", "goals", "you"].forEach((t) => {
     const panel = document.getElementById(
@@ -374,7 +377,37 @@ function initVisionCapture() {
     getContext: visionContext,
     contextMatches: visionContextMatches,
     commitRows: commitVisionRows,
+    stopVoice: () => window.BBVoice?.abort?.("photo"),
   });
+}
+
+function restoreHomeAfterVoice() {
+  if (pendingToolConfirmation) {
+    window.BBHome?.set("reviewing", { itemCount: rows.length });
+  } else {
+    window.BBHome?.render({ itemCount: rows.length });
+  }
+}
+
+function initVoiceInput() {
+  window.BBVoice?.init({
+    input: foodInput,
+    button: document.getElementById("voiceBtn"),
+    status: document.getElementById("voiceStatus"),
+    onState(change) {
+      if (change?.state === "listening") {
+        window.BBHome?.set("listening", { itemCount: rows.length });
+      } else if (change?.state === "error") {
+        window.BBHome?.set("error", { itemCount: rows.length });
+      } else {
+        restoreHomeAfterVoice();
+      }
+    },
+  });
+  document.querySelectorAll('a[href="/api/auth/logout"]').forEach((link) => {
+    link.addEventListener("click", () => window.BBVoice?.abort?.("logout"));
+  });
+  window.addEventListener("pagehide", () => window.BBVoice?.abort?.("pagehide"));
 }
 
 function updateDayLabel() {
@@ -394,6 +427,7 @@ async function selectDay(day) {
     updateDayLabel();
     return;
   }
+  await window.BBVoice?.abort?.("day_change");
   const selectionEpoch = ++daySelectionEpoch;
   const account = storageAccount;
   const priorDay = selectedDay;
@@ -1842,6 +1876,7 @@ async function loadConversationList() {
       btn.addEventListener("click", async () => {
         const id = btn.getAttribute("data-conv");
         if (!id) return;
+        await window.BBVoice?.abort?.("conversation_change");
         const requestAccount = storageAccount;
         const requestLoadEpoch = ++conversationLoadEpoch;
         btn.disabled = true;
@@ -1894,6 +1929,7 @@ function wireChatHistoryUi() {
     if (panel) panel.hidden = true;
   });
   document.getElementById("btnChatNew")?.addEventListener("click", async () => {
+    await window.BBVoice?.abort?.("conversation_change");
     const requestAccount = storageAccount;
     const priorConversationId = conversationId;
     const priorConversationEpoch = conversationEpoch;
@@ -1936,6 +1972,13 @@ function wireChatHistoryUi() {
 }
 
 async function onSend() {
+  if (sending || sendPreparing) return;
+  sendPreparing = true;
+  try {
+    await window.BBVoice?.stopAndSettle?.();
+  } finally {
+    sendPreparing = false;
+  }
   const text = foodInput.value.trim();
   if (!text || sending) return;
   conversationLoadEpoch += 1;
