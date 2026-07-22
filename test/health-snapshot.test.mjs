@@ -78,6 +78,25 @@ test("Health Snapshot distinguishes logged days from missing days and never fill
   assert.equal(document.nutrition_patterns[0].missing_is_zero, false);
 });
 
+test("Health Snapshot database summaries use the latest same-day body-state reading", async () => {
+  const sql = await readFile(
+    new URL(
+      "../supabase/migration_014_health_snapshot_metric_semantics.sql",
+      import.meta.url
+    ),
+    "utf8"
+  );
+  assert.match(sql, /state_measure_ids[\s\S]*'weight_lb'/i);
+  assert.match(
+    sql,
+    /row_number\(\) OVER \([\s\S]*PARTITION BY em\.day_key, em\.measure_id[\s\S]*ORDER BY e\.occurred_at DESC/i
+  );
+  assert.match(sql, /e\.deleted_at IS NULL/i);
+  assert.match(sql, /e\.account_id = p_account_id/i);
+  assert.match(sql, /dt\.measure_id NOT IN \(SELECT measure_id FROM state_measure_ids\)/i);
+  assert.match(sql, /WHERE ranked\.reading_rank = 1/i);
+});
+
 test("Health Snapshot reports observational changes, provenance, context, and limits without diagnosing", () => {
   const period = resolveHealthSnapshotPeriod("10w", { to: "2026-07-22" });
   const document = buildHealthSnapshotDocument(fixture, { period, nickname: "Ace" });
