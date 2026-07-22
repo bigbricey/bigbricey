@@ -76,6 +76,24 @@ test("mutation audit, rate limits, and browser-role denial are migration-enforce
   assert.match(sql, /REVOKE ALL ON TABLE public\.%I FROM PUBLIC, anon, authenticated/);
 });
 
+test("account deletion can cascade without the audit trigger recreating child rows", async () => {
+  const sql = await readFile(
+    new URL(
+      "../supabase/migration_015_account_deletion_audit.sql",
+      import.meta.url
+    ),
+    "utf8"
+  );
+  assert.match(sql, /TG_OP = 'DELETE' AND NOT EXISTS/i);
+  assert.match(sql, /SELECT 1 FROM public\.accounts AS account/i);
+  assert.match(sql, /WHERE account\.id = v_account_id/i);
+  assert.match(sql, /RETURN OLD/i);
+  assert.match(
+    sql,
+    /REVOKE ALL ON FUNCTION public\.audit_account_mutation\(\)[\s\S]*FROM PUBLIC, anon, authenticated/i
+  );
+});
+
 test("export and deletion are explicit requests; deletion never runs automatically", async () => {
   const route = await readFile(new URL("../api/_data_rights_endpoint.js", import.meta.url), "utf8");
   const ui = await readFile(new URL("../public/app.html", import.meta.url), "utf8");
