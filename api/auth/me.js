@@ -1,5 +1,6 @@
 import { getSession, requireUser, sendJson } from "../_auth.js";
 import { readBody } from "../_lib.js";
+import { normalizeCompanionSettings } from "../_companion_settings.js";
 import { getMembership, touchLastSeen } from "../_members.js";
 import {
   ensureProfile,
@@ -77,6 +78,9 @@ export default async function handler(req, res) {
     prefs.theme && typeof prefs.theme === "object" ? prefs.theme : null;
   const boxes = Array.isArray(prefs.boxes) ? prefs.boxes : [];
   const scene = prefs.scene || null;
+  const companionSettings = normalizeCompanionSettings(
+    prefs.assistant_settings
+  );
 
   return sendJson(res, 200, {
     authenticated: true,
@@ -94,5 +98,6 @@ export default async function handler(req, res) {
     theme,
     boxes,
     scene,
+    companion_settings: companionSettings,
   });
 }

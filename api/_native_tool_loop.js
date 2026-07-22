@@ -84,6 +84,9 @@ export function actionFromValidatedToolCall(call) {
       action = { type: "set_goals", ...args, eating_style: args.style };
       delete action.style;
       break;
+    case "set_companion_settings":
+      action = { type: "set_companion_settings", ...args };
+      break;
     case "log_workout":
       action = {
         type: "log_activity",

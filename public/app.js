@@ -885,12 +885,12 @@ async function loadWatches() {
     const r = await fetch("/api/log?watches=1");
     if (!r.ok) return;
     const d = await r.json();
-    renderWatches(d.statuses || []);
+    renderWatches(d.statuses || [], d.suggestions || []);
   } catch {
     /* ok */
   }
 }
-function renderWatches(statuses) {
+function renderWatches(statuses, suggestions = []) {
   applyGoalsFromWatches(statuses);
   render(); // refresh rings with goal numbers
 
@@ -914,19 +914,8 @@ function renderWatches(statuses) {
   if (a) a.innerHTML = html;
   if (b) b.innerHTML = html;
 
-  const bad = (statuses || []).filter((s) => !s.ok && s.days_with_data > 0);
   const banner = document.getElementById("alertBanner");
-  if (banner) {
-    if (bad.length) {
-      banner.hidden = false;
-      banner.textContent = bad
-        .slice(0, 2)
-        .map((s) => s.message || s.label)
-        .join(" · ");
-    } else {
-      banner.hidden = true;
-    }
-  }
+  window.BBCompanion?.renderSuggestionBanner(banner, suggestions);
 }
 
 async function saveWatchFromForm() {
@@ -1270,6 +1259,10 @@ async function requireAuth() {
       return false;
     }
     window.__ntUser = d;
+    window.BBCompanion?.init(
+      d.companion_settings,
+      d.account_id || d.email
+    );
     // Prefer onboarding-derived daily goals for rings
     if (d.goals && typeof d.goals === "object") {
       dayGoals = {
@@ -2127,6 +2120,15 @@ async function onSend() {
       window.BBScenes.apply(data.scene, { persist: true, theme: !data.theme });
       window.__ntUser = window.__ntUser || {};
       window.__ntUser.scene = data.scene;
+    }
+    if (
+      storageAccount === requestAccount &&
+      data.companion_settings &&
+      window.BBCompanion
+    ) {
+      window.__ntUser = window.__ntUser || {};
+      window.__ntUser.companion_settings = data.companion_settings;
+      window.BBCompanion.apply(data.companion_settings);
     }
     // Do NOT guess scenes from chat text on the client — that re-applied snow
     // whenever someone *mentioned* snow (e.g. "how you made snow").

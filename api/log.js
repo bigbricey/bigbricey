@@ -25,6 +25,10 @@ import {
 } from "./_supabase.js";
 import { buildStatsReport } from "./_report.js";
 import {
+  buildGroundedSuggestions,
+  normalizeCompanionSettings,
+} from "./_companion_settings.js";
+import {
   isAdmin,
   listFeedback,
   markFeedback,
@@ -141,10 +145,31 @@ export default async function handler(req, res) {
       await seedDefaultWatches(user.email);
       const targets = await listWatchTargets(user.email);
       const evaluated = await evaluateWatches(user.email);
+      const profile = await getProfile(user.email);
+      const timezone = String(profile?.timezone || "America/New_York");
+      let localTime = "12:00";
+      try {
+        localTime = new Intl.DateTimeFormat("en-GB", {
+          timeZone: timezone,
+          hour: "2-digit",
+          minute: "2-digit",
+          hourCycle: "h23",
+        }).format(new Date());
+      } catch {
+        /* noon preserves normal behavior if an invalid legacy timezone exists */
+      }
+      const suggestions = buildGroundedSuggestions({
+        settings: normalizeCompanionSettings(
+          profile?.prefs?.assistant_settings
+        ),
+        statuses: evaluated.statuses,
+        localTime,
+      });
       return sendJson(res, 200, {
         targets,
         statuses: evaluated.statuses,
         newAlerts: evaluated.newAlerts,
+        suggestions,
       });
     }
 

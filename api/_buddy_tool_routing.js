@@ -59,6 +59,7 @@ TOOL RULES:
 - add_food is write-only. Use it only for a clear request to put food in the diary.
 - A messy sentence about the average size or nutrition of one sweet potato, even if it mentions what it would “add” to macros, is lookup_food/read unless the user directly says to log it.
 - “Log 3/4 lb sweet potato” is write_explicit/add_food.
+- “Back off on reminders,” “be more direct,” or a nickname request is write_explicit/set_companion_settings.
 - For a vague named saved meal that the user explicitly wants logged, start with list_saved_foods so the exact private item can be verified.
 - Do not choose tools merely because they exist. Return an empty tool list for ordinary conversation.
 

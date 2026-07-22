@@ -4,6 +4,10 @@
  */
 
 import { assertFoodDayMayBeCleared } from "./_ledger_safety.js";
+import {
+  mergeCompanionSettings,
+  normalizeCompanionSettings,
+} from "./_companion_settings.js";
 
 import {
   messagesInChronologicalOrder,
@@ -165,6 +169,21 @@ export async function mergeProfilePrefs(email, patch = {}) {
     throw error;
   }
   return sbRpc("merge_profile_prefs", { p_email: e, p_patch: patch });
+}
+
+export async function getCompanionSettings(email) {
+  const profile = await getProfile(email);
+  return normalizeCompanionSettings(profile?.prefs?.assistant_settings);
+}
+
+export async function saveCompanionSettings(email, patch = {}) {
+  const profile = await getProfile(email);
+  const settings = mergeCompanionSettings(
+    profile?.prefs?.assistant_settings,
+    patch
+  );
+  await mergeProfilePrefs(email, { assistant_settings: settings });
+  return settings;
 }
 
 /**

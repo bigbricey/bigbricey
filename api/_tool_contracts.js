@@ -1,3 +1,5 @@
+import { validateCompanionSettingsPatch } from "./_companion_settings.js";
+
 const SCENES = [
   "rain",
   "snow",
@@ -93,6 +95,33 @@ const DEFINITIONS = [
     magnesium: number("Magnesium milligrams."),
     style: string("Eating style id."),
     recompute: { type: "boolean", description: "Recompute macros for a style-only change." },
+  })],
+  ["set_companion_settings", "Change how BigBricey addresses the user or gives optional proactive help. Use Quiet for 'back off on reminders'; Helpful for occasional grounded suggestions; Coach for more active coaching. These settings never silence direct answers.", objectSchema({
+    nickname: string("Nickname or pseudonym BigBricey should use."),
+    mode: string("Proactive mode.", { enum: ["quiet", "helpful", "coach"] }),
+    personality: string("Optional manual reply personality.", { enum: ["auto", "direct", "warm", "upbeat", "calm", "analytical"] }),
+    detail: string("Optional answer length preference.", { enum: ["auto", "short", "balanced", "detailed"] }),
+    category_permissions: {
+      type: "object",
+      description: "Categories BigBricey may proactively mention.",
+      properties: Object.fromEntries(
+        ["nutrition", "workouts", "measurements", "habits", "health_snapshot"].map((key) => [
+          key,
+          { type: "boolean" },
+        ])
+      ),
+      additionalProperties: false,
+    },
+    quiet_hours: {
+      type: "object",
+      description: "Local quiet-hours window for unsolicited suggestions.",
+      properties: {
+        enabled: { type: "boolean" },
+        start: string("Start time in 24-hour HH:MM."),
+        end: string("End time in 24-hour HH:MM."),
+      },
+      additionalProperties: false,
+    },
   })],
   ["log_workout", "Log a workout or physical activity with recorded measurements.", objectSchema({
     title: string("Workout title."),
@@ -432,6 +461,19 @@ function validateArguments(name, input) {
   if (name === "set_goals") {
     const goalKeys = ["kcal", "protein", "fat", "carbs", "net_carbs", "potassium", "magnesium", "style"];
     if (!goalKeys.some((key) => args[key] != null)) return validationError("REQUIRED_FIELD", "At least one target is required.", "function.arguments");
+  }
+  if (name === "set_companion_settings") {
+    try {
+      const validated = validateCompanionSettingsPatch(args);
+      for (const key of Object.keys(args)) delete args[key];
+      Object.assign(args, validated);
+    } catch (error) {
+      return validationError(
+        String(error?.code || "INVALID_VALUE"),
+        String(error?.message || "Invalid companion settings."),
+        String(error?.path || "function.arguments")
+      );
+    }
   }
   if (name === "set_theme") {
     if (!allowed.some((key) => args[key] != null)) {

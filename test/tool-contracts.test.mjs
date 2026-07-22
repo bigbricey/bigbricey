@@ -34,6 +34,7 @@ const EXPECTED_TOOLS = [
   "list_saved_foods",
   "delete_saved_food",
   "set_goals",
+  "set_companion_settings",
   "log_workout",
   "log_steps",
   "log_metric",
@@ -469,6 +470,49 @@ test("goal updates require a target, use safe numeric ranges, and reject coercio
   assert.equal(
     validateNativeToolCall(call("set_goals", { kcal: "2200" })).error.code,
     "INVALID_TYPE"
+  );
+});
+
+test("companion controls are typed mutations and back-off mode is one safe setting", () => {
+  const valid = validateNativeToolCall(
+    call("set_companion_settings", {
+      nickname: "Ace",
+      mode: "quiet",
+      personality: "direct",
+      detail: "short",
+      category_permissions: {
+        nutrition: true,
+        workouts: false,
+      },
+      quiet_hours: {
+        enabled: true,
+        start: "21:00",
+        end: "08:00",
+      },
+    })
+  );
+  assert.equal(valid.ok, true);
+  assert.equal(valid.status, "ready");
+  assert.equal(valid.policy.mutates, true);
+  assert.equal(valid.policy.destructive, false);
+  assert.equal(valid.arguments.mode, "quiet");
+  assert.equal(valid.arguments.category_permissions.workouts, false);
+
+  assert.equal(
+    validateNativeToolCall(
+      call("set_companion_settings", {
+        category_permissions: { secret_category: true },
+      })
+    ).error.code,
+    "UNKNOWN_PERMISSION"
+  );
+  assert.equal(
+    validateNativeToolCall(
+      call("set_companion_settings", {
+        quiet_hours: { start: "after dinner" },
+      })
+    ).error.code,
+    "INVALID_QUIET_HOURS"
   );
 });
 

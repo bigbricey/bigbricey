@@ -569,6 +569,86 @@
         </p>
       </div>
 
+      <section class="block companion-settings" id="companionSettings" aria-labelledby="companionSettingsTitle">
+        <div class="block-head">
+          <div>
+            <h2 id="companionSettingsTitle">Your BigBricey</h2>
+            <p class="companion-settings-intro">You talk normally. These controls only change how BigBricey talks back and when it offers help.</p>
+          </div>
+        </div>
+        <form id="companionSettingsForm">
+          <div class="companion-settings-grid">
+            <label class="companion-field" for="companionNickname">
+              <span>Call me</span>
+              <input id="companionNickname" name="nickname" maxlength="60" autocomplete="nickname" placeholder="Any nickname or pseudonym" />
+            </label>
+            <label class="companion-field" for="companionPersonality">
+              <span>Personality</span>
+              <select id="companionPersonality" name="personality">
+                <option value="auto">Match me automatically</option>
+                <option value="direct">Direct</option>
+                <option value="warm">Warm</option>
+                <option value="upbeat">Upbeat</option>
+                <option value="calm">Calm</option>
+                <option value="analytical">Analytical</option>
+              </select>
+            </label>
+            <label class="companion-field" for="companionDetail">
+              <span>Answer length</span>
+              <select id="companionDetail" name="detail">
+                <option value="auto">Match me automatically</option>
+                <option value="short">Short</option>
+                <option value="balanced">Balanced</option>
+                <option value="detailed">Detailed</option>
+              </select>
+            </label>
+          </div>
+
+          <fieldset class="companion-mode-fieldset">
+            <legend>Proactive help</legend>
+            <div class="companion-mode-grid">
+              <label class="companion-mode-option">
+                <input type="radio" name="companionMode" value="quiet" />
+                <span><strong>Quiet</strong><small>Answer me, but no unsolicited nudges.</small></span>
+              </label>
+              <label class="companion-mode-option">
+                <input type="radio" name="companionMode" value="helpful" checked />
+                <span><strong>Helpful</strong><small>One useful, data-backed suggestion when it matters.</small></span>
+              </label>
+              <label class="companion-mode-option">
+                <input type="radio" name="companionMode" value="coach" />
+                <span><strong>Coach</strong><small>More active check-ins, still under your control.</small></span>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="companion-permissions">
+            <legend>Okay to suggest</legend>
+            <div class="companion-check-grid">
+              <label><input type="checkbox" data-companion-category="nutrition" checked /> Nutrition</label>
+              <label><input type="checkbox" data-companion-category="workouts" checked /> Workouts</label>
+              <label><input type="checkbox" data-companion-category="measurements" checked /> Measurements</label>
+              <label><input type="checkbox" data-companion-category="habits" checked /> Habits</label>
+              <label><input type="checkbox" data-companion-category="health_snapshot" checked /> Health Snapshot</label>
+            </div>
+          </fieldset>
+
+          <fieldset class="companion-quiet-hours">
+            <legend>Quiet hours</legend>
+            <label class="companion-switch"><input type="checkbox" id="companionQuietEnabled" /> <span>Use quiet hours</span></label>
+            <div class="companion-time-grid">
+              <label for="companionQuietStart"><span>Start</span><input type="time" id="companionQuietStart" value="21:00" /></label>
+              <label for="companionQuietEnd"><span>End</span><input type="time" id="companionQuietEnd" value="08:00" /></label>
+            </div>
+          </fieldset>
+
+          <div class="companion-settings-actions">
+            <button type="submit" class="btn-primary" id="companionSettingsSave">Save my preferences</button>
+            <span id="companionSettingsStatus" role="status" aria-live="polite"></span>
+          </div>
+        </form>
+      </section>
+
       <section class="block memory-center" id="memoryCenter" aria-labelledby="memoryCenterTitle">
         <div class="block-head">
           <h2 id="memoryCenterTitle">What BigBricey knows about me</h2>
@@ -700,6 +780,7 @@
   <script src="/vision.js?v=20260716a"></script>
   <script src="/home.js?v=20260716a"></script>
   <script src="/voice.js?v=20260716a"></script>
+  <script src="/companion.js?v=20260722a"></script>
   <script src="/app.js?v=20260716a"></script>
 </body>
 </html>

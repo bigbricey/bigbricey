@@ -21,6 +21,7 @@ import {
   sbRpc,
   getProfile,
   mergeProfilePrefs,
+  saveCompanionSettings,
   onboardingFromPrefs,
   ensureProfile,
   listSavedFoods,
@@ -52,6 +53,10 @@ import {
   measureUsesLatestDailyValue,
   sb,
 } from "./_supabase.js";
+import {
+  inferCommunicationStyle,
+  normalizeCompanionSettings,
+} from "./_companion_settings.js";
 import { submitFeedback, summarizeFeedback, isAdmin } from "./_members.js";
 import { llmConfig, usageForMetering } from "./_llm.js";
 import {
@@ -214,6 +219,7 @@ export default async function handler(req, res) {
     let sceneSnap = null;
     let scenesSeenSnap = [];
     let memoryNotes = [];
+    let assistantSettingsSnap = normalizeCompanionSettings();
     let profileSnapshotLoaded = false;
     if (supabaseConfig().ok) {
       try {
@@ -237,6 +243,9 @@ export default async function handler(req, res) {
         if (Array.isArray(profile?.prefs?.scenes_seen)) {
           scenesSeenSnap = profile.prefs.scenes_seen;
         }
+        assistantSettingsSnap = normalizeCompanionSettings(
+          profile?.prefs?.assistant_settings
+        );
         memoryNotes = await getMemoryNotes(session.email);
       } catch {
         personCtx = null;
@@ -355,6 +364,7 @@ export default async function handler(req, res) {
       confirmedNativeCall,
       layout: layoutSnap,
       trackers: boxesSnap,
+      companionSettings: assistantSettingsSnap,
     });
 
     if (intent?.error === "model_failed") {
@@ -444,6 +454,7 @@ export default async function handler(req, res) {
     let themeOut = null;
     let boxesOut = null;
     let suggestionsOut = null;
+    let companionSettingsOut = null;
     let sceneOut = null;
 
     // Export / print stats for doctor or other AI agents
@@ -1995,6 +2006,40 @@ export default async function handler(req, res) {
       }
 
       if (
+        type === "set_companion_settings"
+      ) {
+        try {
+          companionSettingsOut = await saveCompanionSettings(
+            session.email,
+            {
+              ...(action.nickname != null ? { nickname: action.nickname } : {}),
+              ...(action.mode != null ? { mode: action.mode } : {}),
+              ...(action.personality != null
+                ? { personality: action.personality }
+                : {}),
+              ...(action.detail != null ? { detail: action.detail } : {}),
+              ...(action.category_permissions != null
+                ? { category_permissions: action.category_permissions }
+                : {}),
+              ...(action.quiet_hours != null
+                ? { quiet_hours: action.quiet_hours }
+                : {}),
+            }
+          );
+          toolData = { settings: companionSettingsOut };
+          const modeLabel = {
+            quiet: "Quiet",
+            helpful: "Helpful",
+            coach: "Coach",
+          }[companionSettingsOut.mode];
+          notes.push(`Companion settings updated. Proactive mode: ${modeLabel}.`);
+        } catch {
+          notes.push("Couldn't update companion settings right now.");
+        }
+        continue;
+      }
+
+      if (
         type === "set_goals" ||
         type === "update_goals" ||
         type === "change_goals" ||
@@ -2728,6 +2773,7 @@ export default async function handler(req, res) {
       theme: themeOut,
       boxes: boxesOut,
       suggestions: suggestionsOut,
+      companion_settings: companionSettingsOut,
       scene: sceneOut,
       conversation_id: conversationId,
       memory_notes: memoryOut,
@@ -3692,6 +3738,8 @@ async function interpretIntent(text, rows, ctx = {}) {
     currentLog: buildCurrentLogContext(rows),
     layout: ctx.layout,
     trackers: ctx.trackers,
+    companionSettings: ctx.companionSettings,
+    inferredStyle: inferCommunicationStyle(priorCapped),
   });
   const baseMessages = [
     { role: "system", content: system },
