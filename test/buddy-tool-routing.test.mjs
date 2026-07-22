@@ -5,6 +5,7 @@ import {
   authorizeBuddyContinuationPlan,
   classifyBuddyTurn,
   requiredAppInspection,
+  requiredExplicitFoodAdd,
   requiredTodayLedgerRead,
   toolsForBuddyTurn,
 } from "../api/_buddy_tool_routing.js";
@@ -78,6 +79,77 @@ test("an explicit request to log 3/4 lb of sweet potato permits add_food", async
 
   assert.equal(route.mode, "write_explicit");
   assert.deepEqual(selectedToolNames(route), ["add_food"]);
+});
+
+test("an obvious portioned food report repairs a mistaken read route", async () => {
+  const route = await classifyBuddyTurn({
+    llm: classifierReturning({
+      mode: "read",
+      tool_names: ["lookup_food"],
+      evidence: "The model mistakenly treated the food report as a lookup.",
+    }),
+    userText: "I had one pound of brisket",
+    history: [],
+  });
+
+  assert.equal(route.mode, "write_explicit");
+  assert.deepEqual(selectedToolNames(route), ["add_food"]);
+  assert.deepEqual(
+    requiredExplicitFoodAdd({
+      userText: "I had one pound of brisket",
+      route,
+      evaluations: [
+        { ok: false, tool_name: "lookup_food", error: { code: "INVALID_ARGUMENTS" } },
+      ],
+    }),
+    { query: "I had one pound of brisket" }
+  );
+  assert.deepEqual(
+    requiredExplicitFoodAdd({
+      userText: "I had one pound of brisket",
+      route,
+      evaluations: [{ ok: true, tool_name: "lookup_food" }],
+    }),
+    { query: "I had one pound of brisket" }
+  );
+});
+
+test("the explicit-food repair never turns questions or vague portions into writes", async () => {
+  const cases = [
+    MESSY_SWEET_POTATO_QUESTION,
+    "I'm having brisket.",
+    "What if I had one pound of brisket?",
+    "I didn't have one pound of brisket.",
+  ];
+  for (const userText of cases) {
+    const route = await classifyBuddyTurn({
+      llm: classifierReturning({
+        mode: "read",
+        tool_names: ["lookup_food"],
+        evidence: "This is not a direct portioned logging request.",
+      }),
+      userText,
+      history: [],
+    });
+    assert.equal(route.mode, "read", userText);
+    assert.equal(selectedToolNames(route).includes("add_food"), false, userText);
+    assert.equal(
+      requiredExplicitFoodAdd({ userText, route, evaluations: [] }),
+      null,
+      userText
+    );
+  }
+});
+
+test("the explicit-food repair never replaces an already valid tool call", () => {
+  assert.equal(
+    requiredExplicitFoodAdd({
+      userText: "Log four large hard-boiled eggs",
+      route: { mode: "write_explicit", toolNames: ["add_food"] },
+      evaluations: [{ ok: true, tool_name: "add_food" }],
+    }),
+    null
+  );
 });
 
 test("an explicit chart request exposes the real tracker tool even when the semantic router misses it", async () => {

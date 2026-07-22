@@ -89,6 +89,7 @@ import {
   authorizeBuddyContinuationPlan,
   classifyBuddyTurn,
   requiredAppInspection,
+  requiredExplicitFoodAdd,
   requiredTodayLedgerRead,
   toolsForBuddyTurn,
 } from "./_buddy_tool_routing.js";
@@ -3984,6 +3985,23 @@ async function interpretIntent(text, rows, ctx = {}) {
       } catch {
         // Keep the original failed-closed evaluations and truthful read error.
       }
+    }
+    const requiredFoodAdd = requiredExplicitFoodAdd({
+      userText: text,
+      route,
+      evaluations,
+    });
+    if (requiredFoodAdd) {
+      evaluations = [
+        validateNativeToolCall({
+          id: "server_required_add_food",
+          type: "function",
+          function: {
+            name: "add_food",
+            arguments: JSON.stringify(requiredFoodAdd),
+          },
+        }),
+      ];
     }
     const requiredInspection = requiredAppInspection({
       userText: text,

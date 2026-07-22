@@ -167,6 +167,72 @@ function withRequiredExplicitTrackerTool(route, userText) {
   };
 }
 
+function isObviousPortionedFoodLog(userText) {
+  const text = String(userText || "").trim();
+  if (!text || text.length > 2_000 || /\?\s*$/.test(text)) return false;
+  if (
+    /\b(?:didn['’]?t|did not|don['’]?t|do not|never)\b/i.test(text) ||
+    /^\s*(?:if|what|how|why|would|could|should|suppose|imagine|hypothetically)\b/i.test(
+      text
+    )
+  ) {
+    return false;
+  }
+  const explicitlyReportsFood =
+    /^\s*(?:(?:please\s+)?(?:log|add|record)\b|(?:i|we)\s+(?:just\s+)?(?:ate|had|consumed|finished)\b)/i.test(
+      text
+    );
+  if (!explicitlyReportsFood) return false;
+
+  const amount =
+    "(?:\\d+(?:\\.\\d+)?|\\d+\\s*\\/\\s*\\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|half|quarter)";
+  const portion =
+    "(?:lb|lbs|pound|pounds|oz|ounce|ounces|g|gram|grams|kg|kilogram|kilograms|large|medium|small|piece|pieces|serving|servings|cup|cups|tbsp|tablespoon|tablespoons|tsp|teaspoon|teaspoons|slice|slices|can|cans|bottle|bottles|stick|sticks)";
+  return new RegExp(`\\b${amount}\\s*(?:of\\s+)?${portion}\\b`, "i").test(text);
+}
+
+function withRequiredExplicitFoodTool(route, userText) {
+  if (!isObviousPortionedFoodLog(userText)) return route;
+  return {
+    ...route,
+    mode: "write_explicit",
+    toolNames: ["add_food"],
+    evidence:
+      "The current message plainly reports or requests logging one food with an explicit portion.",
+  };
+}
+
+/**
+ * If the provider malformed or omitted the obvious add-food call, rebuild the
+ * one bounded call from the user's own portioned phrase. Never use this for a
+ * question, hypothetical, vague portion, or when any valid call already exists.
+ */
+export function requiredExplicitFoodAdd({
+  userText = "",
+  route = {},
+  evaluations = [],
+} = {}) {
+  if (
+    route?.mode !== "write_explicit" ||
+    !Array.isArray(route?.toolNames) ||
+    !route.toolNames.includes("add_food") ||
+    !isObviousPortionedFoodLog(userText)
+  ) {
+    return null;
+  }
+  const validCalls = (Array.isArray(evaluations) ? evaluations : []).filter(
+    (evaluation) => evaluation?.ok
+  );
+  if (
+    validCalls.some(
+      (evaluation) => getToolPolicy(evaluation?.tool_name)?.mutates !== false
+    )
+  ) {
+    return null;
+  }
+  return { query: String(userText).trim().slice(0, 500) };
+}
+
 /** One small semantic routing pass. Invalid output fails closed to reads only. */
 export async function classifyBuddyTurn({
   llm = llmChat,
@@ -196,12 +262,18 @@ export async function classifyBuddyTurn({
       },
       maxTokens: 180,
     });
-    return withRequiredExplicitTrackerTool(
-      normalizeRoute(JSON.parse(String(output?.content || "")), output),
+    return withRequiredExplicitFoodTool(
+      withRequiredExplicitTrackerTool(
+        normalizeRoute(JSON.parse(String(output?.content || "")), output),
+        userText
+      ),
       userText
     );
   } catch {
-    return withRequiredExplicitTrackerTool(safeReadFallback(output), userText);
+    return withRequiredExplicitFoodTool(
+      withRequiredExplicitTrackerTool(safeReadFallback(output), userText),
+      userText
+    );
   }
 }
 
