@@ -1,5 +1,10 @@
 import { getAdminAllowlist, getAllowlist } from "./_auth.js";
-import { sb, sbRpc, supabaseConfig } from "./_supabase.js";
+import {
+  accountIdForEmail,
+  sb,
+  sbRpc,
+  supabaseConfig,
+} from "./_supabase.js";
 
 const OWNER = "bigbricey@gmail.com";
 
@@ -175,12 +180,36 @@ export function normalizeCategory(raw) {
 export async function submitFeedback(
   email,
   message,
-  { name, source = "chat", category, theme_key, theme_label } = {}
+  {
+    name,
+    source = "chat",
+    category,
+    theme_key,
+    theme_label,
+    consent = false,
+    feedbackKind = "idea",
+    interactionId = null,
+    includeContext = false,
+    contextExcerpt = null,
+    correction = null,
+    trustRating = null,
+  } = {}
 ) {
   const e = String(email || "").toLowerCase();
-  const msg = String(message || "").trim();
+  const kind = ["wrong", "correction", "idea", "trust"].includes(feedbackKind)
+    ? feedbackKind
+    : "idea";
+  const msg = String(message || "").trim() ||
+    (kind === "wrong" ? "Marked this response as wrong." : "");
   if (!e || !msg) throw new Error("message required");
+  if (consent !== true) {
+    const error = new Error("Confirm before sending feedback.");
+    error.code = "feedback_consent_required";
+    error.status = 400;
+    throw error;
+  }
   if (!supabaseConfig().ok) throw new Error("database not configured");
+  const accountId = await accountIdForEmail(e);
 
   const cat = normalizeCategory(category);
   const key = normalizeThemeKey(theme_key, msg);
@@ -192,33 +221,48 @@ export async function submitFeedback(
     user_email: e,
     user_name: name || null,
     message: msg.slice(0, 4000),
-    source,
+    source: ["chat", "form", "interaction"].includes(source) ? source : "form",
     status: "new",
     category: cat,
     theme_key: key,
     theme_label: label,
+    account_id: accountId,
+    feedback_kind: kind,
+    interaction_id: /^[0-9a-f-]{36}$/i.test(String(interactionId || ""))
+      ? String(interactionId).toLowerCase()
+      : null,
+    consent_submitted_at: new Date().toISOString(),
+    include_context: includeContext === true,
+    context_excerpt:
+      includeContext === true && contextExcerpt && typeof contextExcerpt === "object"
+        ? contextExcerpt
+        : null,
+    correction:
+      correction && typeof correction === "object" && !Array.isArray(correction)
+        ? correction
+        : null,
+    trust_rating:
+      Number.isInteger(Number(trustRating)) && Number(trustRating) >= 1 && Number(trustRating) <= 5
+        ? Number(trustRating)
+        : null,
   };
-
-  try {
-    const created = await sb("product_feedback", {
-      method: "POST",
-      body,
-    });
-    return created?.[0] || { ok: true, theme_key: key, category: cat };
-  } catch (err) {
-    // Columns may not exist until migration_006 — fall back to basic row
-    const created = await sb("product_feedback", {
-      method: "POST",
-      body: {
-        user_email: e,
-        user_name: name || null,
-        message: msg.slice(0, 4000),
-        source,
-        status: "new",
-      },
-    });
-    return created?.[0] || { ok: true, theme_key: key, category: cat, degraded: true };
+  if (JSON.stringify(body.context_excerpt || {}).length > 8_000) {
+    const error = new Error("Feedback context is too large.");
+    error.code = "feedback_context_too_large";
+    error.status = 413;
+    throw error;
   }
+  if (JSON.stringify(body.correction || {}).length > 4_000) {
+    const error = new Error("Feedback correction is too large.");
+    error.code = "feedback_correction_too_large";
+    error.status = 413;
+    throw error;
+  }
+  const created = await sb("product_feedback", {
+    method: "POST",
+    body,
+  });
+  return created?.[0] || { ok: true, theme_key: key, category: cat };
 }
 
 export async function listFeedback({ limit = 100 } = {}) {
@@ -226,7 +270,8 @@ export async function listFeedback({ limit = 100 } = {}) {
   return (
     (await sb("product_feedback", {
       query: {
-        select: "*",
+        select:
+          "id,account_id,user_name,message,source,status,category,theme_key,theme_label,feedback_kind,interaction_id,include_context,context_excerpt,correction,trust_rating,created_at",
         order: "created_at.desc",
         limit: String(limit),
       },
@@ -267,14 +312,16 @@ export async function summarizeFeedback({ limit = 200 } = {}) {
     }
     const t = byTheme.get(key);
     t.count += 1;
-    if (f.user_email) t.users.add(String(f.user_email).toLowerCase());
+    if (f.account_id) t.users.add(String(f.account_id).toLowerCase());
     const st = f.status || "new";
     if (t.statuses[st] != null) t.statuses[st] += 1;
     else t.statuses[st] = 1;
     if (t.examples.length < 3) {
       t.examples.push({
         message: f.message,
-        user: f.user_name || f.user_email,
+        user:
+          f.user_name ||
+          (f.account_id ? `Tester ${String(f.account_id).slice(0, 8)}` : "Tester"),
         at: f.created_at,
         status: f.status,
       });

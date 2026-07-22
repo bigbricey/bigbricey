@@ -4,7 +4,6 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Privacy Policy — BigBricey</title>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet" />
   <style>
     body {
       margin: 0; font-family: "DM Sans", system-ui, sans-serif; color: #f1f5f9;
@@ -21,18 +20,21 @@
 <body>
   <div class="wrap">
     <h1>Privacy Policy</h1>
-    <p class="meta">BigBricey · Last updated July 2026</p>
+    <p class="meta">BigBricey · Last updated July 22, 2026</p>
 
     <p>
-      This product is invite-only. We collect the minimum needed to run your forever health log.
+      BigBricey is an invite-only adult beta. It is designed so you can use a nickname or pseudonym while keeping long-term fitness, nutrition, and wellness records private to your account.
     </p>
 
     <h2>What we collect</h2>
     <ul>
-      <li>Account: Google email, name, and profile photo (from sign-in)</li>
+      <li>Sign-in: your verified Google email and provider account identifier. These are used for access and account recovery; BigBricey does not require a legal name in your health profile.</li>
       <li>Health &amp; wellness: food logs, workouts, steps, weight, goals, height, age/sex for targets, freeform notes you enter</li>
+      <li>Conversations: messages you send to the companion and its replies, so you can reopen chat history and retain recent context</li>
       <li>Permanent memory: facts and preferences you explicitly ask BigBricey to remember, plus where the memory came from so you can review, edit, or delete it</li>
-      <li>Product feedback you choose to send</li>
+      <li>Health Snapshots: private drafts you choose to save, including your edits</li>
+      <li>Product feedback you explicitly confirm. Conversation context is included only when you separately choose that option.</li>
+      <li>Content-free product events such as whether a log completed, response time, correction/clarification counts, and Snapshot use. These events do not contain message or food text.</li>
       <li>Optional marketing preference (if you check it during setup)</li>
     </ul>
 
@@ -41,20 +43,33 @@
       <li>Power your personal log and daily dashboard</li>
       <li>Store your forever ledger so history isn’t lost</li>
       <li>Estimate calorie/macro targets from the stats you provide</li>
+      <li>Generate user-controlled summaries and structured exports from your own records</li>
+      <li>Operate and improve reliability, security, and the founding beta</li>
       <li>If you opt in, occasional product updates (you can opt out)</li>
     </ul>
 
     <h2>What we don’t do</h2>
     <ul>
       <li>We don’t sell your health data</li>
+      <li>We don’t use third-party advertising trackers</li>
       <li>Other members cannot see your food log or body metrics</li>
-      <li>Admin feedback inbox only shows suggestions you send — not your diary</li>
+      <li>We don’t automatically send Health Snapshots to doctors, other users, or outside AI tools</li>
+      <li>Feedback does not include conversation context unless you explicitly opt in when sending it</li>
     </ul>
 
     <h2>Storage &amp; security</h2>
     <p>
-      Data is stored in a cloud database with access controlled by your signed-in session.
-      Service providers (hosting, auth, AI inference) process data only to run the product.
+      BigBricey uses random internal account identifiers, signed sessions, server-only service credentials,
+      account-scoped database queries, rate limits, and access/mutation auditing. Data travels over HTTPS.
+      The hosting and database providers report encryption for stored customer data. No Internet service can
+      promise perfect security, and the beta is still subject to ongoing review and testing.
+    </p>
+    <p>
+      Service providers process data only for product functions: Google for sign-in, Vercel for hosting,
+      Supabase for the private database, OpenRouter and the selected model provider for AI requests, and
+      USDA/Open Food Facts for food lookups. Chat text needed for an AI answer is sent to the configured AI
+      service. A food photo is sent only when you choose photo analysis; the image is used to create a review
+      draft and is not added to your ledger or account history.
     </p>
     <p>
       When voice dictation is available, your browser or device vendor may process microphone audio
@@ -63,12 +78,24 @@
 
     <h2>Your choices</h2>
     <p>
-      You can update onboarding answers in the app. To delete your account or export data, contact Brice
-      (the operator of this invite-only beta).
+      You can change your nickname, companion settings, onboarding answers, memories, and logged records in
+      the app. In You → Your data &amp; privacy, you can record a full-export request or prepare a deletion request.
+      Deletion is not automatic: the request is verified and reviewed to avoid erasing the wrong account.
     </p>
 
+    <h2>Retention</h2>
+    <p>
+      Account and health records are retained while your beta account is active so long-term trends remain
+      available. A verified deletion request starts the controlled deletion process. Limited security,
+      audit, legal, and provider-backup records may be retained where reasonably necessary. A final written
+      retention schedule and incident-response process are launch gates before a larger commercial beta.
+    </p>
+
+    <h2>Age</h2>
+    <p>BigBricey currently accepts adults age 18 and older only. It is not marketed to children.</p>
+
     <h2>Contact</h2>
-    <p>Questions about privacy: the account owner who invited you, or the operator of bigbricey.com.</p>
+    <p>Questions or privacy requests: use the controls inside your signed-in account or contact the operator who invited you. A dedicated public privacy contact is required before wider enrollment.</p>
 
     <p><a href="/onboarding.html">← Back to setup</a> · <a href="/terms.html">Terms of Service</a></p>
   </div>

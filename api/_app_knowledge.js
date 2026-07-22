@@ -221,7 +221,7 @@ export function dashboardManifestForPrompt(input = {}) {
     trackers: manifest.trackers.map((tracker) => [
       tracker.id,
       tracker.position,
-      tracker.title,
+      cleanText(tracker.title, 48),
       tracker.kind,
       tracker.days ?? null,
     ]),

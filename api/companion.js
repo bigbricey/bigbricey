@@ -36,7 +36,7 @@ export default async function handler(req, res) {
   const user = await requireUser(req, res);
   if (!user) return;
   try {
-    await ensureProfile(user.email, { name: user.name, picture: user.picture });
+    await ensureProfile(user.email);
     if (req.method === "GET") {
       return sendJson(res, 200, {
         settings: await getCompanionSettings(user.email),

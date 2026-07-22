@@ -30,9 +30,7 @@ export default async function handler(req, res) {
   try {
     const body = await readBody(req);
     const code = body.code || body.invite || body.invite_code;
-    const result = await redeemInvite(session.email, code, {
-      name: session.name,
-    });
+    const result = await redeemInvite(session.email, code);
     const mem = await getMembership(session.email);
     return sendJson(res, 200, {
       ok: true,

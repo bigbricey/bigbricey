@@ -1,5 +1,7 @@
 /** Shared BigBricey helpers for Vercel serverless */
 
+import { applyLearnedUsualPortion } from "./_food_corrections.js";
+
 export const SYSTEM_PROMPT = `You are BigBricey's food parser ONLY.
 You convert a user's food phrase into JSON. You do NOT invent nutrition numbers.
 You do NOT answer questions about history, code, or anything except food + amount.
@@ -1471,18 +1473,18 @@ export async function resolveFood(text, opts = {}) {
   const foodSearchFn =
     typeof opts.foodSearchFn === "function" ? opts.foodSearchFn : foodSearch;
   const parseResult = await parseFoodFn(text);
-  const parsed = normalizeParsedFoodQuantity(text, parseResult.parsed);
-  if (parsed?.error === "off_topic") {
+  const normalized = normalizeParsedFoodQuantity(text, parseResult.parsed);
+  if (normalized?.error === "off_topic") {
     return { error: "off_topic" };
   }
 
-  const q = parsed?.food_query || text;
-  const custom = matchCustomFood(q);
+  const originalQuery = normalized?.food_query || text;
+  const custom = matchCustomFood(originalQuery);
   if (custom) {
     return {
-      parsed,
+      parsed: normalized,
       match: { description: custom.description, source: "custom" },
-      row: rowFromCustom(parsed, custom),
+      row: rowFromCustom(normalized, custom),
       note: "custom food",
     };
   }
@@ -1490,11 +1492,11 @@ export async function resolveFood(text, opts = {}) {
   // Personal library (shakes, recipes) before USDA
   if (opts.email && typeof opts.findSavedFood === "function") {
     try {
-      const saved = await opts.findSavedFood(opts.email, q);
+      const saved = await opts.findSavedFood(opts.email, originalQuery);
       if (saved && typeof opts.rowFromSavedFood === "function") {
-        const amount = Number(parsed?.amount) || 1;
+        const amount = Number(normalized?.amount) || 1;
         return {
-          parsed,
+          parsed: normalized,
           match: { description: saved.name, source: "saved" },
           row: opts.rowFromSavedFood(saved, amount),
           note: "saved food",
@@ -1504,6 +1506,14 @@ export async function resolveFood(text, opts = {}) {
       /* fall through to USDA */
     }
   }
+
+  const learned = applyLearnedUsualPortion(
+    text,
+    normalized,
+    opts.foodCorrections
+  );
+  const parsed = learned.parsed;
+  const q = parsed?.food_query || text;
 
   const searchQ = expandQuery(q);
   let search;
@@ -1561,6 +1571,11 @@ export async function resolveFood(text, opts = {}) {
   const row = foodRowFromPer100(best, grams, {
     label: `${formatAmount(parsed)} ${best.description}`.trim(),
   });
+  if (row?.extras?.provenance && learned.correction) {
+    row.extras.provenance.portion_source = "user_confirmed_usual";
+    row.extras.provenance.food_correction_id = learned.correction.id;
+    row.extras.provenance.portion_estimated = false;
+  }
 
   // Never ship a blank-calorie row if we can avoid it
   const positiveEnergyOrMacro = [row.kcal, row.protein, row.fat, row.carbs].some(
@@ -1578,7 +1593,13 @@ export async function resolveFood(text, opts = {}) {
     };
   }
 
-  return { parsed, match: best, row, note: null };
+  return {
+    parsed,
+    match: best,
+    row,
+    note: null,
+    learned_correction: learned.correction,
+  };
 }
 
 function formatAmount(parsed) {

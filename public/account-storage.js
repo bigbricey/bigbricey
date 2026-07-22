@@ -30,9 +30,45 @@
     return true;
   }
 
+  /**
+   * Move already account-scoped browser state from a verified login email key
+   * to its new random account-id key. Existing destination values always win.
+   */
+  function migrateScopedKeys(storage, fromAccount, toAccount, prefixes = []) {
+    const from = encodeURIComponent(normalizeAccount(fromAccount));
+    const to = encodeURIComponent(normalizeAccount(toAccount));
+    if (from === to) return 0;
+    const safePrefixes = (Array.isArray(prefixes) ? prefixes : []).filter(
+      (prefix) => /^[a-z0-9_-]+$/i.test(String(prefix || ""))
+    );
+    if (!safePrefixes.length) return 0;
+    const keys = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const candidate = storage.key(index);
+      if (candidate) keys.push(candidate);
+    }
+    let moved = 0;
+    for (const sourceKey of keys) {
+      const prefix = safePrefixes.find((item) =>
+        sourceKey.startsWith(`${item}${from}`)
+      );
+      if (!prefix) continue;
+      const suffix = sourceKey.slice(`${prefix}${from}`.length);
+      const destinationKey = `${prefix}${to}${suffix}`;
+      const value = storage.getItem(sourceKey);
+      if (value != null && storage.getItem(destinationKey) == null) {
+        storage.setItem(destinationKey, value);
+      }
+      storage.removeItem(sourceKey);
+      moved += 1;
+    }
+    return moved;
+  }
+
   root.BBAccountStorage = Object.freeze({
     key,
     normalizeAccount,
     quarantineLegacyKey,
+    migrateScopedKeys,
   });
 })(typeof window !== "undefined" ? window : globalThis);

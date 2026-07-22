@@ -51,8 +51,11 @@ import {
   logLlmUsage,
   latestDailyMeasureSeries,
   measureUsesLatestDailyValue,
+  listFoodCorrections,
+  recordFoodCorrection,
   sb,
 } from "./_supabase.js";
+import { usualPortionCorrectionFromUpdate } from "./_food_corrections.js";
 import {
   inferCommunicationStyle,
   normalizeCompanionSettings,
@@ -219,14 +222,12 @@ export default async function handler(req, res) {
     let sceneSnap = null;
     let scenesSeenSnap = [];
     let memoryNotes = [];
+    let foodCorrectionHints = [];
     let assistantSettingsSnap = normalizeCompanionSettings();
     let profileSnapshotLoaded = false;
     if (supabaseConfig().ok) {
       try {
-        await ensureProfile(session.email, {
-          name: session.name,
-          picture: session.picture,
-        });
+        await ensureProfile(session.email);
         const profile = await getProfile(session.email);
         profileSnapshotLoaded = true;
         personCtx = onboardingFromPrefs(profile?.prefs);
@@ -247,6 +248,9 @@ export default async function handler(req, res) {
           profile?.prefs?.assistant_settings
         );
         memoryNotes = await getMemoryNotes(session.email);
+        foodCorrectionHints = await listFoodCorrections(session.email, {
+          limit: 12,
+        });
       } catch {
         personCtx = null;
       }
@@ -365,6 +369,7 @@ export default async function handler(req, res) {
       layout: layoutSnap,
       trackers: boxesSnap,
       companionSettings: assistantSettingsSnap,
+      foodCorrections: foodCorrectionHints,
     });
 
     if (intent?.error === "model_failed") {
@@ -550,6 +555,7 @@ export default async function handler(req, res) {
     const sideEvents = [];
     let memoryOut = null;
     const executionByCall = new Map();
+    const pendingFoodCorrections = [];
     let ledgerCommitted = false;
     let ledgerReloaded = false;
 
@@ -809,11 +815,13 @@ export default async function handler(req, res) {
         const msg = action.message || action.text || text;
         try {
           const saved = await submitFeedback(session.email, msg, {
-            name: session.name,
+            name: assistantSettingsSnap.nickname || null,
             source: "chat",
             category: action.category || action.cat,
             theme_key: action.theme_key || action.theme || action.themeKey,
             theme_label: action.theme_label || action.themeLabel || action.title,
+            consent: true,
+            feedbackKind: "idea",
           });
           notes.push(
             "Noted on the BigBricey product backlog for the owner to review (app idea only — not your food diary). Nothing ships until Brice decides."
@@ -1065,6 +1073,7 @@ export default async function handler(req, res) {
               email: session.email,
               findSavedFood,
               rowFromSavedFood,
+              foodCorrections: foodCorrectionHints,
             });
             if (!resolved.row || !rowHasMacros(resolved.row)) {
               notes.push(
@@ -2134,6 +2143,7 @@ export default async function handler(req, res) {
           email: session.email,
           findSavedFood,
           rowFromSavedFood,
+          foodCorrections: foodCorrectionHints,
         });
         if (resolved.error === "off_topic") {
           notes.push(`Couldn't add “${phrase}”.`);
@@ -2182,6 +2192,7 @@ export default async function handler(req, res) {
           email: session.email,
           findSavedFood,
           rowFromSavedFood,
+          foodCorrections: foodCorrectionHints,
         });
         if (!resolved.row || !rowHasMacros(resolved.row)) {
           // Only scale an existing row from an exact mass conversion. Generic
@@ -2192,6 +2203,8 @@ export default async function handler(req, res) {
               const scale = newGrams / old.grams;
               next[idx] = scaleRow(old, scale, phrase);
               notes.push(`Updated to: ${next[idx].label}`);
+              const correction = usualPortionCorrectionFromUpdate(old, next[idx]);
+              if (correction) pendingFoodCorrections.push(correction);
             } else {
               notes.push(
                 `Couldn't safely convert “${phrase}”. Give me grams/ounces/pounds, or a more specific food label.`
@@ -2206,6 +2219,8 @@ export default async function handler(req, res) {
         resolved.row.id = old.id;
         next[idx] = resolved.row;
         notes.push(`Updated: ${old.label} → ${resolved.row.label}`);
+        const correction = usualPortionCorrectionFromUpdate(old, resolved.row);
+        if (correction) pendingFoodCorrections.push(correction);
       } else if (type === "remove" || type === "delete") {
         if (action.day && action.day !== requestedDay) {
           notes.push("Couldn't remove that entry because the confirmed ledger day changed.");
@@ -2240,6 +2255,7 @@ export default async function handler(req, res) {
           email: session.email,
           findSavedFood,
           rowFromSavedFood,
+          foodCorrections: foodCorrectionHints,
         });
         if (resolved.row && rowHasMacros(resolved.row)) {
           if (action.__request_id) resolved.row.id = action.__request_id;
@@ -2302,6 +2318,13 @@ export default async function handler(req, res) {
         });
         foodDayRevision = Number(syncReceipt?.revision);
         ledgerCommitted = true;
+        if (pendingFoodCorrections.length) {
+          await Promise.allSettled(
+            pendingFoodCorrections.map((correction) =>
+              recordFoodCorrection(session.email, correction)
+            )
+          );
+        }
       } catch (error) {
         if (error?.code === "stale_food_day_revision") {
           try {
@@ -2744,12 +2767,31 @@ export default async function handler(req, res) {
       pendingConfirmation,
       allowNaturalErrorRecovery: true,
     });
+    const needsClarification = verifiedToolResults.some((result) =>
+      ["TOOL_REQUIRED_DETAILS", "TOOL_NOT_FOUND", "TOOL_UNAVAILABLE"].includes(
+        String(result?.error?.code || "")
+      )
+    );
+    const candidateClaimedUnverifiedSuccess =
+      verifiedToolResults.some(
+        (result) => result?.status === "error" || result?.ok === false
+      ) &&
+      /\b(?:done|all set|successfully|i(?:['’]ve|\s+have)?\s+(?:logged|added|saved|removed|deleted|updated|changed|set|put))\b/i.test(
+        String(candidateReply || "")
+      );
     if (sceneOut != null && !String(reply).trim()) {
       reply = sceneReplyFor(sceneOut);
     }
+    let assistantMessageId = null;
     if (conversationId && reply) {
       try {
-        await appendMessage(session.email, conversationId, "assistant", reply);
+        const assistantMessage = await appendMessage(
+          session.email,
+          conversationId,
+          "assistant",
+          reply
+        );
+        assistantMessageId = assistantMessage?.id || null;
         // Title from first user line if still default
         if (convMeta && (!convMeta.title || convMeta.title === "Chat" || convMeta.title === "New chat")) {
           const t = text.length > 48 ? text.slice(0, 45) + "…" : text;
@@ -2776,6 +2818,9 @@ export default async function handler(req, res) {
       companion_settings: companionSettingsOut,
       scene: sceneOut,
       conversation_id: conversationId,
+      interaction_id: assistantMessageId,
+      needs_clarification: needsClarification,
+      false_success_prevented: candidateClaimedUnverifiedSuccess,
       memory_notes: memoryOut,
       pending_confirmation: pendingConfirmation,
       ledger_committed: ledgerCommitted,
@@ -2878,10 +2923,17 @@ async function doAdd(
       /* continue */
     }
   }
+  let foodCorrections = [];
+  try {
+    foodCorrections = await listFoodCorrections(email, { limit: 12 });
+  } catch {
+    /* correction hints are optional; authoritative lookup still proceeds */
+  }
   const resolved = await resolveFood(text, {
     email,
     findSavedFood,
     rowFromSavedFood,
+    foodCorrections,
   });
   if (resolved.error === "off_topic") {
     const reply =
@@ -3739,6 +3791,7 @@ async function interpretIntent(text, rows, ctx = {}) {
     layout: ctx.layout,
     trackers: ctx.trackers,
     companionSettings: ctx.companionSettings,
+    foodCorrections: ctx.foodCorrections,
     inferredStyle: inferCommunicationStyle(priorCapped),
   });
   const baseMessages = [

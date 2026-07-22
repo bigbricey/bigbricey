@@ -11,11 +11,8 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
   <title>BigBricey</title>
-  <link rel="stylesheet" href="/styles.css?v=20260716a" />
+  <link rel="stylesheet" href="/styles.css?v=20260722b" />
 </head>
 <body class="tab-today">
   <div class="app-shell">
@@ -489,6 +486,40 @@
       </div>
     </div>
 
+    <!-- explicit-consent interaction feedback -->
+    <div class="modal" id="feedbackModal" hidden role="dialog" aria-modal="true" aria-labelledby="feedbackModalTitle">
+      <div class="modal-card feedback-modal-card">
+        <h3 id="feedbackModalTitle">Help make this better</h3>
+        <p class="dash-sub" id="feedbackModalIntro">Tell Brice what was wrong or what you want changed.</p>
+        <label class="companion-field" for="feedbackCategory">
+          <span>What is this about?</span>
+          <select id="feedbackCategory">
+            <option value="food">Food or nutrition</option>
+            <option value="chat">Assistant answer or behavior</option>
+            <option value="charts">Charts or trends</option>
+            <option value="mobile">Mobile or ease of use</option>
+            <option value="export">Health Snapshot</option>
+            <option value="other">Something else</option>
+          </select>
+        </label>
+        <label class="feedback-message-label" for="feedbackMessage">What was wrong, or what should change? <span>(optional for “wrong”)</span></label>
+        <textarea id="feedbackMessage" rows="5" maxlength="4000" placeholder="For example: I said one pound, but it logged one serving."></textarea>
+        <label class="feedback-consent-option" id="feedbackContextOption">
+          <input type="checkbox" id="feedbackIncludeContext" />
+          <span>Include the question and BigBricey response this is attached to</span>
+        </label>
+        <label class="feedback-consent-option">
+          <input type="checkbox" id="feedbackConsent" />
+          <span>I choose to send this feedback to Brice for product improvement</span>
+        </label>
+        <p class="feedback-status" id="feedbackStatus" role="status" aria-live="polite"></p>
+        <div class="modal-actions">
+          <button type="button" class="pill" id="feedbackCancel">Cancel</button>
+          <button type="button" class="btn-primary" id="feedbackSend">Send feedback</button>
+        </div>
+      </div>
+    </div>
+
     <!-- TRENDS -->
     <main class="panel panel-trends" id="panelTrends" hidden>
       <div class="block">
@@ -564,8 +595,6 @@
         <div class="you-row"><span>Daily targets</span><strong id="youGoalsSummary">—</strong></div>
         <p style="margin:12px 0 0;display:flex;flex-wrap:wrap;gap:8px">
           <a class="pill" href="/onboarding.html?edit=1" style="display:inline-block;text-decoration:none">Update setup</a>
-          <button type="button" class="pill" id="btnExport30">Export 30-day pack</button>
-          <button type="button" class="pill" id="btnExport7">Export 7-day pack</button>
         </p>
       </div>
 
@@ -710,11 +739,62 @@
         <div class="theme-preset-grid" id="scenePresetGrid"></div>
       </div>
 
-      <div class="block">
-        <div class="block-head"><h2>Export</h2></div>
-        <p class="dash-sub" style="margin:10px 0 0">Copy/paste for your doctor or another AI (Grok, ChatGPT, Claude). Data only — not medical advice.</p>
-        <textarea id="exportBox" hidden readonly rows="12" style="width:100%;margin-top:12px;box-sizing:border-box;border-radius:12px;border:1px solid var(--line);background:#0a0e18;color:var(--text);padding:12px;font:12px var(--mono)"></textarea>
-      </div>
+      <section class="block health-snapshot" id="healthSnapshot" aria-labelledby="healthSnapshotTitle">
+        <div class="block-head snapshot-heading">
+          <div>
+            <h2 id="healthSnapshotTitle">Health Snapshot</h2>
+            <p class="dash-sub">A concise, editable summary of your recorded data for yourself, a clinician, or another AI. Missing days stay missing—not zero.</p>
+          </div>
+        </div>
+        <div class="snapshot-builder">
+          <label class="companion-field" for="snapshotPeriod">
+            <span>Time period</span>
+            <select id="snapshotPeriod">
+              <option value="10w">10 weeks</option>
+              <option value="6m">6 months</option>
+              <option value="1y">1 year</option>
+              <option value="all">All available history</option>
+            </select>
+          </label>
+          <button type="button" class="btn-primary" id="snapshotGenerate">Build my snapshot</button>
+        </div>
+        <p class="snapshot-privacy-note">Nothing is diagnosed, shared, or sent automatically. You preview and edit everything first.</p>
+        <div id="snapshotPreview" hidden>
+          <div class="snapshot-summary-grid" id="snapshotSummary" aria-label="Snapshot summary"></div>
+          <label class="companion-field snapshot-title-field" for="snapshotDraftTitle">
+            <span>Snapshot title</span>
+            <input id="snapshotDraftTitle" maxlength="120" value="Health Snapshot" />
+          </label>
+          <label class="snapshot-editor-label" for="snapshotEditor">Preview and edit before exporting</label>
+          <textarea id="snapshotEditor" rows="20" maxlength="60000" spellcheck="true"></textarea>
+          <div class="snapshot-actions">
+            <button type="button" class="btn-primary" id="snapshotSave">Save private draft</button>
+            <button type="button" class="pill" id="snapshotPrint">Print / save PDF</button>
+            <button type="button" class="pill" id="snapshotDownloadText">Download report</button>
+            <button type="button" class="pill" id="snapshotDownloadJson">Download data</button>
+          </div>
+        </div>
+        <p id="snapshotStatus" class="snapshot-status" role="status" aria-live="polite"></p>
+      </section>
+      <section class="block feedback-invite" aria-labelledby="feedbackInviteTitle">
+        <div class="block-head">
+          <div>
+            <h2 id="feedbackInviteTitle">Help shape BigBricey</h2>
+            <p class="dash-sub">Founding testers can send an idea anytime. Nothing from your conversation is included unless you explicitly choose it.</p>
+          </div>
+          <button type="button" class="pill" id="feedbackIdea">Send an idea</button>
+        </div>
+        <div class="trust-prompt" aria-labelledby="trustPromptLabel">
+          <span id="trustPromptLabel">How much do you trust BigBricey’s answers so far?</span>
+          <div class="trust-buttons" role="group" aria-label="Trust rating from one to five">
+            <button type="button" data-trust-rating="1" aria-label="Trust rating 1 out of 5">1</button>
+            <button type="button" data-trust-rating="2" aria-label="Trust rating 2 out of 5">2</button>
+            <button type="button" data-trust-rating="3" aria-label="Trust rating 3 out of 5">3</button>
+            <button type="button" data-trust-rating="4" aria-label="Trust rating 4 out of 5">4</button>
+            <button type="button" data-trust-rating="5" aria-label="Trust rating 5 out of 5">5</button>
+          </div>
+        </div>
+      </section>
       <div class="block" id="usageBox" hidden>
         <div class="block-head">
           <h2>AI token usage</h2>
@@ -754,6 +834,30 @@
           </table>
         </div>
       </div>
+      <section class="block data-rights" id="dataRights" aria-labelledby="dataRightsTitle">
+        <div class="block-head">
+          <div>
+            <h2 id="dataRightsTitle">Your data &amp; privacy</h2>
+            <p class="dash-sub">Your health records are account-scoped. BigBricey has no advertising trackers and does not sell health data.</p>
+          </div>
+        </div>
+        <div class="data-rights-actions">
+          <button type="button" class="pill" id="requestFullExport">Request my full account export</button>
+          <button type="button" class="btn-danger-subtle" id="showDeletionRequest">Prepare account deletion request</button>
+        </div>
+        <div class="deletion-request-panel" id="deletionRequestPanel" hidden>
+          <p>This records a deletion request for identity verification and safe review. It does not instantly erase your data.</p>
+          <label class="companion-field" for="deletionConfirmation">
+            <span>Type REQUEST DELETE MY ACCOUNT</span>
+            <input id="deletionConfirmation" autocomplete="off" />
+          </label>
+          <div class="data-rights-actions">
+            <button type="button" class="pill" id="cancelDeletionRequest">Cancel</button>
+            <button type="button" class="btn-danger" id="submitDeletionRequest">Record deletion request</button>
+          </div>
+        </div>
+        <p id="dataRightsStatus" class="data-rights-status" role="status" aria-live="polite"></p>
+      </section>
       <div class="block danger-zone">
         <button type="button" class="btn-danger" id="clearDay2">Clear this day…</button>
         <a class="btn-ghost" href="/api/auth/logout">Log out</a>
@@ -770,17 +874,21 @@
       <button type="button" class="tab" data-tab="you"><span class="tab-ico">☺</span><span>You</span></button>
     </nav>
   </div>
-  <script src="/account-storage.js?v=20260714a"></script>
-  <script src="/theme.js?v=20260714a"></script>
-  <script src="/scenes.js?v=20260715d"></script>
-  <script src="/layout.js?v=20260714e"></script>
-  <script src="/boxes.js?v=20260713c"></script>
+  <script src="/account-storage.js?v=20260722b"></script>
+  <script src="/theme.js?v=20260722b"></script>
+  <script src="/scenes.js?v=20260722b"></script>
+  <script src="/layout.js?v=20260722b"></script>
+  <script src="/boxes.js?v=20260722b"></script>
   <script src="/food-storage.js?v=20260714a"></script>
   <script src="/chat-format.js?v=20260714b"></script>
-  <script src="/vision.js?v=20260716a"></script>
+  <script src="/vision.js?v=20260722b"></script>
   <script src="/home.js?v=20260716a"></script>
   <script src="/voice.js?v=20260716a"></script>
-  <script src="/companion.js?v=20260722a"></script>
-  <script src="/app.js?v=20260716a"></script>
+  <script src="/companion.js?v=20260722b"></script>
+  <script src="/snapshot.js?v=20260722b"></script>
+  <script src="/feedback.js?v=20260722b"></script>
+  <script src="/product-events.js?v=20260722b"></script>
+  <script src="/data-rights.js?v=20260722b"></script>
+  <script src="/app.js?v=20260722b"></script>
 </body>
 </html>

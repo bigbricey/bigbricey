@@ -11,6 +11,10 @@ test("profile preferences stay locked while permanent memory uses account-scoped
     new URL("../supabase/migration_011_profile_memories.sql", import.meta.url),
     "utf8"
   );
+  const accountMigration = await readFile(
+    new URL("../supabase/migration_013_account_foundation.sql", import.meta.url),
+    "utf8"
+  );
   const supabase = await readFile(new URL("../api/_supabase.js", import.meta.url), "utf8");
   const chat = await readFile(new URL("../api/chat.js", import.meta.url), "utf8");
 
@@ -19,7 +23,10 @@ test("profile preferences stay locked while permanent memory uses account-scoped
   assert.match(memoryMigration, /CREATE TABLE IF NOT EXISTS public\.profile_memories/i);
   assert.match(memoryMigration, /ENABLE ROW LEVEL SECURITY/i);
   assert.match(memoryMigration, /GRANT SELECT, INSERT, UPDATE, DELETE[^;]+service_role/is);
-  assert.match(supabase, /sbRpc\("merge_profile_prefs"/);
+  assert.match(supabase, /sbRpc\("merge_profile_prefs_by_account"/);
+  assert.match(accountMigration, /CREATE OR REPLACE FUNCTION public\.merge_profile_prefs_by_account/i);
+  assert.match(accountMigration, /RETURN public\.merge_profile_prefs\(v_email, p_patch\)/i);
+  assert.match(accountMigration, /WHERE account_id = p_account_id/i);
   assert.match(supabase, /sb\("profile_memories"/);
   assert.match(supabase, /query:\s*\{\s*id:\s*`eq\.\$\{id\}`,\s*user_email:\s*`eq\.\$\{e\}`/);
   assert.doesNotMatch(supabase, /sbRpc\("mutate_memory_note"/);

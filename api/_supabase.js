@@ -117,29 +117,18 @@ export function dayKeyFor(date = new Date(), tz = "America/New_York") {
   }
 }
 
-export async function ensureProfile(email, { name, picture } = {}) {
+export async function ensureProfile(email) {
   const e = String(email || "").toLowerCase();
   if (!e) return null;
   const existing = await sb("profiles", {
     query: { email: `eq.${e}`, select: "email", limit: "1" },
   });
   if (existing?.length) {
-    if (name || picture) {
-      await sb("profiles", {
-        method: "PATCH",
-        query: { email: `eq.${e}` },
-        body: {
-          ...(name ? { name } : {}),
-          ...(picture ? { picture } : {}),
-        },
-        headers: { Prefer: "return=minimal" },
-      });
-    }
     return e;
   }
   await sb("profiles", {
     method: "POST",
-    body: { email: e, name: name || null, picture: picture || null },
+    body: { email: e },
     headers: { Prefer: "return=minimal,resolution=merge-duplicates" },
   });
   return e;
@@ -152,11 +141,251 @@ export async function getProfile(email) {
   const rows = await sb("profiles", {
     query: {
       email: `eq.${e}`,
-      select: "email,name,picture,timezone,prefs,created_at,updated_at",
+      select: "account_id,email,name,picture,timezone,prefs,created_at,updated_at",
       limit: "1",
     },
   });
   return rows?.[0] || null;
+}
+
+/** Account-scoped profile read for new health-data services. Omits login email. */
+export async function getProfileByAccountId(accountId) {
+  const id = normalizeAccountId(accountId);
+  if (!id) return null;
+  const rows = await sb("profiles", {
+    query: {
+      account_id: `eq.${id}`,
+      select: "account_id,name,picture,timezone,prefs,created_at,updated_at",
+      limit: "1",
+    },
+  });
+  return rows?.[0] || null;
+}
+
+export function normalizeAccountId(value) {
+  const id = String(value || "").trim().toLowerCase();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)
+    ? id
+    : null;
+}
+
+/** Resolve the random internal owner id. Never derive one from an email. */
+export async function accountIdForEmail(email) {
+  const profile = await getProfile(email);
+  const accountId = normalizeAccountId(profile?.account_id);
+  if (!accountId) {
+    const error = new Error("Internal account identity is unavailable.");
+    error.code = "account_identity_unavailable";
+    error.status = 503;
+    throw error;
+  }
+  return accountId;
+}
+
+/**
+ * Link the verified Google subject to the internal account. The login email is
+ * kept only in the identity table; health-record services use account_id.
+ */
+export async function linkGoogleIdentity(email, providerSubject) {
+  const e = String(email || "").trim().toLowerCase();
+  const subject = String(providerSubject || "").trim().slice(0, 255);
+  if (!e || !subject) {
+    const error = new Error("Verified Google identity is required.");
+    error.code = "invalid_google_identity";
+    error.status = 400;
+    throw error;
+  }
+  const accountId = await accountIdForEmail(e);
+  const byEmail = await sb("auth_identities", {
+    query: {
+      select: "id,account_id,provider_subject",
+      provider: "eq.google",
+      login_email: `eq.${e}`,
+      limit: "1",
+    },
+  });
+  const existing = byEmail?.[0];
+  if (existing) {
+    if (normalizeAccountId(existing.account_id) !== accountId) {
+      const error = new Error("Login identity belongs to another account.");
+      error.code = "identity_account_conflict";
+      error.status = 409;
+      throw error;
+    }
+    await sb("auth_identities", {
+      method: "PATCH",
+      query: { id: `eq.${existing.id}`, account_id: `eq.${accountId}` },
+      body: {
+        provider_subject: subject,
+        last_login_at: new Date().toISOString(),
+      },
+      headers: { Prefer: "return=minimal" },
+    });
+    return accountId;
+  }
+  await sb("auth_identities", {
+    method: "POST",
+    body: {
+      account_id: accountId,
+      provider: "google",
+      provider_subject: subject,
+      login_email: e,
+      last_login_at: new Date().toISOString(),
+    },
+    headers: { Prefer: "return=minimal" },
+  });
+  return accountId;
+}
+
+export async function consumeAccountRateLimit(
+  accountId,
+  bucket,
+  { maxEvents = 20, windowSeconds = 60 } = {}
+) {
+  const id = normalizeAccountId(accountId);
+  if (!id) throw new Error("invalid account id");
+  return Boolean(
+    await sbRpc("consume_account_rate_limit", {
+      p_account_id: id,
+      p_bucket: String(bucket || "").trim().slice(0, 80),
+      p_max_events: Math.max(1, Math.min(1000, Number(maxEvents) || 20)),
+      p_window_seconds: Math.max(
+        1,
+        Math.min(86400, Number(windowSeconds) || 60)
+      ),
+    })
+  );
+}
+
+function boundedMetadata(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const safe = Object.fromEntries(
+    Object.entries(value)
+      .filter(([key, item]) =>
+        /^[a-z0-9_]{1,60}$/i.test(key) &&
+        (item == null || ["string", "number", "boolean"].includes(typeof item))
+      )
+      .slice(0, 20)
+      .map(([key, item]) => [
+        key,
+        typeof item === "string" ? item.slice(0, 160) : item,
+      ])
+  );
+  return JSON.stringify(safe).length <= 3_000 ? safe : {};
+}
+
+export async function recordAccountAudit(
+  accountId,
+  { action, resourceType, resourceId = null, outcome = "success", metadata = {} } = {}
+) {
+  const id = normalizeAccountId(accountId);
+  const actionName = String(action || "").trim().slice(0, 80);
+  const resource = String(resourceType || "").trim().slice(0, 80);
+  if (!id || !actionName || !resource) return false;
+  try {
+    await sb("account_audit_events", {
+      method: "POST",
+      body: {
+        account_id: id,
+        action: actionName,
+        resource_type: resource,
+        resource_id: resourceId ? String(resourceId).slice(0, 160) : null,
+        outcome: ["success", "denied", "failed"].includes(outcome)
+          ? outcome
+          : "failed",
+        metadata: boundedMetadata(metadata),
+      },
+      headers: { Prefer: "return=minimal" },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function recordProductEvent(
+  accountId,
+  eventName,
+  { durationMs = null, numericValue = null, metadata = {} } = {}
+) {
+  const id = normalizeAccountId(accountId);
+  const name = String(eventName || "").trim().slice(0, 80);
+  if (!id || !name) return false;
+  try {
+    await sb("product_events", {
+      method: "POST",
+      body: {
+        account_id: id,
+        event_name: name,
+        duration_ms:
+          durationMs == null
+            ? null
+            : Math.max(0, Math.min(3_600_000, Math.round(Number(durationMs)))),
+        numeric_value:
+          numericValue == null || !Number.isFinite(Number(numericValue))
+            ? null
+            : Number(numericValue),
+        metadata: boundedMetadata(metadata),
+      },
+      headers: { Prefer: "return=minimal" },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function listFoodCorrections(email, { limit = 20 } = {}) {
+  const accountId = await accountIdForEmail(email);
+  const rows = await sb("food_corrections", {
+    query: {
+      select:
+        "id,correction_key,kind,correction,confirmations,active,created_at,updated_at",
+      account_id: `eq.${accountId}`,
+      active: "eq.true",
+      order: "updated_at.desc",
+      limit: String(Math.max(1, Math.min(50, Number(limit) || 20))),
+    },
+  });
+  return Array.isArray(rows) ? rows : [];
+}
+
+export async function recordFoodCorrection(
+  email,
+  { correctionKey, kind, correction } = {}
+) {
+  const accountId = await accountIdForEmail(email);
+  const key = String(correctionKey || "").trim().slice(0, 160);
+  const correctionKind = String(kind || "").trim();
+  const allowedKinds = new Set([
+    "identity",
+    "quantity",
+    "preparation",
+    "nutrient",
+    "usual_portion",
+  ]);
+  if (!key || !allowedKinds.has(correctionKind)) {
+    const error = new Error("Invalid food correction.");
+    error.code = "invalid_food_correction";
+    error.status = 400;
+    throw error;
+  }
+  const safeCorrection =
+    correction && typeof correction === "object" && !Array.isArray(correction)
+      ? correction
+      : {};
+  if (JSON.stringify(safeCorrection).length > 4_000) {
+    const error = new Error("Food correction is too large.");
+    error.code = "food_correction_too_large";
+    error.status = 413;
+    throw error;
+  }
+  return sbRpc("record_food_correction", {
+    p_account_id: accountId,
+    p_correction_key: key,
+    p_kind: correctionKind,
+    p_correction: safeCorrection,
+  });
 }
 
 /** Atomically merge preferences without replacing unrelated profile fields. */
@@ -168,16 +397,22 @@ export async function mergeProfilePrefs(email, patch = {}) {
     error.status = 400;
     throw error;
   }
-  return sbRpc("merge_profile_prefs", { p_email: e, p_patch: patch });
+  const accountId = await accountIdForEmail(e);
+  return sbRpc("merge_profile_prefs_by_account", {
+    p_account_id: accountId,
+    p_patch: patch,
+  });
 }
 
 export async function getCompanionSettings(email) {
-  const profile = await getProfile(email);
+  const accountId = await accountIdForEmail(email);
+  const profile = await getProfileByAccountId(accountId);
   return normalizeCompanionSettings(profile?.prefs?.assistant_settings);
 }
 
 export async function saveCompanionSettings(email, patch = {}) {
-  const profile = await getProfile(email);
+  const accountId = await accountIdForEmail(email);
+  const profile = await getProfileByAccountId(accountId);
   const settings = mergeCompanionSettings(
     profile?.prefs?.assistant_settings,
     patch

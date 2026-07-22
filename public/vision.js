@@ -240,6 +240,9 @@
     const card = document.createElement("section");
     card.className = "vision-review";
     card.setAttribute("aria-label", "Photo nutrition draft");
+    window.BBProductEvents?.record("photo_review_opened", {
+      metadata: { kind: data.mode || "meal" },
+    });
 
     const header = document.createElement("div");
     header.className = "vision-review-head";
@@ -416,6 +419,10 @@
       discardButton.disabled = true;
       card.querySelectorAll("input, button").forEach((control) => {
         control.disabled = true;
+      });
+      window.BBProductEvents?.record("photo_log_confirmed", {
+        numeric_value: proposedRows.length,
+        metadata: { kind: data.mode || "meal", source: "review" },
       });
 
       if (data.mode === "meal") {

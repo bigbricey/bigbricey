@@ -8,7 +8,12 @@ import {
   verifyOAuthState,
 } from "../_auth.js";
 import { isMember } from "../_members.js";
-import { ensureProfile, supabaseConfig } from "../_supabase.js";
+import {
+  ensureProfile,
+  linkGoogleIdentity,
+  recordAccountAudit,
+  supabaseConfig,
+} from "../_supabase.js";
 
 export function verifiedGoogleEmail(profile) {
   if (!profile || profile.email_verified !== true) return null;
@@ -76,8 +81,6 @@ export default async function handler(req, res) {
 
     const token = signSession({
       email,
-      name: profile.name || email,
-      picture: profile.picture || null,
       sub: profile.sub || null,
     });
 
@@ -88,10 +91,15 @@ export default async function handler(req, res) {
     if (member) {
       if (supabaseConfig().ok) {
         try {
-          await ensureProfile(email, {
-            name: profile.name || email,
-            picture: profile.picture || null,
-          });
+          await ensureProfile(email);
+          if (profile.sub) {
+            const accountId = await linkGoogleIdentity(email, profile.sub);
+            recordAccountAudit(accountId, {
+              action: "sign_in",
+              resourceType: "authentication",
+              metadata: { provider: "google" },
+            }).catch(() => {});
+          }
         } catch {
           /* ok */
         }

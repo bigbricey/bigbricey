@@ -24,7 +24,7 @@ export default function handler(req, res) {
     client_id: clientId,
     redirect_uri: redirectUri,
     response_type: "code",
-    scope: "openid email profile",
+    scope: "openid email",
     access_type: "online",
     prompt: "select_account",
     state,

@@ -57,13 +57,12 @@ export default async function handler(req, res) {
 
   let onboarding = { complete: false };
   let prefs = {};
+  let accountId = null;
   if (mem.member && supabaseConfig().ok) {
     try {
-      await ensureProfile(session.email, {
-        name: session.name,
-        picture: session.picture,
-      });
+      await ensureProfile(session.email);
       const profile = await getProfile(session.email);
+      accountId = profile?.account_id || null;
       prefs = profile?.prefs && typeof profile.prefs === "object" ? profile.prefs : {};
       onboarding = onboardingFromPrefs(prefs);
     } catch {
@@ -87,9 +86,10 @@ export default async function handler(req, res) {
     member: mem.member,
     admin: Boolean(mem.admin),
     role: mem.role || null,
+    account_id: accountId,
     email: session.email,
-    name: onboarding.first_name || session.name || null,
-    picture: session.picture || null,
+    name: onboarding.preferred_name || onboarding.first_name || null,
+    picture: null,
     join: mem.member ? null : "/join.html",
     onboarding_complete: Boolean(onboarding.complete),
     onboarding,

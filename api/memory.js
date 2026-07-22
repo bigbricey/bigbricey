@@ -102,7 +102,7 @@ export default async function handler(req, res) {
   if (!user) return;
 
   try {
-    await ensureProfile(user.email, { name: user.name, picture: user.picture });
+    await ensureProfile(user.email);
     if (req.method === "GET") {
       const memories = await listProfileMemories(user.email, { limit: 40 });
       return sendJson(res, 200, { memories });

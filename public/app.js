@@ -57,7 +57,8 @@ init();
 async function init() {
   const ok = await requireAuth();
   if (!ok) return;
-  configureAccountStorage(window.__ntUser?.email);
+  migrateSignedInBrowserState(window.__ntUser);
+  configureAccountStorage(window.__ntUser?.account_id || window.__ntUser?.email);
   rows = loadLocal(selectedDay);
   window.BBHome?.init({ itemCount: rows.length });
   initVoiceInput();
@@ -122,8 +123,6 @@ async function init() {
   document.getElementById("wSave")?.addEventListener("click", saveWatchFromForm);
   document.getElementById("refreshFeedback")?.addEventListener("click", loadFeedbackInbox);
   document.getElementById("refreshUsage")?.addEventListener("click", loadUsageInbox);
-  document.getElementById("btnExport30")?.addEventListener("click", () => exportStatsPack(30));
-  document.getElementById("btnExport7")?.addEventListener("click", () => exportStatsPack(7));
   document.getElementById("refreshCharts")?.addEventListener("click", loadCharts);
   document.getElementById("chartToggles")?.addEventListener("change", loadCharts);
 
@@ -196,6 +195,28 @@ async function init() {
   loadAlerts();
   loadCharts();
   setTab("today");
+}
+
+function migrateSignedInBrowserState(user) {
+  if (!user?.email || !user?.account_id) return;
+  try {
+    window.BBAccountStorage?.migrateScopedKeys(
+      localStorage,
+      user.email,
+      user.account_id,
+      [
+        "bigbricey-day-v2-",
+        "bigbricey-conversation-v2-",
+        "bigbricey-theme-v2-",
+        "bigbricey-scene-v2-",
+        "bigbricey-layout-v2-",
+        "bigbricey-boxes-v2-",
+        "bigbricey-suggestion-dismissals-v1-",
+      ]
+    );
+  } catch {
+    /* browser storage may be disabled; the server ledger remains authoritative */
+  }
 }
 
 function personalizeWelcome() {
@@ -1219,6 +1240,12 @@ function appendChat(role, text, isError = false, options = {}) {
   bubble.appendChild(body);
   if (options.attachment?.nodeType === 1) bubble.appendChild(options.attachment);
   if (options.receipt?.nodeType === 1) bubble.appendChild(options.receipt);
+  if (role !== "user" && !isError && !options.thinking && options.interactionId) {
+    const feedbackButton = window.BBFeedback?.createWrongButton(
+      options.interactionId
+    );
+    if (feedbackButton) bubble.appendChild(feedbackButton);
+  }
   chatLog.appendChild(bubble);
   if (options.scroll !== false) {
     if (window.BBChatFormat?.scrollChatToBottom) {
@@ -1259,6 +1286,9 @@ async function requireAuth() {
       return false;
     }
     window.__ntUser = d;
+    window.BBProductEvents?.record("app_opened", {
+      metadata: { source: "web_app" },
+    });
     window.BBCompanion?.init(
       d.companion_settings,
       d.account_id || d.email
@@ -1560,31 +1590,6 @@ function wireMemoryCenter() {
   });
 }
 
-async function exportStatsPack(days) {
-  const box = document.getElementById("exportBox");
-  try {
-    const r = await fetch("/api/log?report=1&days=" + (days || 30));
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || d.message || "Export failed");
-    const text = d.text || "";
-    if (box) {
-      box.hidden = false;
-      box.value = text;
-      box.focus();
-      box.select();
-    }
-    try {
-      await navigator.clipboard.writeText(text);
-      appendChat("bot", `Copied ${days}-day data pack to clipboard. Also in You → export box.`);
-    } catch {
-      appendChat("bot", `${days}-day pack ready in You tab — select & copy.`);
-    }
-    setTab("you");
-  } catch (e) {
-    appendChat("bot", e.message || String(e), true);
-  }
-}
-
 async function loadUsageInbox() {
   const list = document.getElementById("usageList");
   const totalsEl = document.getElementById("usageTotals");
@@ -1717,7 +1722,10 @@ async function loadFeedbackInbox() {
         const tag = [f.category, f.theme_key].filter(Boolean).join(" · ");
         return `<div class="alert-item ${f.status === "new" ? "yellow" : ""}">
           <div>
-            <div class="atitle">${escapeHtml(f.user_name || f.user_email)}${
+            <div class="atitle">${escapeHtml(
+              f.user_name ||
+                (f.account_id ? `Tester ${String(f.account_id).slice(0, 8)}` : "Tester")
+            )}${
               tag ? ` <span class="theme-rank-tag">${escapeHtml(tag)}</span>` : ""
             }</div>
             <div class="abody">${escapeHtml(f.message)}</div>
@@ -1800,8 +1808,11 @@ function renderMessagesFromServer(messages) {
     return;
   }
   for (const m of messages) {
-    const role = m.role === "user" ? "user" : "bot";
-    appendChat(role === "user" ? "user" : "bot", m.content, false, { scroll: false });
+    const isUser = m.role === "user";
+    appendChat(isUser ? "user" : "bot", m.content, false, {
+      scroll: false,
+      interactionId: isUser ? null : m.id,
+    });
   }
   window.BBChatFormat?.scrollChatToBottom?.(chatLog);
 }
@@ -1982,6 +1993,8 @@ async function onSend() {
   const requestSelectionEpoch = daySelectionEpoch;
   const requestConversationId = conversationId;
   const requestConversationEpoch = conversationEpoch;
+  const requestStartedAt = performance.now();
+  let responseMetricRecorded = false;
   const confirmsPending =
     pendingToolConfirmation &&
     /^(?:yes|yep|yeah|confirm|confirmed|do it|go ahead|please do|yes,? do it)[.!\s]*$/i.test(text);
@@ -2040,6 +2053,36 @@ async function onSend() {
       if (!r.ok) throw new Error(j.message || "The request failed. Please try again.");
       return j;
     });
+    const responseDuration = Math.max(
+      0,
+      Math.round(performance.now() - requestStartedAt)
+    );
+    window.BBProductEvents?.record("chat_response_completed", {
+      duration_ms: responseDuration,
+      metadata: {
+        outcome: "success",
+        ledger_committed: data.ledger_committed === true,
+        changed: data.changed === true,
+        pending_confirmation: Boolean(data.pending_confirmation),
+      },
+    });
+    responseMetricRecorded = true;
+    if (data.ledger_committed === true && data.changed === true) {
+      window.BBProductEvents?.record("log_completed", {
+        duration_ms: responseDuration,
+        metadata: { source: "chat", ledger_committed: true },
+      });
+    }
+    if (data.needs_clarification === true) {
+      window.BBProductEvents?.record("clarification_received", {
+        metadata: { source: "chat" },
+      });
+    }
+    if (data.false_success_prevented === true) {
+      window.BBProductEvents?.record("false_success_prevented", {
+        metadata: { source: "chat" },
+      });
+    }
     if (Array.isArray(data.memory_notes)) memoryLoadedAccount = null;
     setThinking(false);
     const conversationStillCurrent =
@@ -2134,10 +2177,23 @@ async function onSend() {
     // whenever someone *mentioned* snow (e.g. "how you made snow").
     // Chat can add/update custom goal boxes
     if (storageAccount === requestAccount && Array.isArray(data.boxes) && window.BBBoxes) {
+      const priorBoxes = Array.isArray(window.__ntUser?.boxes)
+        ? window.__ntUser.boxes
+        : [];
+      const priorIds = new Set(priorBoxes.map((box) => String(box?.id || "")));
+      const createdCharts = data.boxes.filter(
+        (box) => box?.kind === "chart" && !priorIds.has(String(box.id || ""))
+      );
       window.BBBoxes.setBoxes(data.boxes, { persist: true });
       window.__ntUser = window.__ntUser || {};
       window.__ntUser.boxes = data.boxes;
       window.BBBoxes.loadValuesForDay(selectedDay);
+      if (createdCharts.length) {
+        window.BBProductEvents?.record("chart_created", {
+          numeric_value: createdCharts.length,
+          metadata: { source: "chat" },
+        });
+      }
     }
     if (storageAccount === requestAccount) {
       if (Array.isArray(data.watchStatuses)) renderWatches(data.watchStatuses);
@@ -2170,7 +2226,10 @@ async function onSend() {
       const receipt = buildVerifiedLogReceipt(receiptRows, requestDay);
       if (receiptRows.length) pulseVerifiedLogUpdate(receiptRows);
       if (reply || receipt) {
-        appendChat("bot", reply || "Logged successfully.", false, { receipt });
+        appendChat("bot", reply || "Logged successfully.", false, {
+          receipt,
+          interactionId: data.interaction_id || null,
+        });
       }
       else appendChat("bot", "No response returned.", true);
     }
@@ -2183,6 +2242,15 @@ async function onSend() {
     ) {
       window.BBHome?.set("error", { itemCount: rows.length });
       appendChat("bot", e.message || "The request failed. Please try again.", true);
+    }
+    if (!responseMetricRecorded) {
+      window.BBProductEvents?.record("chat_response_completed", {
+        duration_ms: Math.max(
+          0,
+          Math.round(performance.now() - requestStartedAt)
+        ),
+        metadata: { outcome: "error" },
+      });
     }
   } finally {
     sending = false;

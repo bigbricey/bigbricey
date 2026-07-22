@@ -180,7 +180,10 @@
 
   function storageKey() {
     try {
-      return window.BBAccountStorage?.key(LS_PREFIX, window.__ntUser?.email) || null;
+      return window.BBAccountStorage?.key(
+        LS_PREFIX,
+        window.__ntUser?.account_id || window.__ntUser?.email
+      ) || null;
     } catch {
       return null;
     }

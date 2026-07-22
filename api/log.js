@@ -66,7 +66,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    await ensureProfile(user.email, { name: user.name, picture: user.picture });
+    await ensureProfile(user.email);
     const url = new URL(req.url, `https://${req.headers.host}`);
     const path = url.pathname.replace(/\/$/, "");
     const isHistory =
@@ -254,11 +254,14 @@ export default async function handler(req, res) {
       if (body.op === "feedback") {
         const msg = body.message || body.text;
         const row = await submitFeedback(user.email, msg, {
-          name: user.name,
+          name: null,
           source: body.source || "form",
           category: body.category,
           theme_key: body.theme_key || body.themeKey,
           theme_label: body.theme_label || body.themeLabel,
+          consent: body.consent === true,
+          feedbackKind: body.kind || "idea",
+          includeContext: false,
         });
         return sendJson(res, 200, { ok: true, id: row?.id, theme_key: row?.theme_key });
       }
