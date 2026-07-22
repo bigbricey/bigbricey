@@ -78,7 +78,11 @@ import {
   buildAppInspection,
   trackerRemovalConfirmationPrompt,
 } from "./_app_knowledge.js";
-import { callBuddyAfterTools, callBuddyFirstPass } from "./_buddy_turn.js";
+import {
+  callBuddyAfterTools,
+  callBuddyFirstPass,
+  minimalFoodQuantityReply,
+} from "./_buddy_turn.js";
 import {
   authorizeBuddyContinuationPlan,
   classifyBuddyTurn,
@@ -3933,11 +3937,17 @@ async function interpretIntent(text, rows, ctx = {}) {
       evaluations.every((evaluation) =>
         isKnownReadOnlyToolName(evaluation?.tool_name)
       );
-    const reply = allCallsValid
+    const routedReply = allCallsValid
       ? turn.reply || ""
       : invalidCallsAreReadOnly
         ? "I couldn't safely read that part of the app. Nothing changed."
         : "I couldn't safely use that app action. Nothing changed.";
+    const reply = minimalFoodQuantityReply({
+      userText: text,
+      routeMode: route.mode,
+      toolCallCount: evaluations.length,
+      reply: routedReply,
+    });
     return {
       reply,
       actions,

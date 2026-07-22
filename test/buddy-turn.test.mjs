@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   callBuddyAfterTools,
   callBuddyFirstPass,
+  minimalFoodQuantityReply,
 } from "../api/_buddy_turn.js";
 
 const tools = [
@@ -60,6 +61,35 @@ test("conversation without tools disables provider tool choice", async () => {
 
   assert.equal(calls[0].toolChoice, "none");
   assert.deepEqual(calls[0].tools, []);
+});
+
+test("a vague food report asks only for the missing amount", () => {
+  const reply = minimalFoodQuantityReply({
+    userText: "I'm having brisket.",
+    routeMode: "write_ambiguous",
+    toolCallCount: 0,
+    reply: "How much, and how was it prepared?",
+  });
+
+  assert.equal(reply, "About how much brisket are you having?");
+  assert.equal(
+    minimalFoodQuantityReply({
+      userText: "I had one pound of brisket.",
+      routeMode: "write_explicit",
+      toolCallCount: 0,
+      reply: "I'll log it.",
+    }),
+    "I'll log it."
+  );
+  assert.equal(
+    minimalFoodQuantityReply({
+      userText: "I'm having brisket tomorrow.",
+      routeMode: "write_ambiguous",
+      toolCallCount: 0,
+      reply: "Sounds good.",
+    }),
+    "Sounds good."
+  );
 });
 
 test("tool completion performs a verified second pass with tool choice disabled", async () => {
