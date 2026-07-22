@@ -208,8 +208,15 @@ export function expandQuery(q) {
   const t = q.toLowerCase().trim();
   if (t === "bacon" || t === "pork bacon") return "Pork, cured, bacon, unprepared";
   if (/^egg/.test(t)) return "Eggs, Grade A, Large, egg whole";
+  if (/^sweet (?:potato|potatoes)$/.test(t)) return "Sweet potato, raw, unprepared";
   if (/brisket/.test(t)) return "beef brisket";
   return q;
+}
+
+function formatLookupAmount(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "";
+  return String(Math.round(number * 1000) / 1000);
 }
 
 export function matchCustomFood(query) {
@@ -364,6 +371,9 @@ const FOREIGN_FOOD_FORMS = new Set([
   "popcorn", "candy", "cereal", "cookie", "cookies", "cracker", "crackers",
   "chips", "soup", "dressing", "sandwich", "sauce", "seasoning", "snack",
   "dip", "bar", "bars", "bits", "imitation", "meatless", "vegetarian", "vegan",
+  "tot", "tots", "fry", "fries", "paste", "puree", "pureed", "casserole",
+  "mashed", "candied", "nfs", "leaf", "leaves", "bread", "pie", "pakora",
+  "pudding", "flour", "gnocchi", "puffs",
 ]);
 
 function foodWords(value) {
@@ -624,6 +634,38 @@ export async function openFoodFactsSearch(q) {
   return { query: q, foods, source: "openfoodfacts" };
 }
 
+function normalizeFoodMeasures(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((raw) => {
+      const amount = Number(raw?.amount);
+      const gramWeight = Number(raw?.gramWeight ?? raw?.gram_weight);
+      const unit =
+        raw?.measureUnit?.name ||
+        raw?.measureUnit?.abbreviation ||
+        raw?.measure_unit?.name ||
+        raw?.measure_unit?.abbreviation ||
+        "";
+      const label = String(
+        raw?.label ||
+          raw?.disseminationText ||
+          raw?.portionDescription ||
+          raw?.modifier ||
+          [Number.isFinite(amount) ? amount : "", unit].filter(Boolean).join(" ")
+      )
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 180);
+      if (!label || !Number.isFinite(gramWeight) || gramWeight <= 0) return null;
+      return {
+        amount: Number.isFinite(amount) && amount > 0 ? amount : 1,
+        gramWeight,
+        label,
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 40);
+}
+
 /** USDA — only used when USDA_API_KEY is set (never DEMO_KEY; that rate-limits constantly). */
 export async function usdaSearch(q) {
   const key = process.env.USDA_API_KEY;
@@ -660,6 +702,7 @@ export async function usdaSearch(q) {
       brandOwner: f.brandOwner || null,
       dataType: f.dataType,
       nutrients: pickNutrients(f.foodNutrients || []),
+      foodMeasures: normalizeFoodMeasures(f.foodMeasures || f.foodPortions),
       _src: "usda",
     };
     item.score = scoreFood(q, item);
@@ -701,6 +744,272 @@ export async function foodSearch(q) {
 
   results.sort((a, b) => b.score - a.score);
   return { query: q, foods: results, errors };
+}
+
+/** Fetch only the trusted USDA portion metadata needed for a reference-size lookup. */
+export async function usdaFoodDetails(fdcId) {
+  const key = process.env.USDA_API_KEY;
+  const id = String(fdcId || "").trim();
+  if (!key || !/^\d{1,20}$/.test(id)) return null;
+  const url = new URL(
+    `https://api.nal.usda.gov/fdc/v1/food/${encodeURIComponent(id)}`
+  );
+  url.searchParams.set("api_key", key);
+  const response = await fetch(url);
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data) return null;
+  return {
+    foodMeasures: normalizeFoodMeasures(
+      data.foodMeasures || data.foodPortions
+    ),
+  };
+}
+
+/**
+ * Pick one explicitly named USDA whole-item size. Household forms never stand
+ * in for a generic piece, and a requested size never silently falls back.
+ */
+export function pickWholeFoodReferenceMeasure(food, { size = "medium" } = {}) {
+  const requestedSize = String(size || "").toLowerCase();
+  if (
+    food?._src !== "usda" ||
+    !["small", "medium", "large"].includes(requestedSize)
+  ) {
+    return null;
+  }
+  const forbidden =
+    /\b(?:cup|tablespoon|tbsp|teaspoon|tsp|slice|wedge|cube|diced|chopped|mashed|puree|pureed|serving|package|container)\b/i;
+  const matchesRequestedSize = (label) => {
+    if (new RegExp(`\\b${requestedSize}\\b`, "i").test(label)) return true;
+    // FoodData Central labels the standard medium whole sweet potato as
+    // `sweetpotato, 5" long` rather than spelling out the word "medium".
+    // Keep this narrow so an arbitrary household length is never guessed into
+    // a size category for unrelated foods.
+    return (
+      requestedSize === "medium" &&
+      /\bsweet\s*potato\b[^\n]*\b5(?:\.0+)?\s*(?:"|in(?:ch(?:es)?)?)\s*long\b/i.test(
+        String(label || "").replace("sweetpotato", "sweet potato")
+      )
+    );
+  };
+  const candidates = normalizeFoodMeasures(food.foodMeasures).filter(
+    (measure) =>
+      measure.amount === 1 &&
+      measure.gramWeight >= 1 &&
+      measure.gramWeight <= 2_000 &&
+      matchesRequestedSize(measure.label) &&
+      !forbidden.test(measure.label)
+  );
+  const uniqueWeights = [
+    ...new Set(candidates.map((measure) => Math.round(measure.gramWeight * 1000))),
+  ];
+  if (uniqueWeights.length !== 1 || !candidates.length) return null;
+  return {
+    grams: candidates[0].gramWeight,
+    label: candidates[0].label,
+    size: requestedSize,
+    estimated: true,
+  };
+}
+
+function nutritionFromRow(row) {
+  return Object.fromEntries(
+    FOOD_ROW_NUTRIENTS.flatMap((key) =>
+      row?.[key] != null && Number.isFinite(Number(row[key]))
+        ? [[key, Number(row[key])]]
+        : []
+    )
+  );
+}
+
+/** Verified, read-only nutrition resolution. This function never writes a ledger row. */
+export async function resolveNutritionLookup(
+  input = {},
+  {
+    foodSearchFn = foodSearch,
+    usdaFoodDetailsFn = usdaFoodDetails,
+  } = {}
+) {
+  const query = String(input?.query || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+  const noResult = (
+    note,
+    match = null,
+    detail = null,
+    code = "TOOL_NOT_FOUND"
+  ) => ({
+    match,
+    portion_basis: null,
+    nutrition_basis: null,
+    nutrition: null,
+    writes_ledger: false,
+    note,
+    detail,
+    error: {
+      code,
+      message: note,
+      retryable: code === "TOOL_UNAVAILABLE",
+    },
+  });
+  if (!query) {
+    return noResult(
+      "A specific food name is required.",
+      null,
+      null,
+      "TOOL_REQUIRED_DETAILS"
+    );
+  }
+
+  let search;
+  try {
+    const expanded = expandQuery(query);
+    const queries =
+      expanded.toLowerCase() === query.toLowerCase()
+        ? [query]
+        : [expanded, query];
+    const searches = await Promise.all(
+      queries.map((candidate) => foodSearchFn(candidate))
+    );
+    search = {
+      foods: searches
+        .flatMap((result) => result?.foods || [])
+        .sort((a, b) => b.score - a.score),
+      errors: searches.flatMap((result) => result?.errors || []),
+    };
+  } catch (error) {
+    return noResult(
+      "Food lookup failed — try again.",
+      null,
+      error?.detail || String(error?.message || error),
+      "TOOL_UNAVAILABLE"
+    );
+  }
+  const foods = Array.isArray(search?.foods) ? search.foods : [];
+  let match = pickBestFood(foods, query);
+  if (!match) {
+    return noResult(
+      "No credible nutrition database match was found.",
+      null,
+      search?.errors || null
+    );
+  }
+
+  const amount = input?.amount == null ? null : Number(input.amount);
+  const unit = String(input?.unit || "").toLowerCase();
+  const size = String(input?.size || "").toLowerCase();
+  let grams;
+  let portionBasis;
+
+  if (amount == null && !unit) {
+    grams = 100;
+    portionBasis = {
+      kind: "per_100g",
+      grams,
+      label: "100 g reference",
+      estimated: false,
+    };
+  } else if (unit === "piece") {
+    const usdaCandidates = foods
+      .filter(
+        (food) =>
+          food?._src === "usda" && foodMatchQuality(query, food).credible
+      )
+      .sort((a, b) => b.score - a.score);
+    let reference = null;
+    for (const candidate of usdaCandidates) {
+      let candidateWithMeasures = candidate;
+      if (!normalizeFoodMeasures(candidate.foodMeasures).length && candidate.fdcId) {
+        try {
+          const details = await usdaFoodDetailsFn(candidate.fdcId);
+          candidateWithMeasures = {
+            ...candidate,
+            foodMeasures: details?.foodMeasures || [],
+          };
+        } catch {
+          /* try another credible USDA candidate */
+        }
+      }
+      reference = pickWholeFoodReferenceMeasure(candidateWithMeasures, { size });
+      if (reference) {
+        match = candidateWithMeasures;
+        break;
+      }
+    }
+    if (!reference || !Number.isFinite(amount) || amount <= 0) {
+      return noResult(
+        `I found “${match.description}”, but USDA did not provide one unambiguous ${size || "requested"} whole-item weight for it. Use grams, ounces, pounds, or choose another size.`,
+        {
+          description: match.description,
+          source: match._src || match.dataType || "lookup",
+        },
+        null,
+        "TOOL_REQUIRED_DETAILS"
+      );
+    }
+    grams = reference.grams * amount;
+    portionBasis = {
+      kind: "usda_reference_size",
+      grams,
+      label:
+        amount === 1
+          ? reference.label
+          : `${formatLookupAmount(amount)} × ${reference.label}`,
+      estimated: true,
+    };
+  } else {
+    grams = toConvertibleGrams(amount, unit);
+    if (grams == null) {
+      return noResult(
+        "That portion needs grams, ounces, pounds, kilograms, or a verified whole-food reference size.",
+        {
+          description: match.description,
+          source: match._src || match.dataType || "lookup",
+        },
+        null,
+        "TOOL_REQUIRED_DETAILS"
+      );
+    }
+    portionBasis = {
+      kind: "explicit_mass",
+      grams,
+      label: `${formatLookupAmount(amount)} ${unit}`,
+      estimated: false,
+    };
+  }
+
+  const row = foodRowFromPer100(match, grams);
+  if (!rowHasUsefulNutrition(row)) {
+    return noResult(
+      "The matching database entry did not contain usable nutrition.",
+      {
+        description: match.description,
+        source: match._src || match.dataType || "lookup",
+      },
+      null,
+      "TOOL_UNAVAILABLE"
+    );
+  }
+  return {
+    match: {
+      description: String(match.description || "Food").slice(0, 240),
+      source: match._src || match.dataType || "lookup",
+      food_id: match.fdcId || null,
+    },
+    portion_basis: {
+      ...portionBasis,
+      grams: Math.round(Number(portionBasis.grams) * 1000) / 1000,
+    },
+    nutrition_basis: {
+      kind: "database_per_100g",
+      source: match._src || match.dataType || "lookup",
+      food_id: match.fdcId || null,
+    },
+    nutrition: nutritionFromRow(row),
+    writes_ledger: false,
+    note: null,
+  };
 }
 
 /** Resolve a visually estimated food at a known gram amount without reparsing it. */

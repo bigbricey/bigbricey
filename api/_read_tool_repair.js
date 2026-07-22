@@ -1,13 +1,10 @@
 import {
+  BIGBRICEY_READ_ONLY_TOOL_NAMES,
   BIGBRICEY_TOOLS,
   validateNativeToolCall,
 } from "./_tool_contracts.js";
 
-const READ_ONLY_TOOL_NAMES = new Set([
-  "inspect_app",
-  "read_today",
-  "list_saved_foods",
-]);
+const READ_ONLY_TOOL_NAMES = new Set(BIGBRICEY_READ_ONLY_TOOL_NAMES);
 
 export const READ_ONLY_REPAIR_TOOLS = Object.freeze(
   BIGBRICEY_TOOLS.filter((tool) =>

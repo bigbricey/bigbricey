@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   resolveFood,
+  resolveNutritionLookup,
   sendJson,
   readBody,
   toConvertibleGrams,
@@ -70,6 +71,11 @@ import {
   trackerRemovalConfirmationPrompt,
 } from "./_app_knowledge.js";
 import { callBuddyAfterTools, callBuddyFirstPass } from "./_buddy_turn.js";
+import {
+  authorizeBuddyContinuationPlan,
+  classifyBuddyTurn,
+  toolsForBuddyTurn,
+} from "./_buddy_tool_routing.js";
 import {
   BIGBRICEY_TOOLS,
   buildNativeToolResultMessage,
@@ -699,6 +705,26 @@ export default async function handler(req, res) {
         }
         toolData = data;
         notes.push(`Read the recorded ledger for ${day}.`);
+        continue;
+      }
+
+      if (type === "lookup_food") {
+        const lookup = await resolveNutritionLookup({
+          query: action.query,
+          amount: action.amount,
+          unit: action.unit,
+          size: action.size,
+        });
+        toolData = lookup;
+        if (!lookup?.nutrition) {
+          notes.push(
+            lookup?.note || "No credible nutrition database match was found."
+          );
+          continue;
+        }
+        notes.push(
+          `Looked up verified nutrition for ${lookup.match?.description || action.query}. Nothing was logged.`
+        );
         continue;
       }
 
@@ -2196,6 +2222,7 @@ export default async function handler(req, res) {
               action.__tool_name &&
                 action.__tool_name !== "read_today" &&
                 action.__tool_name !== "inspect_app" &&
+                action.__tool_name !== "lookup_food" &&
                 action.__tool_name !== "list_saved_foods" &&
                 action.__tool_name !== "remember" &&
                 action.__tool_name !== "forget_memory"
@@ -2386,7 +2413,9 @@ export default async function handler(req, res) {
               ? execution.data
               : {}),
             notes: execution.notes || [],
-            ...(evaluation.tool_name.includes("food")
+            ...(["add_food", "update_food", "remove_food", "clear_food_day", "log_saved_food"].includes(
+              evaluation.tool_name
+            )
               ? { current_log: boundedLedgerToolRead(buildCurrentLogContext(next)) }
               : {}),
             ...(goalsOut ? { goals: goalsOut } : {}),
@@ -2429,9 +2458,12 @@ export default async function handler(req, res) {
             sourceData: null,
             blockedReason: null,
           }
-        : continuationPlanForNativeReads({
-            initialEvaluations: nativeEvaluations,
-            initialResults: verifiedToolResults,
+        : authorizeBuddyContinuationPlan({
+            writeAuthorized: intent?.nativeTurn?.writeAuthorized === true,
+            plan: continuationPlanForNativeReads({
+              initialEvaluations: nativeEvaluations,
+              initialResults: verifiedToolResults,
+            }),
           });
       if (
         continuationPlan.kind &&
@@ -2665,6 +2697,7 @@ export default async function handler(req, res) {
       fallbackReply: executorDerivedReply,
       toolResults: verifiedToolResults,
       pendingConfirmation,
+      allowNaturalErrorRecovery: true,
     });
     if (sceneOut != null && !String(reply).trim()) {
       reply = sceneReplyFor(sceneOut);
@@ -3675,6 +3708,7 @@ async function interpretIntent(text, rows, ctx = {}) {
         evaluations,
         baseMessages,
         assistantMessage: assistantMessageForValidatedCalls(evaluations),
+        writeAuthorized: true,
       },
     };
   }
@@ -3684,11 +3718,31 @@ async function interpretIntent(text, rows, ctx = {}) {
   }
 
   try {
+    const route = await classifyBuddyTurn({
+      userText: text,
+      history: priorCapped,
+    });
+    if (ctx.email && route.output) {
+      logLlmUsage(ctx.email, usageForMetering(route.output.usage), {
+        model: route.output.model,
+        provider: route.output.provider,
+        conversation_id: ctx.conversationId || null,
+        purpose: "chat_route",
+      }).catch(() => {});
+    }
+    await reserveAdditionalLlmTokens(ctx.email, { reservedTokens: 1_000 });
+    const routedTools = toolsForBuddyTurn({
+      route,
+      tools: BIGBRICEY_TOOLS,
+    });
+    const allowedToolNames = new Set(
+      routedTools.map((tool) => tool?.function?.name).filter(Boolean)
+    );
     let turn = await callBuddyFirstPass({
       systemPrompt: system,
       history: priorCapped,
       userText: text,
-      tools: BIGBRICEY_TOOLS,
+      tools: routedTools,
     });
     const out = turn.output;
     // Meter tokens per user (fire-and-forget)
@@ -3700,7 +3754,23 @@ async function interpretIntent(text, rows, ctx = {}) {
         purpose: "chat",
       }).catch(() => {});
     }
+    let hasRouteViolation = false;
     let evaluations = turn.toolCalls.map((call) => {
+      const proposedName = String(call?.function?.name || "").slice(0, 100);
+      if (!allowedToolNames.has(proposedName)) {
+        hasRouteViolation = true;
+        return {
+          ok: false,
+          status: "error",
+          tool_call_id: String(call?.id || "").slice(0, 200),
+          tool_name: proposedName,
+          error: {
+            code: "TOOL_NOT_AUTHORIZED",
+            message: "That app tool was not authorized for this turn.",
+            path: "function.name",
+          },
+        };
+      }
       const checked = validateNativeToolCall(call);
       if (checked.ok) {
         if (
@@ -3718,7 +3788,7 @@ async function interpretIntent(text, rows, ctx = {}) {
         tool_name: String(call?.function?.name || "").slice(0, 100),
       };
     });
-    if (shouldRepairInvalidReadCalls(evaluations)) {
+    if (!hasRouteViolation && shouldRepairInvalidReadCalls(evaluations)) {
       try {
         await reserveAdditionalLlmTokens(ctx.email);
         const repair = await repairInvalidReadTurn({
@@ -3775,6 +3845,7 @@ async function interpretIntent(text, rows, ctx = {}) {
             evaluations,
             baseMessages: turn.baseMessages,
             assistantMessage: assistantMessageForValidatedCalls(executableCalls),
+            writeAuthorized: route.mode === "write_explicit",
           }
         : null,
     };

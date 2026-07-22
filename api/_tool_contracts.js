@@ -19,6 +19,8 @@ const TRACKER_MODES = ["floor", "ceiling"];
 const CHART_TYPES = ["line", "bar", "pie"];
 const THEME_PRESETS = ["midnight", "light", "neon", "forest", "pink", "terminal", "pastel", "sunset"];
 const INCLUDE_SECTIONS = ["food", "totals", "workouts", "metrics", "home"];
+const FOOD_LOOKUP_UNITS = ["g", "oz", "lb", "kg", "piece"];
+const FOOD_REFERENCE_SIZES = ["small", "medium", "large"];
 
 const string = (description, extra = {}) => ({ type: "string", description, ...extra });
 const number = (description, extra = {}) => ({ type: "number", description, ...extra });
@@ -40,6 +42,12 @@ const DEFINITIONS = [
     day: string("Calendar day in YYYY-MM-DD format."),
     include: array("Sections to return.", { type: "string", enum: INCLUDE_SECTIONS }, { maxItems: 5, uniqueItems: true }),
   })],
+  ["lookup_food", "Look up verified nutrition without changing the food diary. Use this for calories, macros, nutrients, food-weight, and portion questions. For a user-stated mass preserve the amount and unit. For one average whole food use piece plus an explicit small, medium, or large size. Omit the portion fields for a per-100-gram reference.", objectSchema({
+    query: string("Specific food name only, such as 'baked sweet potato'."),
+    amount: number("Positive portion amount copied from the user or one reference-size item."),
+    unit: string("Exact mass unit or whole item.", { enum: FOOD_LOOKUP_UNITS }),
+    size: string("Reference size for a whole item.", { enum: FOOD_REFERENCE_SIZES }),
+  }, ["query"])],
   ["add_food", "Look up verified nutrition and add a food entry. Preserve the user's full amount and unit in query. Never supply nutrition values yourself.", objectSchema({
     query: string("Complete specific food phrase including the user's amount and unit, for example '3 large eggs'."),
   }, ["query"])],
@@ -190,7 +198,13 @@ const CONFIRMATIONS = {
   },
 };
 
-const READ_ONLY = new Set(["inspect_app", "read_today", "list_saved_foods"]);
+export const BIGBRICEY_READ_ONLY_TOOL_NAMES = Object.freeze([
+  "inspect_app",
+  "read_today",
+  "lookup_food",
+  "list_saved_foods",
+]);
+const READ_ONLY = new Set(BIGBRICEY_READ_ONLY_TOOL_NAMES);
 
 export function getToolPolicy(name) {
   const toolName = String(name || "");
@@ -288,7 +302,7 @@ function validateArguments(name, input) {
     food_query: { max: 500 }, serving_label: { max: 120 }, description: { max: 500 },
     id: { max: 48, pattern: /^c_[a-z0-9_]+$/ }, unit: { max: 32 }, title: { max: 160 }, category: { max: 60, pattern: /^[a-z0-9_ -]+$/i },
     notes: { max: 500 }, measure_id: { max: 80, pattern: /^[a-z0-9_]+$/ }, label: { max: 120 }, style: { max: 60, pattern: /^[a-z0-9_ -]+$/i },
-    note: { max: 300 }, match: { max: 300 }, memory_id: { min: 36, max: 36, pattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i }, focus: { max: 500 }, kind: { max: 16 }, mode: { max: 16 }, chart: { max: 16 }, color: { max: 9 }, icon: { max: 8 },
+    note: { max: 300 }, match: { max: 300 }, memory_id: { min: 36, max: 36, pattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i }, focus: { max: 500 }, kind: { max: 16 }, mode: { max: 16 }, chart: { max: 16 }, color: { max: 9 }, icon: { max: 8 }, size: { max: 16 },
   };
   for (const [key, rules] of Object.entries(textRules)) {
     const error = stringField(args, key, rules);
@@ -333,7 +347,7 @@ function validateArguments(name, input) {
   }
 
   for (const [key, limits] of Object.entries({
-    quantity: { min: 0.001, max: 10000 }, servings: { min: 0.001, max: 1000 }, limit: { min: 1, max: 50, integer: true },
+    amount: { min: 0.001, max: 10000 }, quantity: { min: 0.001, max: 10000 }, servings: { min: 0.001, max: 1000 }, limit: { min: 1, max: 50, integer: true },
     kcal: { min: 1500, max: 10000 }, protein: { min: 0, max: 1000 }, fat: { min: 0, max: 1000 }, carbs: { min: 0, max: 2000 }, net_carbs: { min: 0, max: 2000 }, potassium: { min: 0, max: 30000 }, magnesium: { min: 0, max: 5000 },
     duration_min: { min: 0, max: 1440 }, sets: { min: 0, max: 10000, integer: true }, reps: { min: 0, max: 100000, integer: true }, load_lb: { min: 0, max: 5000 }, steps: { min: 0, max: 200000, integer: true },
     value: { min: -1000000000, max: 1000000000 }, goal: { min: 0, max: 1000000000 }, days: { min: 1, max: 1095, integer: true }, font_scale: { min: 0.85, max: 1.3 }, radius: { min: 0, max: 32 },
@@ -348,6 +362,49 @@ function validateArguments(name, input) {
         "INVALID_TYPE",
         `"${key}" must be true or false.`,
         `function.arguments.${key}`
+      );
+    }
+  }
+
+  if (name === "lookup_food") {
+    if (args.amount == null && args.unit === "piece" && args.size != null) {
+      args.amount = 1;
+    }
+    const hasAmount = args.amount != null;
+    const hasUnit = args.unit != null;
+    if (hasAmount !== hasUnit) {
+      return validationError(
+        "INVALID_COMBINATION",
+        "Food lookup amount and unit must be supplied together.",
+        "function.arguments"
+      );
+    }
+    if (hasUnit && !FOOD_LOOKUP_UNITS.includes(args.unit)) {
+      return validationError(
+        "INVALID_VALUE",
+        '"unit" is not supported for read-only food lookup.',
+        "function.arguments.unit"
+      );
+    }
+    if (args.size != null && !FOOD_REFERENCE_SIZES.includes(args.size)) {
+      return validationError(
+        "INVALID_VALUE",
+        '"size" is not a supported whole-food reference size.',
+        "function.arguments.size"
+      );
+    }
+    if (args.unit === "piece" && args.size == null) {
+      return validationError(
+        "REQUIRED_FIELD",
+        '"size" is required for a whole-food piece lookup.',
+        "function.arguments.size"
+      );
+    }
+    if (args.size != null && args.unit !== "piece") {
+      return validationError(
+        "INVALID_COMBINATION",
+        "A reference size may be used only with a whole-food piece.",
+        "function.arguments"
       );
     }
   }

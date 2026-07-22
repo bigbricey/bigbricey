@@ -45,6 +45,23 @@ test("ordinary conversation is one native model call with bounded history", asyn
   assert.deepEqual(result.toolCalls, []);
 });
 
+test("conversation without tools disables provider tool choice", async () => {
+  const calls = [];
+  await callBuddyFirstPass({
+    llm: async (options) => {
+      calls.push(options);
+      return { content: "A medium one is much smaller than three-quarters of a pound.", toolCalls: [] };
+    },
+    systemPrompt: "system",
+    history: [],
+    userText: "How big is an average sweet potato?",
+    tools: [],
+  });
+
+  assert.equal(calls[0].toolChoice, "none");
+  assert.deepEqual(calls[0].tools, []);
+});
+
 test("tool completion performs a verified second pass with tool choice disabled", async () => {
   const calls = [];
   const llm = async (options) => {

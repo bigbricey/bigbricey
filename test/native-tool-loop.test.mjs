@@ -85,6 +85,24 @@ test("read and customization calls retain only canonical validated arguments", (
 
   assert.deepEqual(
     actionFromValidatedToolCall(
+      validated("lookup_food", {
+        query: "sweet potato",
+        amount: 0.75,
+        unit: "lb",
+      })
+    ),
+    {
+      type: "lookup_food",
+      query: "sweet potato",
+      amount: 0.75,
+      unit: "lb",
+      __tool_call_id: "call_lookup_food",
+      __tool_name: "lookup_food",
+    }
+  );
+
+  assert.deepEqual(
+    actionFromValidatedToolCall(
       validated("set_tracker", {
         kind: "chart",
         title: "Weight trend",
@@ -809,5 +827,86 @@ test("error and pending replies have deterministic safe fallbacks", () => {
       toolResults: [{ status: "needs_confirmation" }],
     }),
     "That change needs your confirmation before I do anything."
+  );
+});
+
+test("recoverable tool errors keep executor truth and allow a natural recovery tail", () => {
+  const reply = selectVerifiedNativeToolReply({
+    candidateReply:
+      "That database result was for tots, not a plain sweet potato. What cooking method should I use for the comparison?",
+    fallbackReply:
+      "No credible nutrition database match was found. Nothing was logged.",
+    toolResults: [
+      {
+        status: "error",
+        error: {
+          code: "TOOL_NOT_FOUND",
+          message: "No credible nutrition database match was found.",
+        },
+      },
+    ],
+    allowNaturalErrorRecovery: true,
+  });
+  assert.equal(
+    reply,
+    "No credible nutrition database match was found. That database result was for tots, not a plain sweet potato. What cooking method should I use for the comparison?"
+  );
+
+  assert.equal(
+    selectVerifiedNativeToolReply({
+      candidateReply:
+        "No credible nutrition database match was found. I can still give you a clearly labeled rough comparison.",
+      toolResults: [
+        {
+          status: "error",
+          error: {
+            code: "TOOL_NOT_FOUND",
+            message: "No credible nutrition database match was found.",
+          },
+        },
+      ],
+      allowNaturalErrorRecovery: true,
+    }),
+    "No credible nutrition database match was found. I can still give you a clearly labeled rough comparison."
+  );
+
+  for (const unsafeReply of [
+    "I've added it to your diary.",
+    "Your entry is now saved.",
+    "The food is in your log.",
+  ]) {
+    assert.equal(
+      selectVerifiedNativeToolReply({
+        candidateReply: unsafeReply,
+        toolResults: [
+          {
+            status: "error",
+            error: {
+              code: "TOOL_NOT_FOUND",
+              message: "No credible nutrition database match was found.",
+            },
+          },
+        ],
+        allowNaturalErrorRecovery: true,
+      }),
+      "No credible nutrition database match was found."
+    );
+  }
+
+  assert.equal(
+    selectVerifiedNativeToolReply({
+      candidateReply: "Done — I logged it anyway.",
+      toolResults: [
+        {
+          status: "error",
+          error: {
+            code: "TOOL_COMMIT_FAILED",
+            message: "The food change could not be safely saved. Nothing changed.",
+          },
+        },
+      ],
+      allowNaturalErrorRecovery: true,
+    }),
+    "The food change could not be safely saved. Nothing changed."
   );
 });

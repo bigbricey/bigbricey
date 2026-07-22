@@ -8,6 +8,7 @@ export async function callBuddyFirstPass({
   userText,
   tools = [],
 } = {}) {
+  const activeTools = Array.isArray(tools) ? tools : [];
   const baseMessages = [
     { role: "system", content: String(systemPrompt || "") },
     ...(Array.isArray(history) ? history : []),
@@ -17,8 +18,8 @@ export async function callBuddyFirstPass({
     temperature: 0.6,
     title: "BigBricey-Chat",
     messages: baseMessages,
-    tools,
-    toolChoice: "auto",
+    tools: activeTools,
+    toolChoice: activeTools.length ? "auto" : "none",
     parallelToolCalls: false,
     maxTokens: 900,
   });

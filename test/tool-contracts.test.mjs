@@ -24,6 +24,7 @@ function call(name, args, id = `call_${name}`) {
 const EXPECTED_TOOLS = [
   "inspect_app",
   "read_today",
+  "lookup_food",
   "add_food",
   "update_food",
   "remove_food",
@@ -211,6 +212,76 @@ test("food-add accepts a lookup phrase but rejects invented nutrition fields and
     validateNativeToolCall(call("add_food", { query: "x".repeat(501) })).error
       .code,
     "OUT_OF_RANGE"
+  );
+});
+
+test("food lookup is read-only and accepts only an explicit safe portion basis", () => {
+  const exactMass = validateNativeToolCall(
+    call("lookup_food", {
+      query: "sweet potato",
+      amount: 0.75,
+      unit: "lb",
+    })
+  );
+  assert.equal(exactMass.ok, true);
+  assert.equal(exactMass.policy.mutates, false);
+  assert.deepEqual(exactMass.arguments, {
+    query: "sweet potato",
+    amount: 0.75,
+    unit: "lb",
+  });
+
+  const mediumPiece = validateNativeToolCall(
+    call("lookup_food", {
+      query: "sweet potato",
+      amount: 1,
+      unit: "piece",
+      size: "medium",
+    })
+  );
+  assert.equal(mediumPiece.ok, true);
+  assert.equal(mediumPiece.policy.mutates, false);
+
+  const implicitOnePiece = validateNativeToolCall(
+    call("lookup_food", {
+      query: "sweet potato",
+      unit: "piece",
+      size: "medium",
+    })
+  );
+  assert.equal(implicitOnePiece.ok, true);
+  assert.deepEqual(implicitOnePiece.arguments, {
+    query: "sweet potato",
+    amount: 1,
+    unit: "piece",
+    size: "medium",
+  });
+
+  assert.equal(
+    validateNativeToolCall(
+      call("lookup_food", { query: "sweet potato", amount: 1 })
+    ).error.code,
+    "INVALID_COMBINATION"
+  );
+  assert.equal(
+    validateNativeToolCall(
+      call("lookup_food", {
+        query: "sweet potato",
+        amount: 1,
+        unit: "cup",
+      })
+    ).error.code,
+    "INVALID_VALUE"
+  );
+  assert.equal(
+    validateNativeToolCall(
+      call("lookup_food", {
+        query: "sweet potato",
+        amount: 1,
+        unit: "piece",
+      })
+    ).error.code,
+    "REQUIRED_FIELD"
   );
 });
 

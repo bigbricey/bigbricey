@@ -36,6 +36,9 @@ export function actionFromValidatedToolCall(call) {
     case "read_today":
       action = { type: "read_today", ...args };
       break;
+    case "lookup_food":
+      action = { type: "lookup_food", ...args };
+      break;
     case "add_food":
       action = { type: "add", food_text: foodPhrase(args) };
       break;
@@ -470,6 +473,7 @@ function noteFailure(note, toolName) {
     /^\s*add requested but\b/i.test(text) ||
     /^\s*tell me what to change\b/i.test(text) ||
     /^\s*i found\b[^\n]{0,240}\bcouldn['’]?t verify\b/i.test(text) ||
+    /^\s*i found\b[^\n]{0,240}\bUSDA did not provide\b/i.test(text) ||
     /^\s*to save\b[^\n]{0,160}\bgive macros\b/i.test(text) ||
     /^\s*try a preset\b/i.test(text)
   ) {
@@ -485,6 +489,7 @@ function noteFailure(note, toolName) {
       /^\s*no permanent memory note matched\b/i.test(text) ||
       /^\s*no custom (?:box|tracker) matched\b/i.test(text) ||
       /\bno (?:complete )?(?:verified )?nutrition match\b/i.test(text) ||
+      /\bno credible nutrition database match\b/i.test(text) ||
       /\bno nutrition match\b/i.test(text) ||
       /^\s*no match in food databases\b/i.test(text) ||
       /\bno saved food(?:s)?(?:\s+(?:named|matched)\b|\s+["'“‘])/i.test(text) ||
@@ -594,6 +599,25 @@ function firstResultMessage(toolResults) {
   return "";
 }
 
+const NATURAL_RECOVERY_ERROR_CODES = new Set([
+  "TOOL_REQUIRED_DETAILS",
+  "TOOL_NOT_FOUND",
+  "TOOL_UNAVAILABLE",
+]);
+
+function safeNaturalRecoveryTail(value, truthAnchor) {
+  const candidate = safeAssistantReply(value).slice(0, 1_200);
+  if (!candidate) return "";
+  const unsafeSuccessClaim =
+    /\b(?:done|all set|successfully|i(?:['’]ve|\s+have)?\s+(?:logged|added|saved|removed|deleted|updated|changed|set|put)|(?:it|that|everything|your\s+(?:entry|food|workout|metric|change)|the\s+(?:entry|food|workout|metric|change))\s+(?:is|was|has been|got)\s+(?:now\s+)?(?:logged|added|saved|removed|deleted|updated|changed|set)|(?:the\s+food|it|that)\s+(?:is|was|has been)\s+(?:now\s+)?(?:in|inside)\s+(?:your|the)\s+(?:diary|log))\b/i;
+  if (unsafeSuccessClaim.test(candidate)) return "";
+  const anchor = safeAssistantReply(truthAnchor);
+  if (anchor && candidate.startsWith(anchor)) {
+    return candidate.slice(anchor.length).trim();
+  }
+  return candidate;
+}
+
 /**
  * The after-tools model is a voice pass, never the source of execution truth.
  * For any error or pending confirmation, return trusted executor/confirmation
@@ -604,6 +628,7 @@ export function selectVerifiedNativeToolReply({
   fallbackReply = "",
   toolResults = [],
   pendingConfirmation = null,
+  allowNaturalErrorRecovery = false,
 } = {}) {
   const results = Array.isArray(toolResults) ? toolResults : [];
   const pendingResult = results.find(
@@ -621,11 +646,29 @@ export function selectVerifiedNativeToolReply({
       (result) => result?.status === "error" || result?.ok === false
     )
   ) {
+    const errors = results.filter(
+      (result) => result?.status === "error" || result?.ok === false
+    );
+    const firstMessage = firstResultMessage(results);
+    if (
+      allowNaturalErrorRecovery &&
+      errors.length > 0 &&
+      errors.every((result) =>
+        NATURAL_RECOVERY_ERROR_CODES.has(String(result?.error?.code || ""))
+      )
+    ) {
+      const recovery = safeNaturalRecoveryTail(candidateReply, firstMessage);
+      if (recovery) {
+        return safeAssistantReply(
+          `${safeAssistantReply(firstMessage, DEFAULT_TOOL_ERROR_MESSAGE)} ${recovery}`
+        );
+      }
+    }
     const safeFallback = noteFailure(fallbackReply, "")
       ? safeAssistantReply(fallbackReply)
       : "";
     return safeAssistantReply(
-      firstResultMessage(results),
+      firstMessage,
       safeAssistantReply(safeFallback, DEFAULT_TOOL_ERROR_MESSAGE)
     );
   }
