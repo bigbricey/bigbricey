@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   APP_INTERFACE_GUIDE,
   CORE_TODAY_PANELS,
+  appInspectionReply,
   buildAppInspection,
   boundedDashboardManifest,
   dashboardManifestForPrompt,
@@ -148,6 +149,11 @@ test("live inspection reports the exact one-point weight chart instead of invent
     status: "matched",
     tracker_id: "c_weight_30d",
   });
+  const reply = appInspectionReply(inspection);
+  assert.match(reply, /display range, not a waiting period/i);
+  assert.match(reply, /1 recorded point/i);
+  assert.match(reply, /latest at 215 lb/i);
+  assert.match(reply, /Nothing changed/i);
 });
 
 test("inspection refuses to focus one tracker when the user's reference is ambiguous", async () => {

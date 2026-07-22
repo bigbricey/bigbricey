@@ -410,6 +410,50 @@ export async function buildAppInspection({
   };
 }
 
+export function appInspectionReply(inspection) {
+  const trackers = Array.isArray(inspection?.current_dashboard?.trackers)
+    ? inspection.current_dashboard.trackers
+    : [];
+  const focusedId =
+    inspection?.focus_resolution?.status === "matched"
+      ? String(inspection.focus_resolution.tracker_id || "")
+      : "";
+  const tracker = trackers.find((item) => String(item?.id || "") === focusedId);
+  if (!tracker) return "";
+
+  const title = cleanText(tracker.title || "that tracker", 80);
+  const summary =
+    tracker.summary && typeof tracker.summary === "object" ? tracker.summary : {};
+  if (tracker.kind === "chart") {
+    const days = Number(tracker.days) || 30;
+    const chartType = cleanText(tracker.chart || "line", 16);
+    let reply = `That’s your ${title} ${chartType} chart. “${days}-Day” is the rolling display range, not a waiting period.`;
+    if (summary.status === "showing_recorded_data") {
+      const count = Number(summary.point_count) || 0;
+      reply += ` It currently shows ${count} recorded point${count === 1 ? "" : "s"}`;
+      if (Number.isFinite(Number(summary.latest))) {
+        const unit = cleanText(summary.unit || tracker.unit, 24);
+        reply += `, with the latest at ${Number(summary.latest)}${unit ? ` ${unit}` : ""}`;
+      }
+      reply += ".";
+    } else if (summary.status === "no_recorded_data") {
+      reply +=
+        " It has no recorded points in that range yet; the first appears as soon as that measurement is logged.";
+    } else if (summary.status === "temporarily_unavailable") {
+      reply +=
+        " Its live measurements are temporarily unavailable, so I won’t guess at the values.";
+    }
+    return `${reply} Nothing changed.`.slice(0, 700);
+  }
+
+  const unit = cleanText(summary.unit || tracker.unit, 24);
+  const current = Number(summary.current);
+  return `That’s your ${title} counter${Number.isFinite(current) ? `, currently ${current}${unit ? ` ${unit}` : ""}` : ""}. Nothing changed.`.slice(
+    0,
+    700
+  );
+}
+
 export function trackerRemovalConfirmationPrompt(
   inspection,
   evaluation,

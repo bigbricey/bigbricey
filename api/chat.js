@@ -75,6 +75,7 @@ import {
 } from "./_chat_wrapper.js";
 import { buildBuddySystemPrompt } from "./_buddy_prompt.js";
 import {
+  appInspectionReply,
   buildAppInspection,
   trackerRemovalConfirmationPrompt,
 } from "./_app_knowledge.js";
@@ -86,6 +87,7 @@ import {
 import {
   authorizeBuddyContinuationPlan,
   classifyBuddyTurn,
+  requiredAppInspection,
   toolsForBuddyTurn,
 } from "./_buddy_tool_routing.js";
 import {
@@ -2417,6 +2419,7 @@ export default async function handler(req, res) {
       .filter((evaluation) => evaluation?.ok && evaluation.tool_name === "inspect_app")
       .map((evaluation) => executionByCall.get(evaluation.tool_call_id)?.data)
       .find(Boolean) || null;
+    const exactInspectionReply = appInspectionReply(appInspectionData);
     for (const evaluation of nativeEvaluations) {
       if (!evaluation?.ok) {
         verifiedToolResults.push(
@@ -2515,6 +2518,13 @@ export default async function handler(req, res) {
       modelReply: intent.reply,
       executionNotes: notes,
     });
+    if (
+      exactInspectionReply &&
+      nativeEvaluations.length === 1 &&
+      nativeEvaluations[0]?.tool_name === "inspect_app"
+    ) {
+      executorDerivedReply = exactInspectionReply;
+    }
     let candidateReply = executorDerivedReply;
     if (
       intent?.nativeTurn?.baseMessages &&
@@ -2764,8 +2774,14 @@ export default async function handler(req, res) {
         }
       }
     }
+    const finalCandidateReply =
+      exactInspectionReply &&
+      nativeEvaluations.length === 1 &&
+      nativeEvaluations[0]?.tool_name === "inspect_app"
+        ? exactInspectionReply
+        : candidateReply;
     let reply = selectVerifiedNativeToolReply({
-      candidateReply,
+      candidateReply: finalCandidateReply,
       fallbackReply: executorDerivedReply,
       toolResults: verifiedToolResults,
       pendingConfirmation,
@@ -3925,6 +3941,22 @@ async function interpretIntent(text, rows, ctx = {}) {
       } catch {
         // Keep the original failed-closed evaluations and truthful read error.
       }
+    }
+    const requiredInspection = requiredAppInspection({
+      userText: text,
+      evaluations,
+    });
+    if (requiredInspection) {
+      evaluations = [
+        validateNativeToolCall({
+          id: "server_required_inspect_app",
+          type: "function",
+          function: {
+            name: "inspect_app",
+            arguments: JSON.stringify(requiredInspection),
+          },
+        }),
+      ];
     }
     const valid = evaluations.filter((evaluation) => evaluation.ok);
     const allCallsValid = evaluations.every((evaluation) => evaluation.ok);

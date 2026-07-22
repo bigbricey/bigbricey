@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   authorizeBuddyContinuationPlan,
   classifyBuddyTurn,
+  requiredAppInspection,
   toolsForBuddyTurn,
 } from "../api/_buddy_tool_routing.js";
 import { BIGBRICEY_TOOLS } from "../api/_tool_contracts.js";
@@ -212,5 +213,32 @@ test("read turns cannot authorize a later mutation continuation", () => {
   assert.equal(
     authorizeBuddyContinuationPlan({ writeAuthorized: true, plan }),
     plan
+  );
+});
+
+test("a visible panel question requires inspection when the model forgets the tool", () => {
+  assert.deepEqual(
+    requiredAppInspection({
+      userText: "What is this Weight 30-Day thing? Don't change or remove anything.",
+      evaluations: [],
+    }),
+    {
+      focus: "What is this Weight 30-Day thing? Don't change or remove anything.",
+      allow_removal: false,
+    }
+  );
+  assert.equal(
+    requiredAppInspection({
+      userText: "What nutrients are in a sweet potato?",
+      evaluations: [],
+    }),
+    null
+  );
+  assert.equal(
+    requiredAppInspection({
+      userText: "Explain this chart",
+      evaluations: [{ ok: true, tool_name: "inspect_app" }],
+    }),
+    null
   );
 });

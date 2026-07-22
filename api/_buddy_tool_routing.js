@@ -182,6 +182,33 @@ export function toolsForBuddyTurn({ route = {}, tools = [] } = {}) {
 }
 
 /**
+ * A visible-interface question is useless if the model merely says it will
+ * look. After the LLM has received the turn, require the one safe read when it
+ * forgot to emit it.
+ */
+export function requiredAppInspection({
+  userText = "",
+  evaluations = [],
+} = {}) {
+  if (Array.isArray(evaluations) && evaluations.length) return null;
+  const text = String(userText || "").trim();
+  if (!text || text.length > 2_000) return null;
+  const asksAboutVisibleApp =
+    /\bweight\s*\(?30[- ]?day\)?\b/i.test(text) ||
+    /\b(?:dashboard|panel|chart|tracker|card|box|button)\b/i.test(text);
+  const asksWhatItIs =
+    /\b(?:what|why|explain|tell me|show me|how)\b/i.test(text) ||
+    /\bthis\s+(?:thing|one)\b/i.test(text);
+  if (!asksAboutVisibleApp || !asksWhatItIs) return null;
+  return {
+    focus: text.slice(0, 500),
+    allow_removal:
+      /\b(?:remove|delete|get rid of)\b/i.test(text) &&
+      !/\b(?:don['’]?t|do not|without)\s+(?:change|remove|delete)\b/i.test(text),
+  };
+}
+
+/**
  * A read may help answer a question, but it may never become permission for a
  * later write. Keep that authorization attached to the original user turn.
  */
