@@ -69,6 +69,22 @@ test("only real executor receipts can override the model reply", () => {
   assert.match(source, /unsupported action/i);
 });
 
+test("a verified empty food read answers directly without inventing totals", async () => {
+  const { recordedDayReply } = await loadWrapperModule();
+  assert.equal(
+    recordedDayReply({
+      day: "2026-07-22",
+      food: [],
+      totals: { kcal: 0, protein: 0 },
+    }),
+    "You haven’t logged any food today. Nothing changed."
+  );
+  assert.equal(
+    recordedDayReply({ unavailable: ["food"] }),
+    ""
+  );
+});
+
 test("current log context preserves and totals fiber and key minerals", async () => {
   const { buildCurrentLogContext } = await loadWrapperModule();
   const context = buildCurrentLogContext([

@@ -5,6 +5,7 @@ import {
   authorizeBuddyContinuationPlan,
   classifyBuddyTurn,
   requiredAppInspection,
+  requiredTodayLedgerRead,
   toolsForBuddyTurn,
 } from "../api/_buddy_tool_routing.js";
 import { BIGBRICEY_TOOLS } from "../api/_tool_contracts.js";
@@ -238,6 +239,25 @@ test("a visible panel question requires inspection when the model forgets the to
     requiredAppInspection({
       userText: "Explain this chart",
       evaluations: [{ ok: true, tool_name: "inspect_app" }],
+    }),
+    null
+  );
+});
+
+test("a personal food-history question requires the real ledger read", () => {
+  assert.deepEqual(
+    requiredTodayLedgerRead({
+      userText: "What did I log today? Don't change anything.",
+      currentDate: "2026-07-22",
+      evaluations: [],
+    }),
+    { day: "2026-07-22", include: ["food", "totals"] }
+  );
+  assert.equal(
+    requiredTodayLedgerRead({
+      userText: "What nutrients are in an egg?",
+      currentDate: "2026-07-22",
+      evaluations: [],
     }),
     null
   );

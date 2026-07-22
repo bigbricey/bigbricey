@@ -233,3 +233,31 @@ export function composeActionReply({ modelReply = "", executionNotes = [] } = {}
 
   return receipt || voice;
 }
+
+export function recordedDayReply(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return "";
+  if (Array.isArray(data.unavailable) && data.unavailable.length) return "";
+  const foods = Array.isArray(data.food) ? data.food : null;
+  if (!foods) return "";
+  if (!foods.length) {
+    return "You haven’t logged any food today. Nothing changed.";
+  }
+  const labels = foods
+    .map((item) => String(item?.label || "").trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  let reply = `You logged ${foods.length} food item${foods.length === 1 ? "" : "s"} today`;
+  if (labels.length) reply += `: ${labels.join(", ")}`;
+  reply += ".";
+  const totals =
+    data.totals && typeof data.totals === "object" && !Array.isArray(data.totals)
+      ? data.totals
+      : {};
+  const summary = [];
+  if (finiteNumber(totals.kcal) != null) summary.push(`${roundTotal(totals.kcal)} kcal`);
+  if (finiteNumber(totals.protein) != null) {
+    summary.push(`${roundTotal(totals.protein)} g protein`);
+  }
+  if (summary.length) reply += ` Verified total: ${summary.join(" and ")}.`;
+  return `${reply} Nothing changed.`.slice(0, 1_200);
+}

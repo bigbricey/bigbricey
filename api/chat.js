@@ -72,6 +72,7 @@ import {
   buildCurrentLogContext,
   composeActionReply,
   prepareModelHistory,
+  recordedDayReply,
 } from "./_chat_wrapper.js";
 import { buildBuddySystemPrompt } from "./_buddy_prompt.js";
 import {
@@ -88,6 +89,7 @@ import {
   authorizeBuddyContinuationPlan,
   classifyBuddyTurn,
   requiredAppInspection,
+  requiredTodayLedgerRead,
   toolsForBuddyTurn,
 } from "./_buddy_tool_routing.js";
 import {
@@ -2420,6 +2422,16 @@ export default async function handler(req, res) {
       .map((evaluation) => executionByCall.get(evaluation.tool_call_id)?.data)
       .find(Boolean) || null;
     const exactInspectionReply = appInspectionReply(appInspectionData);
+    const forcedTodayRead = nativeEvaluations.find(
+      (evaluation) =>
+        evaluation?.ok &&
+        evaluation.tool_name === "read_today" &&
+        evaluation.tool_call_id === "server_required_read_today"
+    );
+    const exactTodayReadReply = forcedTodayRead
+      ? recordedDayReply(executionByCall.get(forcedTodayRead.tool_call_id)?.data)
+      : "";
+    const exactReadReply = exactInspectionReply || exactTodayReadReply;
     for (const evaluation of nativeEvaluations) {
       if (!evaluation?.ok) {
         verifiedToolResults.push(
@@ -2519,11 +2531,11 @@ export default async function handler(req, res) {
       executionNotes: notes,
     });
     if (
-      exactInspectionReply &&
+      exactReadReply &&
       nativeEvaluations.length === 1 &&
-      nativeEvaluations[0]?.tool_name === "inspect_app"
+      ["inspect_app", "read_today"].includes(nativeEvaluations[0]?.tool_name)
     ) {
-      executorDerivedReply = exactInspectionReply;
+      executorDerivedReply = exactReadReply;
     }
     let candidateReply = executorDerivedReply;
     if (
@@ -2775,10 +2787,10 @@ export default async function handler(req, res) {
       }
     }
     const finalCandidateReply =
-      exactInspectionReply &&
+      exactReadReply &&
       nativeEvaluations.length === 1 &&
-      nativeEvaluations[0]?.tool_name === "inspect_app"
-        ? exactInspectionReply
+      ["inspect_app", "read_today"].includes(nativeEvaluations[0]?.tool_name)
+        ? exactReadReply
         : candidateReply;
     let reply = selectVerifiedNativeToolReply({
       candidateReply: finalCandidateReply,
@@ -3954,6 +3966,23 @@ async function interpretIntent(text, rows, ctx = {}) {
           function: {
             name: "inspect_app",
             arguments: JSON.stringify(requiredInspection),
+          },
+        }),
+      ];
+    }
+    const requiredTodayRead = requiredTodayLedgerRead({
+      userText: text,
+      currentDate: ctx.currentDate,
+      evaluations,
+    });
+    if (requiredTodayRead) {
+      evaluations = [
+        validateNativeToolCall({
+          id: "server_required_read_today",
+          type: "function",
+          function: {
+            name: "read_today",
+            arguments: JSON.stringify(requiredTodayRead),
           },
         }),
       ];

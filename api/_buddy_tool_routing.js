@@ -208,6 +208,24 @@ export function requiredAppInspection({
   };
 }
 
+export function requiredTodayLedgerRead({
+  userText = "",
+  currentDate = "",
+  evaluations = [],
+} = {}) {
+  if (Array.isArray(evaluations) && evaluations.length) return null;
+  const text = String(userText || "").trim();
+  const day = String(currentDate || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  const asksForRecordedFood =
+    /\bwhat\s+(?:did|have)\s+i\s+(?:log|logged|eat|eaten)\b/i.test(text) ||
+    /\bwhat\s+have\s+i\s+(?:logged|eaten)\b/i.test(text) ||
+    /\bwhat(?:['’]s| is)\s+in\s+my\s+(?:food\s+)?(?:log|diary)\b/i.test(text) ||
+    /\btoday(?:['’]s)?\s+(?:food\s+)?(?:log|diary|totals)\b/i.test(text);
+  if (!asksForRecordedFood) return null;
+  return { day, include: ["food", "totals"] };
+}
+
 /**
  * A read may help answer a question, but it may never become permission for a
  * later write. Keep that authorization attached to the original user turn.
