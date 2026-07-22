@@ -61,6 +61,7 @@ TOOL RULES:
 - “Log 3/4 lb sweet potato” is write_explicit/add_food.
 - “I’m having brisket” is write_ambiguous with no mutation tool; the assistant should ask only how much.
 - “Back off on reminders,” “be more direct,” or a nickname request is write_explicit/set_companion_settings.
+- “Make me a 30-day magnesium chart” is write_explicit/set_tracker. Creating a requested dashboard chart or tracker is a real app change, not ordinary conversation.
 - For a vague named saved meal that the user explicitly wants logged, start with list_saved_foods so the exact private item can be verified.
 - Do not choose tools merely because they exist. Return an empty tool list for ordinary conversation.
 
@@ -132,6 +133,40 @@ function normalizeRoute(value, output) {
   };
 }
 
+function withRequiredExplicitTrackerTool(route, userText) {
+  const text = String(userText || "").trim();
+  if (!text || text.length > 2_000) return route;
+  const asksToCreate =
+    /\b(?:make|create|add|build)\s+(?:me\s+)?(?:an?\s+)?(?:[a-z0-9-]+\s+){0,10}(?:chart|tracker)\b/i.test(
+      text
+    ) ||
+    /\bset\s+up\s+(?:me\s+)?(?:an?\s+)?(?:[a-z0-9-]+\s+){0,10}(?:chart|tracker)\b/i.test(
+      text
+    );
+  const asksForInstructions =
+    /^\s*(?:how|where)\b/i.test(text) ||
+    /^\s*what(?:['’]s| is)\s+the\s+(?:way|process)\b/i.test(text);
+  const negatesCreation =
+    /\b(?:don['’]?t|do not|never)\b[\s\S]{0,80}\b(?:make|create|add|build|set\s+up)\b/i.test(
+      text
+    );
+  if (!asksToCreate || asksForInstructions || negatesCreation) return route;
+
+  const existing = route?.valid === false || !Array.isArray(route?.toolNames)
+    ? []
+    : route.toolNames;
+  return {
+    ...route,
+    mode: "write_explicit",
+    toolNames: ["set_tracker", ...existing.filter((name) => name !== "set_tracker")].slice(
+      0,
+      6
+    ),
+    evidence:
+      "The current message explicitly asks BigBricey to create a real dashboard chart or tracker.",
+  };
+}
+
 /** One small semantic routing pass. Invalid output fails closed to reads only. */
 export async function classifyBuddyTurn({
   llm = llmChat,
@@ -161,9 +196,12 @@ export async function classifyBuddyTurn({
       },
       maxTokens: 180,
     });
-    return normalizeRoute(JSON.parse(String(output?.content || "")), output);
+    return withRequiredExplicitTrackerTool(
+      normalizeRoute(JSON.parse(String(output?.content || "")), output),
+      userText
+    );
   } catch {
-    return safeReadFallback(output);
+    return withRequiredExplicitTrackerTool(safeReadFallback(output), userText);
   }
 }
 

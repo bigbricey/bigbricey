@@ -80,6 +80,56 @@ test("an explicit request to log 3/4 lb of sweet potato permits add_food", async
   assert.deepEqual(selectedToolNames(route), ["add_food"]);
 });
 
+test("an explicit chart request exposes the real tracker tool even when the semantic router misses it", async () => {
+  const calls = [];
+  const route = await classifyBuddyTurn({
+    llm: classifierReturning(
+      {
+        mode: "conversation",
+        tool_names: [],
+        evidence: "The user is talking about a dashboard chart.",
+      },
+      calls
+    ),
+    userText: "Make me a real 30-day magnesium line chart on my dashboard.",
+    history: [],
+  });
+
+  assert.equal(calls.length, 1, "the model must receive the turn before the guard runs");
+  assert.equal(route.mode, "write_explicit");
+  assert.deepEqual(selectedToolNames(route), ["set_tracker"]);
+});
+
+test("a chart instruction question does not become a dashboard mutation", async () => {
+  const route = await classifyBuddyTurn({
+    llm: classifierReturning({
+      mode: "conversation",
+      tool_names: [],
+      evidence: "The user asks how chart creation works.",
+    }),
+    userText: "How do I create a magnesium chart?",
+    history: [],
+  });
+
+  assert.equal(route.mode, "conversation");
+  assert.deepEqual(selectedToolNames(route), []);
+});
+
+test("a negated chart request never exposes the tracker mutation", async () => {
+  const route = await classifyBuddyTurn({
+    llm: classifierReturning({
+      mode: "read",
+      tool_names: ["inspect_app"],
+      evidence: "The user asks for an explanation without a change.",
+    }),
+    userText: "Don't create a chart; just explain the Weight 30-Day panel.",
+    history: [],
+  });
+
+  assert.equal(route.mode, "read");
+  assert.deepEqual(selectedToolNames(route), ["inspect_app"]);
+});
+
 test("put that in my diary is an explicit mutation when prior food context supplies the referent", async () => {
   const calls = [];
   const history = [
