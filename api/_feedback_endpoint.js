@@ -77,7 +77,7 @@ async function interactionContext(accountId, interactionId) {
   };
 }
 
-export default async function handler(req, res) {
+export default async function feedbackEndpoint(req, res) {
   if (req.method === "OPTIONS") {
     res.setHeader("Allow", "POST, OPTIONS");
     return res.status(204).end();

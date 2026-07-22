@@ -40,7 +40,7 @@ async function refreshAccountRequestStatus(accountId) {
   return status;
 }
 
-export default async function handler(req, res) {
+export default async function dataRightsEndpoint(req, res) {
   if (req.method === "OPTIONS") {
     res.setHeader("Allow", "GET, POST, OPTIONS");
     return res.status(204).end();

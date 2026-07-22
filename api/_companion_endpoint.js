@@ -28,7 +28,7 @@ function publicError(error) {
   };
 }
 
-export default async function handler(req, res) {
+export default async function companionEndpoint(req, res) {
   if (req.method === "OPTIONS") {
     res.setHeader("Allow", "GET, PATCH, OPTIONS");
     return res.status(204).end();

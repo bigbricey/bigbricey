@@ -1,7 +1,7 @@
 import { llmConfig } from "./_llm.js";
 import { visionModels } from "./_vision.js";
 
-export default function handler(req, res) {
+export default function healthEndpoint(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   const llm = llmConfig();
   const vision = visionModels();

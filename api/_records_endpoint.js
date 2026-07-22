@@ -71,7 +71,7 @@ async function documentForRequest(email, accountId, url) {
   })).document;
 }
 
-export default async function handler(req, res) {
+export default async function recordsEndpoint(req, res) {
   if (req.method === "OPTIONS") {
     res.setHeader("Allow", "GET, OPTIONS");
     return res.status(204).end();

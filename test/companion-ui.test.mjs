@@ -28,7 +28,7 @@ test("companion UI saves one validated account setting and renders suggestions a
 });
 
 test("companion API is authenticated, bounded, additive, and never returns profile email", async () => {
-  const source = await readFile(new URL("api/companion.js", root), "utf8");
+  const source = await readFile(new URL("api/_companion_endpoint.js", root), "utf8");
   assert.match(source, /requireUser\(req, res\)/);
   assert.match(source, /maxBytes: 4_096/);
   assert.match(source, /validateCompanionSettingsPatch/);

@@ -19,7 +19,7 @@ test("first-party product metrics reject message, food, and health content", () 
 });
 
 test("stable record services are authenticated, read-only, aggregated, and account scoped", async () => {
-  const records = await readFile(new URL("../api/records.js", import.meta.url), "utf8");
+  const records = await readFile(new URL("../api/_records_endpoint.js", import.meta.url), "utf8");
   assert.match(records, /if \(req\.method !== "GET"\)/);
   assert.match(records, /error: "read_only_service"/);
   assert.match(records, /accountIdForEmail\(user\.email\)/);
@@ -54,8 +54,8 @@ test("snapshots, corrections, feedback, and request cancellation cannot broaden 
     new URL("../api/_health_snapshot.js", import.meta.url),
     "utf8"
   );
-  const feedback = await readFile(new URL("../api/feedback.js", import.meta.url), "utf8");
-  const rights = await readFile(new URL("../api/data-rights.js", import.meta.url), "utf8");
+  const feedback = await readFile(new URL("../api/_feedback_endpoint.js", import.meta.url), "utf8");
+  const rights = await readFile(new URL("../api/_data_rights_endpoint.js", import.meta.url), "utf8");
   assert.match(snapshot, /id: `eq\.\$\{snapshot\}`,[\s\S]*?account_id: `eq\.\$\{id\}`/);
   assert.match(snapshot, /account_id: `eq\.\$\{normalizeAccountId\(accountId\)\}`/);
   assert.match(feedback, /conversation_id: `eq\.\$\{selected\.conversation_id\}`,[\s\S]*?account_id: `eq\.\$\{accountId\}`/);
@@ -77,7 +77,7 @@ test("mutation audit, rate limits, and browser-role denial are migration-enforce
 });
 
 test("export and deletion are explicit requests; deletion never runs automatically", async () => {
-  const route = await readFile(new URL("../api/data-rights.js", import.meta.url), "utf8");
+  const route = await readFile(new URL("../api/_data_rights_endpoint.js", import.meta.url), "utf8");
   const ui = await readFile(new URL("../public/app.html", import.meta.url), "utf8");
   assert.match(route, /REQUEST DELETE MY ACCOUNT/);
   assert.match(route, /automatic_deletion: false/);

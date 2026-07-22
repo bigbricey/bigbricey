@@ -29,6 +29,30 @@
       "destination": "/api/log"
     },
     {
+      "source": "/api/companion",
+      "destination": "/api/account?__account_route=companion"
+    },
+    {
+      "source": "/api/data-rights",
+      "destination": "/api/account?__account_route=data-rights"
+    },
+    {
+      "source": "/api/feedback",
+      "destination": "/api/account?__account_route=feedback"
+    },
+    {
+      "source": "/api/health",
+      "destination": "/api/account?__account_route=health"
+    },
+    {
+      "source": "/api/records",
+      "destination": "/api/account?__account_route=records"
+    },
+    {
+      "source": "/api/snapshots",
+      "destination": "/api/account?__account_route=snapshots"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/$1"
     }

@@ -112,7 +112,7 @@ test("snapshot edits are bounded and reject empty exports", () => {
 });
 
 test("snapshot API and persistence queries bind every saved record to the random account id", async () => {
-  const route = await readFile(new URL("../api/snapshots.js", import.meta.url), "utf8");
+  const route = await readFile(new URL("../api/_snapshots_endpoint.js", import.meta.url), "utf8");
   const service = await readFile(
     new URL("../api/_health_snapshot.js", import.meta.url),
     "utf8"

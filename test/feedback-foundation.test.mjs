@@ -14,7 +14,7 @@ test("feedback requires an explicit user confirmation before any database work",
 });
 
 test("specific-interaction feedback can include context only by explicit opt-in", async () => {
-  const route = await readFile(new URL("../api/feedback.js", import.meta.url), "utf8");
+  const route = await readFile(new URL("../api/_feedback_endpoint.js", import.meta.url), "utf8");
   assert.match(route, /body\?\.consent !== true/);
   assert.match(route, /const includeContext = body\.include_context === true/);
   assert.match(route, /account_id: `eq\.\$\{accountId\}`/);
@@ -25,7 +25,7 @@ test("specific-interaction feedback can include context only by explicit opt-in"
 });
 
 test("one account cannot attach another account's interaction to feedback", async () => {
-  const route = await readFile(new URL("../api/feedback.js", import.meta.url), "utf8");
+  const route = await readFile(new URL("../api/_feedback_endpoint.js", import.meta.url), "utf8");
   const interactionRead = route.slice(
     route.indexOf("async function interactionContext"),
     route.indexOf("export default async function handler")
