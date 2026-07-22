@@ -1,4 +1,5 @@
 import { isKnownReadOnlyToolName } from "./_read_tool_repair.js";
+import { canonicalMeasureId } from "./_measure_ids.js";
 
 function compactObject(value) {
   return Object.fromEntries(
@@ -105,6 +106,12 @@ export function actionFromValidatedToolCall(call) {
       action = {
         type: args.kind === "chart" ? "set_chart" : "set_box",
         ...args,
+        ...(args.measure_id != null
+          ? { measure_id: canonicalMeasureId(args.measure_id) }
+          : {}),
+        ...(Array.isArray(args.measures)
+          ? { measures: args.measures.map(canonicalMeasureId).filter(Boolean) }
+          : {}),
       };
       break;
     case "remove_tracker":

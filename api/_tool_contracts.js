@@ -144,12 +144,12 @@ const DEFINITIONS = [
     label: string("Human label."),
     day: string("Calendar day in YYYY-MM-DD format."),
   }, ["measure_id", "value"])],
-  ["set_tracker", "Create or update a real Today dashboard counter or chart backed by recorded ledger measurements. For weight use weight_lb. Charts may start empty until that metric is logged.", objectSchema({
+  ["set_tracker", "Create or update a real Today dashboard counter or chart backed by recorded ledger measurements. Standard ledger ids are kcal, protein, fat, carbs, net_carbs, fiber, sugars, potassium, magnesium, sodium, calcium, iron, zinc, vitamin_a, vitamin_c, vitamin_d, vitamin_e, vitamin_k, b12, folate, omega3, steps, duration_min, distance_mi, weight_lb, waist_in, body_fat_pct, and glucose_mg_dl. Never append the display unit to those ids. Charts may start empty until that metric is logged.", objectSchema({
     id: string("Optional stable custom panel id beginning with c_."),
     kind: string("Tracker type.", { enum: TRACKER_KINDS }),
     title: string("Short user-facing panel title."),
-    measure_id: string("One stable snake_case measurement id. Use this for counters or single-series charts."),
-    measures: array("One to six stable snake_case measurement ids for a chart.", { type: "string" }, { minItems: 1, maxItems: 6, uniqueItems: true }),
+    measure_id: string("One canonical ledger measurement id without a unit suffix. Use this for counters or single-series charts."),
+    measures: array("One to six canonical ledger measurement ids without unit suffixes for a chart.", { type: "string" }, { minItems: 1, maxItems: 6, uniqueItems: true }),
     unit: string("Short display unit."),
     goal: number("Counter target."),
     mode: string("Whether the counter aims for at least or at most the goal.", { enum: TRACKER_MODES }),

@@ -115,6 +115,7 @@ import {
 } from "./_read_tool_repair.js";
 import { executeSavedFoodContinuation } from "./_saved_food_continuation.js";
 import { removeDashboardTrackers } from "./_tracker_mutation.js";
+import { canonicalMeasureId } from "./_measure_ids.js";
 import {
   createToolConfirmationToken,
   verifyToolConfirmationToken,
@@ -1437,9 +1438,13 @@ export default async function handler(req, res) {
 
           let measures = [];
           if (Array.isArray(action.measures)) {
-            measures = action.measures.map(slug).filter(Boolean);
+            measures = action.measures
+              .map((value) => canonicalMeasureId(value).slice(0, 32))
+              .filter(Boolean);
           } else if (action.measure_id || action.measure) {
-            measures = [slug(action.measure_id || action.measure)];
+            measures = [
+              canonicalMeasureId(action.measure_id || action.measure).slice(0, 32),
+            ].filter(Boolean);
           }
           const title =
             action.title ||
@@ -1494,9 +1499,32 @@ export default async function handler(req, res) {
             days: kind === "chart" ? days : undefined,
           };
 
-          const idx = boxes.findIndex(
+          let idx = boxes.findIndex(
             (b) => b.id === id || (kind === "counter" && b.measure_id === measure_id && b.kind !== "chart")
           );
+          if (idx < 0 && kind === "chart") {
+            const requestedMeasures = measures.join("|");
+            idx = boxes.findIndex((candidate) => {
+              if (String(candidate?.kind || "").toLowerCase() !== "chart") return false;
+              const candidateMeasures = (
+                Array.isArray(candidate.measures)
+                  ? candidate.measures
+                  : [candidate.measure_id]
+              )
+                .map((value) => canonicalMeasureId(value).slice(0, 32))
+                .filter(Boolean)
+                .join("|");
+              const candidateDays = Math.min(
+                1095,
+                Math.max(1, Math.round(Number(candidate.days) || 30))
+              );
+              return candidateDays === days && candidateMeasures === requestedMeasures;
+            });
+          }
+          if (idx >= 0 && kind === "chart" && boxes[idx]?.id) {
+            id = String(boxes[idx].id);
+            box.id = id;
+          }
           if (idx >= 0) boxes[idx] = { ...boxes[idx], ...box };
           else boxes.push(box);
 

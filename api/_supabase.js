@@ -16,6 +16,10 @@ import {
   selectUniqueMemoryMatch,
   selectChatContextWindow,
 } from "./_chat_memory.js";
+import {
+  canonicalMeasureId,
+  defaultUnitForMeasure,
+} from "./_measure_ids.js";
 
 export function supabaseConfig() {
   const url = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
@@ -1805,11 +1809,21 @@ export async function saveUserBoxes(email, list = []) {
 
     let measures = [];
     if (Array.isArray(raw.measures)) {
-      measures = raw.measures.map(slug).filter(Boolean).slice(0, 6);
+      measures = raw.measures
+        .map((value) => canonicalMeasureId(value).slice(0, 32))
+        .filter(Boolean)
+        .slice(0, 6);
     } else if (raw.measure_id || raw.measure) {
-      measures = [slug(raw.measure_id || raw.measure)].filter(Boolean);
+      measures = [
+        canonicalMeasureId(raw.measure_id || raw.measure).slice(0, 32),
+      ].filter(Boolean);
     }
-    const mid = measures[0] || slug(raw.measure_id || raw.measure || raw.title || "custom") || "custom";
+    const mid =
+      measures[0] ||
+      canonicalMeasureId(
+        raw.measure_id || raw.measure || raw.title || "custom"
+      ).slice(0, 32) ||
+      "custom";
     if (kind === "chart" && !measures.length) measures = [mid];
 
     let days = null;
@@ -1839,26 +1853,14 @@ export async function saveUserBoxes(email, list = []) {
     let goal = raw.goal != null ? Number(raw.goal) : raw.target != null ? Number(raw.target) : null;
     if (goal != null && !Number.isFinite(goal)) goal = null;
     const sizeDefault = kind === "chart" ? "full" : "half";
-    const knownUnit = {
-      weight_lb: "lb",
-      kcal: "kcal",
-      protein: "g",
-      fat: "g",
-      carbs: "g",
-      net_carbs: "g",
-      steps: "steps",
-      reps: "reps",
-      sets: "sets",
-      duration_min: "min",
-      distance_mi: "mi",
-    }[mid] || "";
+    const knownUnit = defaultUnitForMeasure(mid);
     boxes.push({
       id,
       kind,
       title: String(raw.title || raw.label || mid).slice(0, 48),
       measure_id: mid,
       measures: kind === "chart" ? measures : [mid],
-      unit: String(raw.unit || knownUnit).slice(0, 16),
+      unit: String(knownUnit || raw.unit || "").slice(0, 16),
       goal: kind === "counter" ? goal : null,
       mode: String(raw.mode || "floor").toLowerCase() === "ceiling" ? "ceiling" : "floor",
       color: hex(raw.color) || hex(raw.accent) || "#38bdf8",
