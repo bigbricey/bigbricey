@@ -184,6 +184,10 @@ export default async function handler(req, res) {
     let authoritativeRowsLoaded = false;
     if (supabaseConfig().ok) {
       try {
+        // A newly invited member may not have a profile/account until their
+        // first authenticated request. Initialize it before the locked ledger
+        // read so the very first food message can be committed immediately.
+        await ensureProfile(session.email);
         const snapshot = await loadFoodDaySnapshot(session.email, requestedDay);
         rows = snapshot.rows;
         foodDayRevision = snapshot.revision;
@@ -236,7 +240,6 @@ export default async function handler(req, res) {
     let profileSnapshotLoaded = false;
     if (supabaseConfig().ok) {
       try {
-        await ensureProfile(session.email);
         const profile = await getProfile(session.email);
         profileSnapshotLoaded = true;
         personCtx = onboardingFromPrefs(profile?.prefs);

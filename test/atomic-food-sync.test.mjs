@@ -35,6 +35,7 @@ test("server sync delegates the whole replacement to the atomic RPC", async () =
 test("food-day reads expose a revision and API writes require that precondition", async () => {
   const supabase = await readFile(new URL("../api/_supabase.js", import.meta.url), "utf8");
   const logApi = await readFile(new URL("../api/log.js", import.meta.url), "utf8");
+  const chatApi = await readFile(new URL("../api/chat.js", import.meta.url), "utf8");
   const migration = await readFile(
     new URL("../supabase/migration_010_atomic_food_sync.sql", import.meta.url),
     "utf8"
@@ -52,6 +53,21 @@ test("food-day reads expose a revision and API writes require that precondition"
   assert.match(logApi, /expected_revision/);
   assert.match(logApi, /revision/);
   assert.match(supabase, /stale_food_day_revision/);
+
+  const postStart = chatApi.indexOf("const requestedDay = normalizeRequestedDay");
+  const initializeProfile = chatApi.indexOf(
+    "await ensureProfile(session.email)",
+    postStart
+  );
+  const loadAuthoritativeLedger = chatApi.indexOf(
+    "await loadFoodDaySnapshot(session.email, requestedDay)",
+    postStart
+  );
+  assert.ok(postStart >= 0, "chat POST flow should normalize the requested day");
+  assert.ok(
+    initializeProfile > postStart && initializeProfile < loadAuthoritativeLedger,
+    "chat must initialize a new member before its first authoritative ledger read"
+  );
 });
 
 test("migration backfills totals for existing ledger days", async () => {
