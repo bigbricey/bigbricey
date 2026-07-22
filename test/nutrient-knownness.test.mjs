@@ -25,6 +25,28 @@ test("database lookups preserve unknown nutrients instead of inventing zero", ()
   assert.equal(off.fiber, null, "a missing OFF nutrient stays unknown");
 });
 
+test("Open Food Facts units are converted only when their source unit is known", () => {
+  const off = offNutrients({
+    "energy-kcal_100g": 120,
+    proteins_100g: 10,
+    fat_100g: 4,
+    carbohydrates_100g: 1,
+    calcium_100g: 0.12,
+    calcium_unit: "g",
+    "vitamin-a_100g": 0.000149,
+    "vitamin-a_unit": "g",
+    "vitamin-d_100g": 0.0000022,
+    "vitamin-d_unit": "g",
+    "omega-3-fat_100g": 0.043,
+    "omega-3-fat_unit": "g",
+  });
+  assert.equal(off.calcium, 120);
+  assert.equal(off.vitamin_a, 149);
+  assert.ok(Math.abs(off.vitamin_d - 88) < 0.0001);
+  assert.equal(off.omega3, 0.043);
+  assert.equal(off.b12, null);
+});
+
 test("saved foods preserve optional nutrient knownness across storage", () => {
   const base = {
     id: "saved-1",

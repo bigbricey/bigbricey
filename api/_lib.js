@@ -107,9 +107,26 @@ export function offlineParse(text) {
 
 function evalFraction(s) {
   const word = String(s).toLowerCase();
+  const wordNumbers = {
+    zero: 0,
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+    eleven: 11,
+    twelve: 12,
+  };
   if (word === "half") return 0.5;
   if (word === "quarter") return 0.25;
-  if (word === "one" || word === "a" || word === "an") return 1;
+  if (/^three[- ]quarters?$/.test(word)) return 0.75;
+  if (word === "a" || word === "an") return 1;
+  if (wordNumbers[word] != null) return wordNumbers[word];
   if (String(s).includes("/")) {
     const [a, b] = String(s).split("/").map(Number);
     return a / b;
@@ -142,7 +159,50 @@ export function toGrams(amount, unit) {
 export function normalizeParsedFoodQuantity(text, parsed = {}) {
   const next = { ...parsed };
   const raw = String(text || "").toLowerCase().trim();
-  const amountToken = "(half|quarter|one|a|an|[\\d.]+\\/[\\d.]+|[\\d.]+)";
+  const amountToken =
+    "(three[- ]quarters?|half|quarter|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a|an|[\\d.]+\\/[\\d.]+|[\\d.]+)";
+  const explicitMass = raw.match(
+    new RegExp(
+      `(?:^|\\b)${amountToken}\\s*(?:of\\s+(?:a|an)\\s+)?(pounds?|lbs?|ounces?|oz|kilograms?|kg|grams?|g)\\b`,
+      "i"
+    )
+  );
+  if (explicitMass) {
+    const unit = String(explicitMass[2] || "").toLowerCase();
+    const unitMap = {
+      pound: "lb",
+      pounds: "lb",
+      lb: "lb",
+      lbs: "lb",
+      ounce: "oz",
+      ounces: "oz",
+      oz: "oz",
+      kilogram: "kg",
+      kilograms: "kg",
+      kg: "kg",
+      gram: "g",
+      grams: "g",
+      g: "g",
+    };
+    next.amount = evalFraction(explicitMass[1]);
+    next.unit = unitMap[unit];
+    next.grams_estimate = toConvertibleGrams(next.amount, next.unit);
+  }
+  const countedEggs = raw.match(
+    new RegExp(
+      `(?:^|\\b)${amountToken}\\s+(?:(small|medium|large|extra[- ]large|jumbo)\\s+)?(?:(hard[- ]?boiled|soft[- ]?boiled|boiled|fried|scrambled|poached)\\s+)?eggs?\\b`,
+      "i"
+    )
+  );
+  if (countedEggs) {
+    next.amount = evalFraction(countedEggs[1]);
+    next.unit = "eggs";
+    next.grams_estimate = next.amount * 50;
+    const preparation = countedEggs[3]
+      ? countedEggs[3].replace(/\s+/g, "-")
+      : "";
+    next.food_query = [preparation, "egg"].filter(Boolean).join(" ");
+  }
   const butterStick = raw.match(
     new RegExp(
       `(?:^|\\b)${amountToken}\\s*(?:of\\s+an?\\s+|an?\\s+)?sticks?\\s*(?:of\\s+)?(?:[a-z]+\\s+){0,3}butter\\b`,
@@ -207,9 +267,15 @@ export function toConvertibleGrams(amount, unit) {
 export function expandQuery(q) {
   const t = q.toLowerCase().trim();
   if (t === "bacon" || t === "pork bacon") return "Pork, cured, bacon, unprepared";
+  if (/\b(?:hard[- ]?boiled|boiled)\b.*\beggs?\b|\beggs?\b.*\b(?:hard[- ]?boiled|boiled)\b/.test(t)) {
+    return "Egg, whole, cooked, hard-boiled";
+  }
   if (/^egg/.test(t)) return "Eggs, Grade A, Large, egg whole";
   if (/^sweet (?:potato|potatoes)$/.test(t)) return "Sweet potato, raw, unprepared";
-  if (/brisket/.test(t)) return "beef brisket";
+  if (/brisket/.test(t) && !/\braw|uncooked|unprepared\b/.test(t)) {
+    return "Beef, brisket, cooked, braised";
+  }
+  if (/brisket/.test(t)) return "Beef, brisket, raw";
   return q;
 }
 
@@ -252,6 +318,19 @@ export function rowFromCustom(parsed, custom) {
       potassium: round(n.potassium * amount),
       magnesium: round(n.magnesium * amount),
       sodium: round(n.sodium * amount),
+      extras: {
+        known_nutrients: Object.keys(n).filter(
+          (key) => n[key] != null && Number.isFinite(Number(n[key]))
+        ),
+        provenance: {
+          source: "custom",
+          nutrition_basis: "saved_custom_serving",
+          selected_portion_grams: round(grams),
+          confidence: "high",
+          estimate_status: "user_confirmed",
+          portion_estimated: false,
+        },
+      },
     };
   }
 
@@ -273,12 +352,29 @@ export function rowFromCustom(parsed, custom) {
     potassium: round(s.potassium * scale),
     magnesium: round(s.magnesium * scale),
     sodium: round(s.sodium * scale),
+    extras: {
+      known_nutrients: Object.keys(s).filter(
+        (key) =>
+          key !== "grams" &&
+          s[key] != null &&
+          Number.isFinite(Number(s[key]))
+      ),
+      provenance: {
+        source: "custom",
+        nutrition_basis: "saved_custom_serving",
+        selected_portion_grams: round(s.grams * scale),
+        confidence: "high",
+        estimate_status: "user_confirmed",
+        portion_estimated: false,
+      },
+    },
   };
 }
 
 export function pickNutrients(list) {
   const byId = {};
   const byName = {};
+  const omega3Components = [];
   for (const n of list) {
     const id = n.nutrientId || n.nutrientNumber;
     const name = (n.nutrientName || n.nutrient || "").toLowerCase();
@@ -288,6 +384,12 @@ export function pickNutrients(list) {
     if (!Number.isFinite(val)) continue;
     if (id != null) byId[id] = val;
     if (name) byName[name] = val;
+    if (
+      /(?:\bn-3\b|omega-3|alpha-linolenic)/i.test(name) &&
+      !/ratio|added/i.test(name)
+    ) {
+      omega3Components.push(val);
+    }
   }
   const get = (...keys) => {
     for (const k of keys) {
@@ -296,6 +398,12 @@ export function pickNutrients(list) {
     }
     return null;
   };
+  const vitaminDIu = get(
+    1110,
+    "vitamin d (d2 + d3), international units"
+  );
+  const vitaminDMcg = get(1114, "vitamin d (d2 + d3)");
+  const omega3Total = get("fatty acids, total n-3", "omega-3 fatty acids");
   return {
     kcal: get(1008, "energy", "energy (kcal)"),
     protein: get(1003, "protein"),
@@ -306,6 +414,27 @@ export function pickNutrients(list) {
     potassium: get(1092, "potassium, k"),
     magnesium: get(1090, "magnesium, mg"),
     sodium: get(1093, "sodium, na"),
+    calcium: get(1087, "calcium, ca"),
+    iron: get(1089, "iron, fe"),
+    zinc: get(1095, "zinc, zn"),
+    vitamin_a: get(1106, "vitamin a, rae"),
+    vitamin_c: get(1162, "vitamin c, total ascorbic acid"),
+    vitamin_d:
+      vitaminDIu != null
+        ? vitaminDIu
+        : vitaminDMcg != null
+          ? vitaminDMcg * 40
+          : null,
+    vitamin_e: get(1109, "vitamin e (alpha-tocopherol)"),
+    vitamin_k: get(1185, "vitamin k (phylloquinone)"),
+    b12: get(1178, "vitamin b-12"),
+    folate: get(1190, "folate, dfe", 1177, "folate, total"),
+    omega3:
+      omega3Total != null
+        ? omega3Total
+        : omega3Components.length
+          ? omega3Components.reduce((sum, value) => sum + value, 0)
+          : null,
   };
 }
 
@@ -440,6 +569,48 @@ export function offNutrients(n) {
     );
     if (kj != null) kcal = kj / 4.184;
   }
+  const nutrientIn = (key, targetUnit, aliases = []) => {
+    const raw = finiteOrNull(
+      n[`${key}_100g`],
+      n[key],
+      ...aliases.flatMap((alias) => [n[`${alias}_100g`], n[alias]])
+    );
+    if (raw == null) return null;
+    const unit = String(
+      n[`${key}_unit`] ||
+        aliases.map((alias) => n[`${alias}_unit`]).find(Boolean) ||
+        ""
+    )
+      .trim()
+      .toLowerCase()
+      .replace("μ", "µ");
+    const toMicrograms = () => {
+      if (unit === "g") return raw * 1_000_000;
+      if (unit === "mg") return raw * 1_000;
+      if (["µg", "ug", "mcg"].includes(unit)) return raw;
+      return null;
+    };
+    if (targetUnit === "g") {
+      if (unit === "mg") return raw / 1_000;
+      if (["µg", "ug", "mcg"].includes(unit)) return raw / 1_000_000;
+      return raw;
+    }
+    if (targetUnit === "mg") {
+      if (unit === "g") return raw * 1_000;
+      if (["µg", "ug", "mcg"].includes(unit)) return raw / 1_000;
+      if (unit === "mg") return raw;
+      // OFF historically normalized minerals to grams even when unit metadata
+      // was absent. Preserve the existing conservative magnitude heuristic.
+      return raw > 0 && raw < 5 ? raw * 1_000 : raw;
+    }
+    if (targetUnit === "µg") return toMicrograms();
+    if (targetUnit === "IU") {
+      if (unit === "iu") return raw;
+      const micrograms = toMicrograms();
+      return micrograms == null ? null : micrograms * 40;
+    }
+    return null;
+  };
   const nutrients = {
     kcal,
     protein: finiteOrNull(n.proteins_100g, n.proteins),
@@ -447,14 +618,21 @@ export function offNutrients(n) {
     carbs: finiteOrNull(n.carbohydrates_100g, n.carbohydrates),
     fiber: finiteOrNull(n.fiber_100g, n.fiber),
     sugars: finiteOrNull(n.sugars_100g, n.sugars),
-    potassium: finiteOrNull(n.potassium_100g, n.potassium),
-    magnesium: finiteOrNull(n.magnesium_100g, n.magnesium),
-    sodium: finiteOrNull(n.sodium_100g, n.sodium),
+    potassium: nutrientIn("potassium", "mg"),
+    magnesium: nutrientIn("magnesium", "mg"),
+    sodium: nutrientIn("sodium", "mg"),
+    calcium: nutrientIn("calcium", "mg"),
+    iron: nutrientIn("iron", "mg"),
+    zinc: nutrientIn("zinc", "mg"),
+    vitamin_a: nutrientIn("vitamin-a", "µg"),
+    vitamin_c: nutrientIn("vitamin-c", "mg"),
+    vitamin_d: nutrientIn("vitamin-d", "IU"),
+    vitamin_e: nutrientIn("vitamin-e", "mg"),
+    vitamin_k: nutrientIn("vitamin-k", "µg"),
+    b12: nutrientIn("vitamin-b12", "µg"),
+    folate: nutrientIn("folates", "µg", ["folate"]),
+    omega3: nutrientIn("omega-3-fat", "g", ["omega-3"]),
   };
-  // OFF often stores minerals in grams when value is small (< ~5)
-  for (const k of ["potassium", "magnesium", "sodium"]) {
-    if (nutrients[k] > 0 && nutrients[k] < 5) nutrients[k] = nutrients[k] * 1000;
-  }
   return nutrients;
 }
 
@@ -480,7 +658,45 @@ const FOOD_ROW_NUTRIENTS = [
   "potassium",
   "magnesium",
   "sodium",
+  "calcium",
+  "iron",
+  "zinc",
+  "vitamin_a",
+  "vitamin_c",
+  "vitamin_d",
+  "vitamin_e",
+  "vitamin_k",
+  "b12",
+  "folate",
+  "omega3",
 ];
+
+function foodPreparation(value) {
+  const match = String(value || "").match(
+    /\b(raw|unprepared|cooked|roasted|baked|boiled|braised|grilled|fried|smoked|canned|drained)\b/i
+  );
+  return match ? match[1].toLowerCase() : null;
+}
+
+function foodProvenance(food, weight) {
+  const source = food?._src || food?.dataType || "lookup";
+  const quality = foodMatchQuality(food?.description || "", food);
+  return {
+    source,
+    source_food_id: food?.fdcId || null,
+    source_description: String(food?.description || "Food").slice(0, 240),
+    nutrition_basis: "database_per_100g",
+    selected_portion_grams: round(weight),
+    preparation: foodPreparation(food?.description),
+    form: food?.brandOwner ? "branded" : "generic",
+    confidence:
+      String(source).includes("barcode") || quality.coverage === 1
+        ? "high"
+        : "medium",
+    estimate_status: "verified_nutrition",
+    portion_estimated: false,
+  };
+}
 
 /** Build a ledger-ready row from verified per-100g nutrition. */
 export function foodRowFromPer100(food, grams, { label } = {}) {
@@ -504,7 +720,10 @@ export function foodRowFromPer100(food, grams, { label } = {}) {
     row[key] = round(Number(value) * (weight / 100));
     known.push(key);
   }
-  if (known.length) row.extras = { known_nutrients: known };
+  row.extras = {
+    known_nutrients: known,
+    provenance: foodProvenance(food, weight),
+  };
   return row;
 }
 
@@ -1247,7 +1466,11 @@ export async function lookupBarcode(value) {
  *   Optional saved-foods lookup (injected to avoid circular imports).
  */
 export async function resolveFood(text, opts = {}) {
-  const parseResult = await parseFood(text);
+  const parseFoodFn =
+    typeof opts.parseFoodFn === "function" ? opts.parseFoodFn : parseFood;
+  const foodSearchFn =
+    typeof opts.foodSearchFn === "function" ? opts.foodSearchFn : foodSearch;
+  const parseResult = await parseFoodFn(text);
   const parsed = normalizeParsedFoodQuantity(text, parseResult.parsed);
   if (parsed?.error === "off_topic") {
     return { error: "off_topic" };
@@ -1289,7 +1512,9 @@ export async function resolveFood(text, opts = {}) {
       searchQ.toLowerCase() === String(q).toLowerCase()
         ? [searchQ]
         : [searchQ, q];
-    const searches = await Promise.all(queries.map((query) => foodSearch(query)));
+    const searches = await Promise.all(
+      queries.map((query) => foodSearchFn(query))
+    );
     search = {
       query: q,
       foods: searches
@@ -1333,29 +1558,9 @@ export async function resolveFood(text, opts = {}) {
       note: `I found “${best.description}”, but I couldn't verify the weight of “${formatAmount(parsed) || "that serving"}” for this exact food. Give me grams, ounces, pounds, or the package serving weight.`,
     };
   }
-  const scale = grams / 100;
-  const n = best.nutrients || {};
-  const scaledNutrient = (value) => {
-    if (value == null || value === "") return undefined;
-    const number = Number(value);
-    return Number.isFinite(number) ? round(number * scale) : undefined;
-  };
-  const row = {
-    id: crypto.randomUUID(),
+  const row = foodRowFromPer100(best, grams, {
     label: `${formatAmount(parsed)} ${best.description}`.trim(),
-    source: best._src || best.dataType || "lookup",
-    fdcId: best.fdcId,
-    grams,
-    kcal: scaledNutrient(n.kcal),
-    protein: scaledNutrient(n.protein),
-    fat: scaledNutrient(n.fat),
-    carbs: scaledNutrient(n.carbs),
-    fiber: scaledNutrient(n.fiber),
-    sugars: scaledNutrient(n.sugars),
-    potassium: scaledNutrient(n.potassium),
-    magnesium: scaledNutrient(n.magnesium),
-    sodium: scaledNutrient(n.sodium),
-  };
+  });
 
   // Never ship a blank-calorie row if we can avoid it
   const positiveEnergyOrMacro = [row.kcal, row.protein, row.fat, row.carbs].some(

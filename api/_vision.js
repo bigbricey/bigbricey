@@ -16,6 +16,17 @@ const NUTRIENT_KEYS = [
   "potassium",
   "magnesium",
   "sodium",
+  "calcium",
+  "iron",
+  "zinc",
+  "vitamin_a",
+  "vitamin_c",
+  "vitamin_d",
+  "vitamin_e",
+  "vitamin_k",
+  "b12",
+  "folate",
+  "omega3",
 ];
 
 const nullableNumber = { type: ["number", "null"] };
