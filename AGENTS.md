@@ -1,7 +1,7 @@
 # AGENTS.md — BigBricey
 
 **Read first:** [`docs/AI-HANDOFF.md`](docs/AI-HANDOFF.md)  
-**Latest session:** [`docs/SESSION-LOG-2026-07-14.md`](docs/SESSION-LOG-2026-07-14.md)
+**Latest session:** [`docs/SESSION-LOG-2026-07-22.md`](docs/SESSION-LOG-2026-07-22.md)
 
 ## Identity
 - Product: **BigBricey** (private fitness/food ledger + chat).  

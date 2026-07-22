@@ -1,172 +1,173 @@
-# BigBricey — AI handoff (read this first)
+# BigBricey AI handoff
 
-**Last updated:** 2026-07-14 (evening — Codex + Grok resume continuity)  
-**Owner:** Brice (`bigbricey`)  
-**Live site:** https://bigbricey.com  
-**GitHub:** https://github.com/bigbricey/bigbricey  
-**Local folder:** `/Users/bigbricey/Projects/nutri-table` (folder name is legacy; product is BigBricey)  
-**Latest production baseline before photo logging:** `7586f4a` Improve verified food logging feedback (use `git log -1` for the newer photo release)
-**Codex continuity session:** `019f5e0e-9d09-79a1-abfe-22d58a80c8ff` (see session log)
+Last updated: 2026-07-22
+Owner: Brice (`bigbricey`)
+Live: https://bigbricey.com
+GitHub: https://github.com/bigbricey/bigbricey
+Local checkout: `/Users/bigbricey/Projects/nutri-table`
+Current application release: `5a088d1`
+Current session log: `docs/SESSION-LOG-2026-07-22.md`
 
-Any AI picking up this project: start here. Do **not** trust the root README alone (it still mentions NutriTable/FitnessFixZone — outdated).
+Read this file before changing the product. The local folder name is legacy; the product and the only production Vercel project are both **BigBricey**.
 
----
+## Product promise
 
-## What this product is
+BigBricey is a private, adult fitness, nutrition, and long-term health-record companion for people who want useful records without tedious form filling:
 
-Private multi-user **fitness / food / life data ledger** with a chat coach that can:
+> Talk normally. BigBricey handles the bookkeeping, remembers your patterns, and turns years of health data into useful information.
 
-- Log food (real lookup — never invent macros)
-- Goals, layout, themes, custom boxes/charts
-- Ambient **scenes** (rain, snow, desert, ocean, matrix, stars, confetti, fireflies, aurora, mist, neon_city)
-- Chat history (multi-conversation), permanent memory notes, token metering
-- Google OAuth + invite gate
+The product is not a general software-building agent, a diagnostic service, or a decorative virtual-world toy. Themes and atmospheric scenes may make the experience feel personal, but food logging, workouts, measurements, trends, corrections, memory, and Health Snapshot are the product.
 
-**Vision:** highly customizable private “room” / buddy home — **not** freeform HTML/JS injection. Named themes/scenes/actions only.  
-**Not ready:** kids/COPPA Family Mode or self-serve paid launch (see remaining product work).
+The founding beta is prepared but not publicly open. Billing, pricing, public enrollment, child/family mode, public MCP access, and external writes remain disabled and require Brice's separate approval.
 
-**Brice rules (global):** he approves public/identity/money/signups; prefer shipping money-capable finished work; short answers unless he asks for detail; don’t load `AI-ARCHIVE-DO-NOT-AUTOLOAD` unless he asks.
+## Current stack
 
----
-
-## Stack
-
-| Piece | Detail |
-|--------|--------|
-| Frontend | Static `public/*` (HTML/JS/CSS), no heavy framework |
+| Layer | Current implementation |
+| --- | --- |
+| Frontend | Static `public/*` HTML, JavaScript, and CSS |
 | API | Vercel serverless `api/*` |
-| Auth | Google OAuth (`api/auth/*`), session cookie |
-| DB | Supabase (service role server-side) |
-| LLM | OpenRouter, model env `OPENROUTER_MODEL` default `z-ai/glm-5.2` |
-| Deploy | Vercel project **bigbricey** only (`prj_M5m6W3qfa0j240nRfX2So51W17vi`) |
+| Authentication | Google OAuth plus signed private session cookie and invite gate |
+| Source of truth | Supabase/PostgreSQL |
+| Assistant | OpenRouter with replaceable chat and vision model settings |
+| Food data | USDA, Open Food Facts, verified saved foods, and explicit user corrections |
+| Hosting | Vercel project `bigbricey` (`prj_M5m6W3qfa0j240nRfX2So51W17vi`) |
 
-Key files:
+Important files:
 
-- `api/chat.js` — authenticated orchestration + action executor
-- `api/_buddy_prompt.js` — natural buddy system prompt
-- `api/_tool_contracts.js` — closed native-tool schemas
-- `api/_native_tool_loop.js` — verified tool-result truth layer
-- `api/_llm.js` — OpenRouter transport + **DOMAIN_CONTRACT**
-- `api/vision.js`, `api/_vision.js` — authenticated image analysis, exact barcode lookup, portion drafts
-- `api/_supabase.js` — data layer  
-- `api/_capabilities.js` — capability catalog + SCENE_IDS  
-- `public/app.js` — main UI  
-- `public/vision.js` — camera/upload, editable review, confirm-before-log UI
-- `public/boxes.js` — real metric-backed counters/charts
-- `public/scenes.js` — particle scenes  
-- `public/theme.js`, `layout.js`, `boxes.js`  
-- `supabase/migration_*.sql`
+- `api/chat.js`: authenticated turn orchestration and validated action execution
+- `api/_buddy_prompt.js`: short stable identity and behavioral contract
+- `api/_buddy_tool_routing.js`: LLM-first turn classification plus narrow post-model reliability guards
+- `api/_tool_contracts.js`: closed native tool schemas and confirmation policy
+- `api/_native_tool_loop.js`: verified tool-result truth and recovery language
+- `api/_chat_wrapper.js`: bounded conversation and ledger context
+- `api/_supabase.js`: authoritative data services and atomic writes
+- `api/_health_snapshot.js`: snapshot calculation, completeness, provenance, and exports
+- `api/_records_endpoint.js`: internal authenticated read-only record service
+- `api/_vision.js` and `public/vision.js`: image, label, and barcode review flow
+- `public/app.js`: primary signed-in experience
+- `public/boxes.js`: real persisted counters and charts
+- `public/companion.js`: user-controlled personality and proactive-help settings
+- `supabase/migration_013_account_foundation.sql`
+- `supabase/migration_014_health_snapshot_metric_semantics.sql`
+- `supabase/migration_015_account_deletion_audit.sql`
 
----
+## Assistant architecture: invariants
 
-## Chat architecture (critical — 2026-07-14)
+1. The LLM receives the user's current message before any deterministic repair or fallback can act.
+2. Each turn is classified as ordinary conversation, read-only work, an explicit write, or a genuinely ambiguous possible write.
+3. Read-only turns cannot expose mutation tools. Destructive tools require a signed, account-bound confirmation.
+4. Native tool calls are validated against closed schemas. Unknown tools, unknown fields, oversized values, and malformed arguments fail closed.
+5. The server performs food lookup, unit conversion, calculations, account reads, and mutations. The model never supplies authoritative macros.
+6. A success statement can appear only after an authoritative committed receipt. Failed or stale writes say that nothing changed.
+7. Provider tool syntax, pseudo-JSON, `<tool_call>` markup, stack traces, and control text are sanitized and never shown as product output.
+8. Conversation remains natural. Do not restore pre-LLM menus, canned regex answers, or a JSON-only assistant persona.
 
-### Correct design (current intent)
+Two narrow post-model reliability guards are intentional:
 
-1. Authenticated user message → **LLM first** with bounded history and app state.
-2. Ordinary conversation returns normal text. App reads/changes use OpenRouter's native tool calls.
-3. Every call is checked against a small closed schema; unknown tools/fields reject the entire batch.
-4. Destructive calls pause on a signed, call-bound confirmation.
-5. The server executes approved calls against account-scoped data. Food and other events use transactional PostgreSQL functions.
-6. A second model pass sees only verified tool-result envelopes. A success claim is never shown unless the executor produced a real receipt.
+- Explicit chart requests may restore the real `set_tracker` tool when the semantic router misses it.
+- Obvious first-person food logs with a real portion, such as “I had one pound of brisket,” may restore one validated `add_food` call if the provider misroutes or malforms it. Questions, hypotheticals, negations, and vague portions do not qualify.
 
-Native tools now include `set_tracker` / confirmation-gated `remove_tracker`.
-They connect the LLM to the existing custom counter/chart renderer, so requests
-such as “make a 30-day weight chart” create a real persisted dashboard panel.
-Missing measurement days remain missing (never fake zeroes), and charts show a
-text summary of recorded points as well as the canvas visualization. Body-state
-metrics such as `weight_lb` use the latest reading for each day; additive
-measures such as steps, reps, and nutrients still use daily totals.
+## Food and nutrition behavior
 
-Do not restore pseudo-JSON action prompting or regex/menu interceptors. Regex scene handling is outage-only fallback, never the normal conversation path.
+- “I'm having brisket” asks only for the missing quantity.
+- “I had one pound of brisket” resolves a defensible verified record, stores the full supported nutrient set, and returns a short receipt.
+- Read-only sweet-potato questions stay read-only and prefer the requested whole food over contaminated product matches such as tots.
+- Exact barcode and printed Nutrition Facts data are preferred for packaged foods.
+- Image analysis identifies foods or copies visible label information; it does not invent nutrient values from pixels.
+- Meal photos, labels, and barcodes create editable drafts. The user approves before the ledger changes.
+- Unknown nutrients remain unknown. They never silently become zero.
+- Confirmed identity, quantity, preparation, nutrient, and usual-portion corrections are account-scoped and bounded.
+- Food-day writes are atomic, revision-checked, idempotent, and bound to the initiating account and date.
 
-### What went wrong (fixed)
+## Memory and personalization
 
-Earlier, regex **interceptors** answered before the LLM (scene lists, “are you there”, etc.), so the bot felt lobotomized.  
-Also: “ONLY valid JSON” + `extractJson` failure → discarded model text → canned  
-`I'm with you. Tell me what you want (log food…)` from `chatFallbackReply`.
+BigBricey keeps three different kinds of state:
 
-**Fix commits (main):** through `05dd5b7` *Unlobotomize chat: free talk like Hermes…*  
-Domain contract rewritten: **normal Q&A allowed**; hard limits = no invent macros, no fake SaaS/Windows builds, no medical orders.  
-The current implementation uses native provider tools instead of model-authored pseudo-JSON.
+1. Bounded recent conversation plus a compact server-generated summary
+2. Durable structured memory, corrections, saved foods, goals, communication preferences, and companion settings
+3. The authoritative food, workout, measurement, and health ledger
 
-### Memory
+The You tab exposes every permanent memory and lets the user add, edit, or forget it. A nickname/pseudonym is optional. Personality and answer length may match the user automatically or be selected manually. Proactive help has Quiet, Helpful, and Coach modes, category permissions, and optional quiet hours. Suggestions must be grounded in current account data.
 
-- **In-product chat history:** Supabase `chat_conversations` / `chat_messages` (migration 007).  
-- **Permanent notes:** `prefs.memory_notes` via remember/forget actions.  
-- **Scenes tried:** `prefs.scene`, `prefs.scenes_seen`.  
-- **This Grok session** is **not** automatically in Supabase — use this handoff + git for cross-AI continuity.
+## Health Snapshot
 
----
+Health Snapshot supports 10 weeks, 6 months, 1 year, or all available history. It produces an editable private preview, a print-friendly report, and structured machine data. It is never sent automatically.
 
-## Scenes
+Required semantics:
 
-Implemented in `public/scenes.js` + CSS `#sceneFx`. IDs in `SCENE_IDS`.  
-Apply via chat `set_scene` or You-tab UI.  
-Bug fixed earlier: `stop()` cleared `data-scene` so canvas stayed hidden.
+- Missing calendar days remain missing, not zero.
+- Additive measures use daily totals.
+- Body-state measures such as weight use the latest active reading on each day.
+- Observed changes, coverage, source quality, estimates, outliers, and limits are labeled.
+- The report does not diagnose, prescribe, or claim causation.
 
----
+The live 2026-07-22 verification showed 2 of 70 logged days, 68 missing days, and Weight at 215 lb on one logged day.
 
-## Security/reliability repair (2026-07-14)
+## Privacy and account foundation
 
-Implemented in migrations 009/010 and the matching API/frontend release:
+- New privacy-sensitive services use a random `account_id`; email is retained only where legacy compatibility or login identity still requires it.
+- A legal name is not required in the health profile. The current Google login identity still includes the account email, so do not claim anonymous use.
+- Browser roles cannot read or execute private service functions; service credentials stay server-side.
+- Reads, writes, snapshots, feedback, corrections, product events, exports, and deletion requests are account-scoped and rate-limited.
+- First-party metrics are allowlisted and exclude message text, food names, health values, email, and nickname.
+- There are no third-party advertising trackers and the product does not sell health data.
+- Feedback requires explicit submission consent; including conversation context is a separate opt-in.
+- Export and deletion requests exist. Fulfillment is still an operator-controlled process, not automatic self-service deletion.
+- Migration 015 permits a reviewed parent-account cascade without an impossible child-audit foreign-key insert; direct child mutations remain audited.
 
-- Saved-food and private helper tables deny browser roles; invite redemption is atomic and rate-limited; every previously published code is disabled.
-- Local food, theme, layout, scene, box, and conversation storage is account-scoped. Unattributed legacy browser data is quarantined, never auto-uploaded.
-- Empty food-day writes require an explicit clear. Food snapshots use revisions so stale tabs reload instead of overwriting newer data.
-- Food and non-food writes are transactional/idempotent, historical totals are repaired, and UI/chat success text follows the database receipt.
-- Destructive AI tools use signed confirmations; native tool inputs are strict and bounded.
-- OAuth uses cookie-bound random state, requires Google's boolean verified-email claim, and session signing fails closed without a strong secret.
-- Prompt/history/read results are bounded; paid model work has atomic per-user minute/day/token reservations.
-- Missing nutrients remain unknown instead of becoming zero.
-- Food matches with unrelated product forms (for example pure salt matching a
-  popcorn product) are rejected before the ledger changes. Generic pieces,
-  cups, teaspoons, and servings no longer receive invented 100 g/household
-  weights; exact mass or a verified fixed basis is required.
-- The live model window and deterministic conversation excerpt now meet at the
-  same 24-message boundary, removing the former blind middle of a long chat.
-- Automated tests cover chat behavior, tools, auth/privacy, concurrency contracts, frontend account/day binding, and nutrient knownness.
+Read `docs/COMMERCIAL-PRIVACY-LEGAL-CHECKLIST.md` before expanding the beta. It is a checklist, not a compliance claim.
 
-### Remaining product work (not release regressions)
+## Internal read-only AI foundation
 
-1. This is adult-only today. Do not market or onboard it as a child product until consent, privacy, and age-appropriate goal logic are designed.
-2. “Change my goals today” still changes the baseline profile; per-day goal overrides are a future feature.
-3. Home customization is curated themes/scenes/layout today, not arbitrary generated backgrounds, avatar outfits, or user HTML/CSS/JS.
-4. Billing, self-serve signup, account deletion/export policy, support operations, and production monitoring still need a deliberate commercial launch pass.
-5. Photo logging is now built for meals, Nutrition Facts labels, and exact barcodes. Remaining vision work is product tuning from real user photos, not missing scaffolding.
+The signed-in app has an account-scoped GET-only service:
 
-**Product direction:** Buddy Home (room, avatar, outfits) as curated layers — not MLP trademark preset; original pastel aesthetic if needed. Sellable private buddy for food + workouts, not a general-purpose agent.
+`/api/records?resource=<resource>&period=<10w|6m|1y|all>`
 
-**Brice said:** privacy hotfix when he orders it — don’t only lecture.
+Resources include summary, nutrition, food history, workouts, measurements, goals, trends, and snapshots. Large ranges are aggregated by PostgreSQL before reaching a browser or model. See `docs/READ-ONLY-AI-INTEGRATION.md`.
 
----
+There is no public MCP server, OpenAI app, external OAuth client, or external write scope. A future external connection must use explicit OAuth consent, narrow revocable scopes, short-lived tokens, access auditing, and a read-only first release.
 
-## Deploy
+## Production state verified 2026-07-22
 
-Production database status on 2026-07-14:
+- Application commit: `5a088d1`
+- Production deployment: `https://bigbricey-fb0ul1e7j-bigbriceys-projects.vercel.app`
+- Production alias: `https://bigbricey.com`
+- Applied database foundation: migrations 013, 014, and 015
+- Preserved real data after synthetic testing: 1 profile, 1 auth identity, 50 events, 416 event measures
+- Synthetic release-test account after cleanup: 0 profiles, 0 allowlist rows, 0 events, 0 messages
+- Automated suite: 297 passed, 0 failed
+- Dependency audit: 0 known vulnerabilities
+- Signed-in browser console: 0 warnings or errors
 
-- Migrations 009 and 010 are applied.
-- All previously published invite codes are disabled. The active private beta code is stored in the Mac Keychain under `BigBricey Private Beta Invite`, never in Git.
-- Post-migration verification preserved 47 events and 394 measures, rebuilt 10 total rows, found all 7 required RPCs, and confirmed browser roles cannot execute them or read saved foods.
-- The full automated suite passes: 150 tests.
+Production tests used a separate temporary member, never Brice's ledger. From a profile-free first-use state:
 
-For a fresh database, preserve this order: migration 009, private invite creation outside Git, then migration 010. Deploy only to the Vercel project named `bigbricey` and smoke-test the signed-in app after every server release.
+- “Log four large hard-boiled eggs” committed once on the first message: 200 g, 310 kcal, 25.2 g protein, 21.2 g fat, 2.2 g carbs, 20 supported nutrition fields.
+- “I had one pound of brisket” committed once: 453.6 g, 1,320 kcal, 121.6 g protein, 88.5 g fat, 0 g carbs, 20 supported nutrition fields.
+- The temporary account and all of its records were deleted afterward.
 
-For local development use `npm run dev` (Vercel's local runtime), not the legacy `server.js` parser harness.
+Signed-in Brice checks confirmed:
 
-Env (Vercel): `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_VISION_MODEL`, `OPENROUTER_VISION_FALLBACK_MODEL`, Supabase, Google OAuth, `AUTH_SECRET`, etc.
+- Today remained empty after read-only and synthetic testing.
+- The real Magnesium 30-Day chart persisted with 2 points and latest 5 mg.
+- Weight 30-Day persisted with 1 point and latest 215 lb.
+- Health Snapshot displayed the correct coverage and 215 lb state reading.
+- The photo menu clearly separates meal, Nutrition Facts label, and barcode drafts and requires approval.
 
----
+## Deliberately deferred
 
-## Working with Brice
+- Public enrollment, announcements, billing, pricing, or a lifetime-access promise
+- Marketing or onboarding for children
+- Diagnostic, treatment, guaranteed-longevity, or lifesaving claims
+- Public MCP/OpenAI app access or any external write capability
+- Arbitrary user HTML, JavaScript, or unbounded CSS generation
+- Fully generated photographic backgrounds or avatar/outfit systems
+- Automatic account deletion or automatic Snapshot sharing
 
-- Short answers unless he asks for detail.  
-- If he asks “is this saved / can other AIs see it?” → **save to this repo + push**, don’t only explain.  
-- He approves public/identity/money/signups.  
-- Prefer finished shippable work.
+## Next pickup checklist
 
----
-
-## Session log pointer
-
-See `docs/SESSION-LOG-2026-07-14.md` for the long session narrative (scenes + chat lobotomy fix + audit + Codex photo-logging release).
+1. Read this handoff, `AGENTS.md`, and `docs/SESSION-LOG-2026-07-22.md`.
+2. Inspect `git status`, the latest GitHub commit, the current Vercel production deployment, and the signed-in live behavior before assuming this snapshot is current.
+3. Run `npm test` before and after changes.
+4. Preserve LLM-first conversation, typed tools, authoritative receipts, account/date binding, and review-first image flows.
+5. Deploy only to the existing Vercel project named `bigbricey`.
+6. Never test writes in Brice's real ledger.
