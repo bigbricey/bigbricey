@@ -7,6 +7,7 @@ await import("../public/chat-format.js");
 const {
   parseChatText,
   renderChatText,
+  safeAssistantText,
   scrollChatToBottom,
 } = globalThis.BBChatFormat || {};
 
@@ -96,6 +97,16 @@ test("chat renderer treats model supplied HTML as text instead of executable mar
   assert.deepEqual(allTags(container), ["DIV", "P", "#TEXT", "STRONG", "#TEXT"]);
 });
 
+test("legacy assistant control markup becomes an honest recovery message", () => {
+  const unsafe =
+    "Let me try.<tool_call>add_food<arg_key>query</arg_key><arg_value>eggs</arg_value></tool_call>";
+  const safe = safeAssistantText(unsafe);
+
+  assert.doesNotMatch(safe, /tool_call|arg_key|arg_value/i);
+  assert.match(safe, /can’t verify that anything changed/i);
+  assert.equal(safeAssistantText("A normal answer."), "A normal answer.");
+});
+
 test("chat scrolling lands at the bottom again after the browser lays out formatted content", () => {
   const last = new FakeNode("div");
   const log = new FakeNode("div");
@@ -126,7 +137,8 @@ test("chat markup exposes a polite conversation log and a real textarea label", 
 test("chat presentation uses safe rich rendering and no fake Done response", () => {
   const source = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 
-  assert.match(source, /BBChatFormat\.renderChatText\(body, text\)/);
+  assert.match(source, /BBChatFormat\.renderChatText\(body, displayText\)/);
+  assert.match(source, /BBChatFormat\?\.safeAssistantText\?\.\(text\)/);
   assert.match(source, /chatLog\.setAttribute\("aria-busy", on \? "true" : "false"\)/);
   assert.doesNotMatch(source, /\|\| "Done\."/);
 });

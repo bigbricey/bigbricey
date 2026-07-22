@@ -1217,6 +1217,10 @@ function pulseVerifiedLogUpdate(addedRows) {
 
 function appendChat(role, text, isError = false, options = {}) {
   if (!chatLog || text == null || String(text).trim() === "") return;
+  const displayText =
+    role === "user"
+      ? String(text)
+      : window.BBChatFormat?.safeAssistantText?.(text) || String(text);
   chatLog.querySelector(".welcome, .chat-empty")?.remove();
   const bubble = document.createElement("div");
   bubble.className =
@@ -1232,9 +1236,9 @@ function appendChat(role, text, isError = false, options = {}) {
   const body = document.createElement("div");
   body.className = "chat-text";
   if (window.BBChatFormat?.renderChatText) {
-    window.BBChatFormat.renderChatText(body, text);
+    window.BBChatFormat.renderChatText(body, displayText);
   } else {
-    body.textContent = text;
+    body.textContent = displayText;
   }
   bubble.appendChild(who);
   bubble.appendChild(body);

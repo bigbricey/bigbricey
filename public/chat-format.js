@@ -1,4 +1,13 @@
 (function installBigBriceyChatFormat(root) {
+  const INTERNAL_CONTROL_MARKUP =
+    /<\/?(?:tool_call|tool_calls|arg_key|arg_value|function_call|function_calls|invoke|parameter|tool_result)\b[^>]*>/i;
+
+  function safeAssistantText(value) {
+    const text = String(value ?? "");
+    if (!INTERNAL_CONTROL_MARKUP.test(text)) return text;
+    return "That older response had an internal formatting error, so I can’t verify that anything changed. Please ask me again or check the diary below.";
+  }
+
   function parseInlineText(value) {
     const text = String(value ?? "");
     const tokens = [];
@@ -163,6 +172,7 @@
   root.BBChatFormat = Object.freeze({
     parseChatText,
     renderChatText,
+    safeAssistantText,
     scrollChatToBottom,
   });
 })(typeof window !== "undefined" ? window : globalThis);
